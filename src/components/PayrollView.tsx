@@ -18,12 +18,12 @@ import {
   PayrollAdjustment,
   UserRole,
 } from '../types/hr';
+import { nativeBridge } from '../services/nativeBridge';
 import {
   buildPayrollCSV,
   calculateEmployeePayroll,
   formatAED,
   formatShortDate,
-  triggerCSVDownload,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 
@@ -42,8 +42,11 @@ const DEDUCTION_CATEGORIES: DeductionCategory[] = [
   DeductionCategory.UnpaidLeave,
   DeductionCategory.FinePenalty,
   DeductionCategory.SalaryAdvance,
-  DeductionCategory.Other,
+  DeductionCategory.DamageOther,
 ];
+
+const INPUT_CLASS =
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
 
 function getMonthOptions(): { value: string; label: string }[] {
   const now = new Date();
@@ -121,9 +124,13 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
   const empMap = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
 
-  const handleExportCSV = () => {
+  const handleExportCSV = async () => {
     const csv = buildPayrollCSV(payrollRows);
-    triggerCSVDownload(`masar-payroll-${selectedMonth}.csv`, csv);
+    await nativeBridge.saveTextFile(
+      `masar-payroll-${selectedMonth}.csv`,
+      csv,
+      'text/csv;charset=utf-8'
+    );
   };
 
   const openAdjustmentModal = (defaultKind: AdjustmentKind, employeeId?: string) => {
@@ -170,7 +177,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
     setShowAdjModal(false);
   };
 
-  const handleDownloadPayslipText = (row: MonthlyPayrollRow) => {
+  const handleDownloadPayslipText = async (row: MonthlyPayrollRow) => {
     const lines = [
       `${settings.companyName} — MONTHLY PAYSLIP (${row.month})`,
       `Employee: ${row.employee.fullName} (${row.employee.employeeCode})`,
@@ -198,15 +205,11 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       '------------------------------------------------------------',
       `NET PAYABLE:          ${formatAED(row.netSalary)}`,
     ];
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Payslip_${row.employee.employeeCode}_${row.month}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    await nativeBridge.saveTextFile(
+      `Payslip_${row.employee.employeeCode}_${row.month}.txt`,
+      lines.join('\n'),
+      'text/plain;charset=utf-8'
+    );
   };
 
   const monthLabel =
@@ -217,10 +220,10 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       {/* Header & Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-slate-900">
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
             {canManagePayroll ? 'Monthly Payroll & Deductions' : 'My Payslips & Deductions'}
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             {canManagePayroll
               ? 'UAE AED payroll register, itemized deductions engine, and WPS-ready CSV export.'
               : 'Review your monthly earnings breakdown, allowances, deductions, and printable payslips.'}
@@ -232,7 +235,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
             value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
             aria-label="Select payroll month"
-            className="px-3 py-2 text-sm font-medium border border-slate-200 rounded-lg bg-white text-slate-800"
+            className="px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
           >
             {monthOptions.map((m) => (
               <option key={m.value} value={m.value}>
@@ -253,8 +256,8 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={handleExportCSV}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                onClick={() => void handleExportCSV()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <FileSpreadsheet className="w-4 h-4" />
                 Export CSV
@@ -266,40 +269,42 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
       {/* Summary KPI Row */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500">Gross Salaries</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Gross Salaries</p>
+          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
             {formatAED(totals.gross)}
           </p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500">Bonuses & Additions</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-emerald-700">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Bonuses & Additions</p>
+          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
             +{formatAED(totals.bonuses)}
           </p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500">Total Deductions</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-rose-700">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Deductions</p>
+          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-rose-700 dark:text-rose-400">
             -{formatAED(totals.deductions)}
           </p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500">Net Payable ({monthLabel})</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-800">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+            Net Payable ({monthLabel})
+          </p>
+          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-800 dark:text-indigo-300">
             {formatAED(totals.net)}
           </p>
         </div>
       </section>
 
       {/* Monthly Payroll Register Table (Desktop) & Cards (Mobile) */}
-      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between">
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">
               Payroll Register — {monthLabel}
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Gross Salary + Bonuses &minus; Total Deductions = Net Payable (AED)
             </p>
           </div>
@@ -309,7 +314,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
         <div className="hidden lg:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-medium text-slate-500">
+              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/60 text-xs font-medium text-slate-500 dark:text-slate-400">
                 <th className="py-3 px-4">Employee</th>
                 <th className="py-3 px-4 text-right">Base Salary</th>
                 <th className="py-3 px-4 text-right">Allowances</th>
@@ -320,36 +325,41 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                 <th className="py-3 px-4 text-right">Payslip</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-sm">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
               {payrollRows.map((row) => (
-                <tr key={row.employee.id} className="hover:bg-slate-50/70 transition-colors">
+                <tr
+                  key={row.employee.id}
+                  className="hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors"
+                >
                   <td className="py-3.5 px-4">
                     <div className="flex items-center gap-2.5">
                       <Avatar src={row.employee.avatarUrl} name={row.employee.fullName} size="sm" />
                       <div>
-                        <div className="font-medium text-slate-900">{row.employee.fullName}</div>
-                        <div className="text-xs text-slate-500">
+                        <div className="font-medium text-slate-900 dark:text-white">
+                          {row.employee.fullName}
+                        </div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">
                           {row.employee.employeeCode} &middot; {row.employee.department}
                         </div>
                       </div>
                     </div>
                   </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-slate-700">
+                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-slate-700 dark:text-slate-300">
                     {formatAED(row.baseSalary)}
                   </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-slate-600">
+                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-slate-600 dark:text-slate-400">
                     {formatAED(row.totalAllowances)}
                   </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs font-medium tabular-nums text-slate-900">
+                  <td className="py-3.5 px-4 text-right font-mono text-xs font-medium tabular-nums text-slate-900 dark:text-white">
                     {formatAED(row.grossSalary)}
                   </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-emerald-700">
+                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-emerald-700 dark:text-emerald-400">
                     {row.totalBonuses > 0 ? `+${formatAED(row.totalBonuses)}` : '—'}
                   </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-rose-700">
+                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-rose-700 dark:text-rose-400">
                     {row.totalDeductions > 0 ? `-${formatAED(row.totalDeductions)}` : '—'}
                   </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-sm font-semibold tabular-nums text-indigo-900">
+                  <td className="py-3.5 px-4 text-right font-mono text-sm font-semibold tabular-nums text-indigo-900 dark:text-indigo-300">
                     {formatAED(row.netSalary)}
                   </td>
                   <td className="py-3.5 px-4 text-right whitespace-nowrap">
@@ -357,7 +367,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setSelectedPayslip(row)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-700 cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer"
                       >
                         <Receipt className="w-3.5 h-3.5" />
                         Payslip
@@ -367,7 +377,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                           type="button"
                           onClick={() => openAdjustmentModal('deduction', row.employee.id)}
                           aria-label={`Add deduction for ${row.employee.fullName}`}
-                          className="p-1.5 rounded-lg border border-slate-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                          className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
                         >
                           <MinusCircle className="w-3.5 h-3.5" />
                         </button>
@@ -381,43 +391,45 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
         </div>
 
         {/* Mobile Cards */}
-        <div className="lg:hidden divide-y divide-slate-100">
+        <div className="lg:hidden divide-y divide-slate-100 dark:divide-slate-800">
           {payrollRows.map((row) => (
             <div key={row.employee.id} className="p-4 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <Avatar src={row.employee.avatarUrl} name={row.employee.fullName} size="md" />
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 truncate">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                       {row.employee.fullName}
                     </p>
-                    <p className="text-xs text-slate-500 truncate">{row.employee.jobTitle}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                      {row.employee.jobTitle}
+                    </p>
                   </div>
                 </div>
                 <div className="text-right shrink-0">
-                  <p className="text-sm font-bold font-mono tabular-nums text-indigo-900">
+                  <p className="text-sm font-bold font-mono tabular-nums text-indigo-900 dark:text-indigo-300">
                     {formatAED(row.netSalary)}
                   </p>
-                  <p className="text-[11px] text-slate-500">Net Pay</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Net Pay</p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 text-xs bg-slate-50 rounded-lg p-2.5 border border-slate-200/70">
+              <div className="grid grid-cols-3 gap-2 text-xs bg-slate-50 dark:bg-slate-950 rounded-lg p-2.5 border border-slate-200/70 dark:border-slate-800">
                 <div>
-                  <span className="text-slate-500 block">Gross</span>
-                  <span className="font-mono font-medium text-slate-800">
+                  <span className="text-slate-500 dark:text-slate-400 block">Gross</span>
+                  <span className="font-mono font-medium text-slate-800 dark:text-slate-200">
                     {row.grossSalary.toLocaleString()}
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Bonuses</span>
-                  <span className="font-mono font-medium text-emerald-700">
+                  <span className="text-slate-500 dark:text-slate-400 block">Bonuses</span>
+                  <span className="font-mono font-medium text-emerald-700 dark:text-emerald-400">
                     +{row.totalBonuses.toLocaleString()}
                   </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Deductions</span>
-                  <span className="font-mono font-medium text-rose-700">
+                  <span className="text-slate-500 dark:text-slate-400 block">Deductions</span>
+                  <span className="font-mono font-medium text-rose-700 dark:text-rose-400">
                     -{row.totalDeductions.toLocaleString()}
                   </span>
                 </div>
@@ -426,7 +438,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               <button
                 type="button"
                 onClick={() => setSelectedPayslip(row)}
-                className="w-full min-h-[40px] inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-800 hover:bg-slate-50 cursor-pointer"
+                className="w-full min-h-[40px] inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
               >
                 <Receipt className="w-3.5 h-3.5" />
                 View Itemized Payslip
@@ -437,22 +449,22 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       </section>
 
       {/* Itemized Deductions & Bonuses Audit Log */}
-      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-200">
-          <h3 className="text-base font-semibold text-slate-900">
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-white">
             Itemized Deductions & Bonuses — {monthLabel}
           </h3>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             Every deduction requires an explicit reason visible on the employee&apos;s payslip.
           </p>
         </div>
 
         {monthAdjustments.length === 0 ? (
-          <div className="p-8 text-center text-sm text-slate-500">
+          <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
             No deductions or bonuses logged for {monthLabel}.
           </div>
         ) : (
-          <div className="divide-y divide-slate-100">
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
             {monthAdjustments.map((adj) => {
               const emp = empMap.get(adj.employeeId);
               const isDeduction = adj.kind === 'deduction';
@@ -463,30 +475,36 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                 >
                   <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="font-semibold text-slate-900">
+                      <span className="font-semibold text-slate-900 dark:text-white">
                         {emp?.fullName ?? 'Employee'}
                       </span>
-                      <span className="text-slate-300">&middot;</span>
+                      <span className="text-slate-300 dark:text-slate-700">&middot;</span>
                       <span
                         className={`text-xs font-semibold ${
-                          isDeduction ? 'text-rose-700' : 'text-emerald-700'
+                          isDeduction
+                            ? 'text-rose-700 dark:text-rose-400'
+                            : 'text-emerald-700 dark:text-emerald-400'
                         }`}
                       >
                         {adj.category}
                       </span>
-                      <span className="text-slate-300">&middot;</span>
-                      <span className="text-xs font-mono text-slate-500">
+                      <span className="text-slate-300 dark:text-slate-700">&middot;</span>
+                      <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
                         {formatShortDate(adj.date)}
                       </span>
                     </div>
-                    <p className="text-sm text-slate-700">{adj.reason}</p>
-                    <p className="text-xs text-slate-500">Logged by {adj.createdBy}</p>
+                    <p className="text-sm text-slate-700 dark:text-slate-300">{adj.reason}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Logged by {adj.createdBy}
+                    </p>
                   </div>
 
                   <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
                     <span
                       className={`font-mono text-sm font-semibold tabular-nums ${
-                        isDeduction ? 'text-rose-700' : 'text-emerald-700'
+                        isDeduction
+                          ? 'text-rose-700 dark:text-rose-400'
+                          : 'text-emerald-700 dark:text-emerald-400'
                       }`}
                     >
                       {isDeduction ? '-' : '+'}
@@ -497,7 +515,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                         type="button"
                         onClick={() => onRemoveAdjustment(adj.id)}
                         aria-label={`Remove ${adj.category} for ${emp?.fullName ?? 'employee'}`}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-700 hover:bg-rose-50 cursor-pointer"
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -513,21 +531,21 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       {/* Log Deduction / Bonus Modal */}
       {showAdjModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="adj-modal-title"
         >
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-4">
-              <h3 id="adj-modal-title" className="text-base font-semibold text-slate-900">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+              <h3 id="adj-modal-title" className="text-base font-semibold text-slate-900 dark:text-white">
                 Log Payroll Deduction or Bonus ({monthLabel})
               </h3>
               <button
                 type="button"
                 onClick={() => setShowAdjModal(false)}
                 aria-label="Close adjustment modal"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -535,12 +553,15 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
             <form onSubmit={handleSaveAdjustment} className="mt-4 space-y-4">
               {adjError && (
-                <p role="alert" className="text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                <p
+                  role="alert"
+                  className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-lg px-3 py-2"
+                >
                   {adjError}
                 </p>
               )}
 
-              <div className="inline-flex rounded-lg bg-slate-100 p-0.5 w-full">
+              <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 w-full">
                 <button
                   type="button"
                   onClick={() =>
@@ -552,8 +573,8 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                   }
                   className={`flex-1 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                     adjForm.kind === 'deduction'
-                      ? 'bg-white text-rose-700 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white dark:bg-slate-900 text-rose-700 dark:text-rose-400 shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   Salary Deduction
@@ -569,8 +590,8 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                   }
                   className={`flex-1 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                     adjForm.kind === 'bonus'
-                      ? 'bg-white text-emerald-700 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   Bonus / Addition
@@ -578,14 +599,14 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               </div>
 
               <div>
-                <label htmlFor="adj-emp" className="block text-xs font-medium text-slate-700 mb-1">
+                <label htmlFor="adj-emp" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                   Employee
                 </label>
                 <select
                   id="adj-emp"
                   value={adjForm.employeeId}
                   onChange={(e) => setAdjForm((p) => ({ ...p, employeeId: e.target.value }))}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                  className={INPUT_CLASS}
                 >
                   {targetEmployees.map((emp) => (
                     <option key={emp.id} value={emp.id}>
@@ -597,7 +618,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label htmlFor="adj-cat" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="adj-cat" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Category
                   </label>
                   <select
@@ -612,7 +633,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                           | 'Overtime Allowance',
                       }))
                     }
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    className={INPUT_CLASS}
                   >
                     {adjForm.kind === 'deduction' ? (
                       DEDUCTION_CATEGORIES.map((c) => (
@@ -630,7 +651,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                 </div>
 
                 <div>
-                  <label htmlFor="adj-amt" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="adj-amt" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Amount (AED)
                   </label>
                   <input
@@ -642,12 +663,12 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                     value={adjForm.amountAED}
                     onChange={(e) => setAdjForm((p) => ({ ...p, amountAED: e.target.value }))}
                     placeholder="e.g. 250"
-                    className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                    className={`${INPUT_CLASS} font-mono`}
                   />
                 </div>
 
                 <div>
-                  <label htmlFor="adj-date" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="adj-date" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Effective Date
                   </label>
                   <input
@@ -656,13 +677,13 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                     required
                     value={adjForm.date}
                     onChange={(e) => setAdjForm((p) => ({ ...p, date: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
               </div>
 
               <div>
-                <label htmlFor="adj-reason" className="block text-xs font-medium text-slate-700 mb-1">
+                <label htmlFor="adj-reason" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                   Mandatory Reason / Notes (shown on payslip)
                 </label>
                 <textarea
@@ -672,15 +693,15 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                   value={adjForm.reason}
                   onChange={(e) => setAdjForm((p) => ({ ...p, reason: e.target.value }))}
                   placeholder="Describe the exact reason, date, or reference number..."
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  className={INPUT_CLASS}
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowAdjModal(false)}
-                  className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -703,21 +724,21 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       {/* Printable / Downloadable Monthly Payslip Modal */}
       {selectedPayslip && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto"
           role="dialog"
           aria-modal="true"
           aria-labelledby="payslip-title"
         >
-          <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-xl my-8 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-              <h3 id="payslip-title" className="text-sm font-semibold text-slate-900">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl my-8 overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950">
+              <h3 id="payslip-title" className="text-sm font-semibold text-slate-900 dark:text-white">
                 Monthly Payslip — {monthLabel}
               </h3>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => handleDownloadPayslipText(selectedPayslip)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => void handleDownloadPayslipText(selectedPayslip)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
                   Download
@@ -734,7 +755,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                   type="button"
                   onClick={() => setSelectedPayslip(null)}
                   aria-label="Close payslip modal"
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 cursor-pointer"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -743,17 +764,17 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
             <div id="printable-payslip" className="p-6 space-y-6">
               {/* Company & Employee Header */}
-              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-slate-200 pb-5">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
                 <div>
-                  <p className="text-lg font-bold text-indigo-950 font-display">
+                  <p className="text-lg font-bold text-indigo-950 dark:text-indigo-200 font-display">
                     {settings.companyName}
                   </p>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                     Salary Statement &middot; Pay Period: {monthLabel}
                   </p>
                 </div>
-                <div className="text-left sm:text-right text-xs text-slate-600 space-y-0.5">
-                  <p className="text-sm font-semibold text-slate-900">
+                <div className="text-left sm:text-right text-xs text-slate-600 dark:text-slate-300 space-y-0.5">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
                     {selectedPayslip.employee.fullName}
                   </p>
                   <p>
@@ -767,48 +788,50 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               {/* Earnings vs Deductions */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                 <div>
-                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider pb-2 border-b border-slate-200">
+                  <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider pb-2 border-b border-slate-200 dark:border-slate-800">
                     Earnings (AED)
                   </h4>
                   <dl className="mt-2.5 space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <dt className="text-slate-600">Base Salary</dt>
-                      <dd className="font-mono tabular-nums text-slate-900">
+                      <dt className="text-slate-600 dark:text-slate-400">Base Salary</dt>
+                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
                         {formatAED(selectedPayslip.baseSalary)}
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-slate-600">Housing Allowance</dt>
-                      <dd className="font-mono tabular-nums text-slate-900">
+                      <dt className="text-slate-600 dark:text-slate-400">Housing Allowance</dt>
+                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
                         {formatAED(selectedPayslip.housingAllowance)}
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-slate-600">Transport Allowance</dt>
-                      <dd className="font-mono tabular-nums text-slate-900">
+                      <dt className="text-slate-600 dark:text-slate-400">Transport Allowance</dt>
+                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
                         {formatAED(selectedPayslip.transportAllowance)}
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-slate-600">Other Allowance</dt>
-                      <dd className="font-mono tabular-nums text-slate-900">
+                      <dt className="text-slate-600 dark:text-slate-400">Other Allowance</dt>
+                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
                         {formatAED(selectedPayslip.otherAllowance)}
                       </dd>
                     </div>
                     {selectedPayslip.bonuses.map((b) => (
-                      <div key={b.id} className="flex justify-between text-emerald-700">
+                      <div key={b.id} className="flex justify-between text-emerald-700 dark:text-emerald-400">
                         <dt className="pr-2">
                           <span className="font-medium block">{b.category}</span>
-                          <span className="text-[11px] text-emerald-600">{b.reason}</span>
+                          <span className="text-[11px] text-emerald-600 dark:text-emerald-400/80">
+                            {b.reason}
+                          </span>
                         </dt>
                         <dd className="font-mono tabular-nums whitespace-nowrap">
                           +{formatAED(b.amountAED)}
                         </dd>
                       </div>
                     ))}
-                    <div className="pt-2 border-t border-slate-200 flex justify-between font-semibold">
-                      <dt className="text-slate-900">Total Earnings</dt>
-                      <dd className="font-mono tabular-nums text-slate-900">
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between font-semibold">
+                      <dt className="text-slate-900 dark:text-white">Total Earnings</dt>
+                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
                         {formatAED(selectedPayslip.grossSalary + selectedPayslip.totalBonuses)}
                       </dd>
                     </div>
@@ -816,11 +839,11 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                 </div>
 
                 <div>
-                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider pb-2 border-b border-slate-200">
+                  <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider pb-2 border-b border-slate-200 dark:border-slate-800">
                     Deductions (AED)
                   </h4>
                   {selectedPayslip.deductions.length === 0 ? (
-                    <p className="mt-3 text-sm text-slate-500">
+                    <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
                       No deductions applied for this month.
                     </p>
                   ) : (
@@ -828,21 +851,21 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                       {selectedPayslip.deductions.map((d) => (
                         <div key={d.id} className="flex justify-between gap-3">
                           <dt>
-                            <span className="font-medium text-rose-800 block">
+                            <span className="font-medium text-rose-800 dark:text-rose-300 block">
                               {d.category} ({formatShortDate(d.date)})
                             </span>
-                            <span className="text-xs text-slate-600">{d.reason}</span>
+                            <span className="text-xs text-slate-600 dark:text-slate-400">{d.reason}</span>
                           </dt>
-                          <dd className="font-mono tabular-nums text-rose-700 whitespace-nowrap">
+                          <dd className="font-mono tabular-nums text-rose-700 dark:text-rose-400 whitespace-nowrap">
                             -{formatAED(d.amountAED)}
                           </dd>
                         </div>
                       ))}
                     </dl>
                   )}
-                  <div className="mt-4 pt-2 border-t border-slate-200 flex justify-between text-sm font-semibold">
-                    <span className="text-slate-900">Total Deductions</span>
-                    <span className="font-mono tabular-nums text-rose-700">
+                  <div className="mt-4 pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between text-sm font-semibold">
+                    <span className="text-slate-900 dark:text-white">Total Deductions</span>
+                    <span className="font-mono tabular-nums text-rose-700 dark:text-rose-400">
                       -{formatAED(selectedPayslip.totalDeductions)}
                     </span>
                   </div>
@@ -850,16 +873,18 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               </div>
 
               {/* Net Payable Banner */}
-              <div className="rounded-xl bg-indigo-50/70 border border-indigo-200 p-4 flex items-center justify-between">
+              <div className="rounded-xl bg-indigo-50/70 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-900 p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-indigo-800">Net Salary Payable (WPS Transfer)</p>
-                  <p className="text-xs text-indigo-700/80 mt-0.5">
+                  <p className="text-xs font-medium text-indigo-800 dark:text-indigo-200">
+                    Net Salary Payable (WPS Transfer)
+                  </p>
+                  <p className="text-xs text-indigo-700/80 dark:text-indigo-300/80 mt-0.5">
                     Gross {formatAED(selectedPayslip.grossSalary)} + Bonuses{' '}
                     {formatAED(selectedPayslip.totalBonuses)} &minus; Deductions{' '}
                     {formatAED(selectedPayslip.totalDeductions)}
                   </p>
                 </div>
-                <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-950">
+                <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-950 dark:text-white">
                   {formatAED(selectedPayslip.netSalary)}
                 </p>
               </div>

@@ -14,7 +14,7 @@ export enum DocumentType {
   EmiratesID = 'Emirates ID (EID)',
   Visa = 'Visa',
   LaborCard = 'Labor Card',
-  EmploymentContract = 'Employment Contract',
+  EmploymentContract = 'Contract',
 }
 
 export type DocumentExpiryStatus = 'expired' | 'expiring_soon' | 'valid';
@@ -37,12 +37,121 @@ export enum DeductionCategory {
   UnpaidLeave = 'Unpaid Leave',
   FinePenalty = 'Fine / Penalty',
   SalaryAdvance = 'Salary Advance',
-  Other = 'Other',
+  DamageOther = 'Damage / Other',
 }
 
 export type AdjustmentKind = 'deduction' | 'bonus';
 
-export type PunchSource = 'Mobile GPS' | 'Web/PC';
+export type PunchSource = 'Mobile App' | 'PC Web';
+
+// ============================================================================
+// Relational PostgreSQL Schema Mirror Types
+// Mirrors tables: users, locations, user_locations, attendance_logs,
+// documents, leave_requests, payroll_adjustments
+// ============================================================================
+
+export interface UserRow {
+  id: string;
+  employee_code: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  avatar_url: string;
+  role: UserRole;
+  department: string;
+  job_title: string;
+  join_date: string;
+  active: boolean;
+  clock_in_policy_override: ClockInPolicyMode | 'inherit';
+  base_salary_aed: number;
+  housing_allowance_aed: number;
+  transport_allowance_aed: number;
+  other_allowance_aed: number;
+}
+
+export interface LocationRow {
+  id: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  radius_meters: number;
+  active: boolean;
+}
+
+export interface UserLocationRow {
+  user_id: string;
+  location_id: string;
+}
+
+export interface AttendanceLogRow {
+  id: string;
+  user_id: string;
+  work_date: string;
+  clock_in_time: string;
+  clock_out_time?: string;
+  location_id: string;
+  location_name: string;
+  clock_in_lat: number;
+  clock_in_lng: number;
+  clock_out_lat?: number;
+  clock_out_lng?: number;
+  accuracy_meters: number;
+  device_type: PunchSource;
+  is_late: boolean;
+  late_minutes: number;
+}
+
+export interface DocumentRow {
+  id: string;
+  user_id: string;
+  doc_type: DocumentType;
+  document_number: string;
+  file_name: string;
+  mime_type: string;
+  file_url?: string;
+  issue_date: string;
+  expiry_date: string;
+  uploaded_at: string;
+  notes?: string;
+}
+
+export interface LeaveRequestRow {
+  id: string;
+  user_id: string;
+  leave_type: LeaveType;
+  start_date: string;
+  end_date: string;
+  days: number;
+  reason: string;
+  attachment_name?: string;
+  attachment_url?: string;
+  status: LeaveStatus;
+  submitted_at: string;
+  reviewed_by?: string;
+  reviewed_by_role?: UserRole;
+  reviewed_at?: string;
+  manager_comment?: string;
+  overridden_by_management?: boolean;
+}
+
+export interface PayrollAdjustmentRow {
+  id: string;
+  user_id: string;
+  pay_month: string; // YYYY-MM
+  kind: AdjustmentKind;
+  category: DeductionCategory | 'Performance Bonus' | 'Overtime Allowance';
+  amount_aed: number;
+  effective_date: string;
+  reason: string;
+  created_by: string;
+  created_by_role: UserRole;
+  created_at: string;
+}
+
+// ============================================================================
+// Application Domain Models
+// ============================================================================
 
 export interface GeofenceZone {
   id: string;
@@ -162,6 +271,13 @@ export interface AppSettings {
   gracePeriodMinutes: number; // e.g. 15
   maxMobileAccuracyMeters: number; // 150
   apiBaseUrl: string;
+}
+
+export interface AuthSession {
+  token: string;
+  userId: string;
+  role: UserRole;
+  mode: 'demo' | 'live';
 }
 
 export interface GPSReading {

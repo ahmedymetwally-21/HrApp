@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   :root {
@@ -12,6 +13,13 @@
     background-color: #f8fafc;
     color: #0f172a;
     overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .dark body,
+  html.dark body {
+    background-color: #020617;
+    color: #f1f5f9;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -26,6 +34,10 @@
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 .pb-safe {
@@ -61,7 +73,8 @@
     top: 0;
     width: 100%;
     padding: 24px;
-    background: #ffffff;
+    background: #ffffff !important;
+    color: #0f172a !important;
     box-shadow: none;
     border: none;
   }

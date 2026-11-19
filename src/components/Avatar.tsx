@@ -27,7 +27,7 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, size = 'md' }) => {
     return (
       <div
         aria-label={name}
-        className={`${SIZE_CLASSES[size]} rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200 font-semibold flex items-center justify-center shrink-0 select-none`}
+        className={`${SIZE_CLASSES[size]} rounded-full bg-indigo-50 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-800 font-semibold flex items-center justify-center shrink-0 select-none`}
       >
         {getInitials(name)}
       </div>
@@ -40,7 +40,7 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, size = 'md' }) => {
       alt={name}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
-      className={`${SIZE_CLASSES[size]} rounded-full object-cover border border-slate-200 bg-slate-100 shrink-0`}
+      className={`${SIZE_CLASSES[size]} rounded-full object-cover border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 shrink-0`}
     />
   );
 };

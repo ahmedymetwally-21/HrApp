@@ -8,8 +8,11 @@ import {
   Shield,
   Smartphone,
   Trash2,
+  WifiOff,
 } from 'lucide-react';
+import { ServerConfig } from '../services/api';
 import { AppSettings, ClockInPolicyMode, Employee, GeofenceZone, UserRole } from '../types/hr';
+import { validateApiBaseUrl } from '../utils/hrLogic';
 import { GeofenceMap } from './GeofenceMap';
 
 interface GeofencesSettingsViewProps {
@@ -17,6 +20,9 @@ interface GeofencesSettingsViewProps {
   geofences: GeofenceZone[];
   employees: Employee[];
   settings: AppSettings;
+  serverConfig: ServerConfig;
+  onUpdateServerConfig: (config: ServerConfig) => void;
+  onSimulateOffline: () => void;
   onCreateZone: (zone: Omit<GeofenceZone, 'id'>) => Promise<void>;
   onUpdateZone: (id: string, patch: Partial<GeofenceZone>) => Promise<void>;
   onDeleteZone: (id: string) => Promise<void>;
@@ -33,6 +39,9 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
   geofences,
   employees,
   settings,
+  serverConfig,
+  onUpdateServerConfig,
+  onSimulateOffline,
   onCreateZone,
   onUpdateZone,
   onDeleteZone,
@@ -50,6 +59,9 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
   const [zoneError, setZoneError] = useState<string | null>(null);
   const [hasDroppedPin, setHasDroppedPin] = useState(false);
 
+  const [serverUrlDraft, setServerUrlDraft] = useState(serverConfig.apiBaseUrl);
+  const [serverUrlFeedback, setServerUrlFeedback] = useState<string | null>(null);
+
   const handleMapClick = (lat: number, lng: number) => {
     if (!canEdit) return;
     setDraftLat(lat);
@@ -61,7 +73,7 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
   const handleCreateZone = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!draftName.trim()) {
-      setZoneError('Enter a location name (e.g. Branch 2 — Business Bay).');
+      setZoneError('Enter a location name (e.g. Warehouse — Al Quoz).');
       return;
     }
     setZoneError(null);
@@ -78,24 +90,43 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
     setHasDroppedPin(false);
   };
 
+  const handleSaveServerUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const check = validateApiBaseUrl(serverUrlDraft);
+    if (!check.valid) {
+      setServerUrlFeedback(check.error);
+      return;
+    }
+    onUpdateServerConfig({
+      ...serverConfig,
+      apiBaseUrl: check.normalized,
+    });
+    setServerUrlDraft(check.normalized);
+    setServerUrlFeedback('Self-hosted backend URL updated.');
+  };
+
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-slate-900">
-          Geofenced Locations & Clock-In Policy
+        <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
+          Geofenced Locations, Clock-In Policy & Server
         </h2>
-        <p className="text-sm text-slate-500 mt-0.5">
-          Pin approved work zones on OpenStreetMap, configure allowed radii, and control PC vs.
-          Mobile GPS clock-in rules.
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+          Pin approved work zones on OpenStreetMap, configure allowed radii, control PC vs. Mobile
+          clock-in rules, and point the app to your self-hosted backend.
         </p>
       </div>
 
       {/* Interactive Map + Zone Creator */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        <section className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-col">
+        <section className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5 flex flex-col">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-slate-900">Interactive Geofence Map</h3>
-            <span className="text-xs text-slate-500">OpenStreetMap / Leaflet</span>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+              Interactive Geofence Map
+            </h3>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              OpenStreetMap / Leaflet
+            </span>
           </div>
           <div className="flex-1 min-h-[340px]">
             <GeofenceMap
@@ -119,24 +150,32 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
         </section>
 
         {/* Create New Zone Form */}
-        <section className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between">
+        <section className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex flex-col justify-between">
           <form onSubmit={handleCreateZone} className="space-y-4">
             <div className="flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-indigo-700" />
-              <h3 className="text-base font-semibold text-slate-900">Create Geofence Zone</h3>
+              <MapPin className="w-4 h-4 text-indigo-700 dark:text-indigo-400" />
+              <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                Create Geofence Zone
+              </h3>
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               Click anywhere on the map to drop a pin, or enter exact coordinates below.
             </p>
 
             {zoneError && (
-              <p role="alert" className="text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+              <p
+                role="alert"
+                className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-lg px-3 py-2"
+              >
                 {zoneError}
               </p>
             )}
 
             <div>
-              <label htmlFor="zone-name" className="block text-xs font-medium text-slate-700 mb-1">
+              <label
+                htmlFor="zone-name"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              >
                 Location Name
               </label>
               <input
@@ -145,13 +184,16 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                 disabled={!canEdit}
                 value={draftName}
                 onChange={(e) => setDraftName(e.target.value)}
-                placeholder="e.g. Branch 2 — Business Bay"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                placeholder="e.g. Warehouse — Al Quoz"
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-lg"
               />
             </div>
 
             <div>
-              <label htmlFor="zone-addr" className="block text-xs font-medium text-slate-700 mb-1">
+              <label
+                htmlFor="zone-addr"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              >
                 Street / Building Address
               </label>
               <input
@@ -160,14 +202,17 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                 disabled={!canEdit}
                 value={draftAddress}
                 onChange={(e) => setDraftAddress(e.target.value)}
-                placeholder="e.g. Bay Square Bldg 7, Dubai"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                placeholder="e.g. Street 14, Al Quoz Industrial, Dubai"
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-lg"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label htmlFor="zone-lat" className="block text-xs font-medium text-slate-700 mb-1">
+                <label
+                  htmlFor="zone-lat"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                >
                   Latitude
                 </label>
                 <input
@@ -180,11 +225,14 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                     setDraftLat(Number(e.target.value));
                     setHasDroppedPin(true);
                   }}
-                  className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                  className="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-lg"
                 />
               </div>
               <div>
-                <label htmlFor="zone-lng" className="block text-xs font-medium text-slate-700 mb-1">
+                <label
+                  htmlFor="zone-lng"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                >
                   Longitude
                 </label>
                 <input
@@ -197,17 +245,20 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                     setDraftLng(Number(e.target.value));
                     setHasDroppedPin(true);
                   }}
-                  className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                  className="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-lg"
                 />
               </div>
             </div>
 
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label htmlFor="zone-radius" className="text-xs font-medium text-slate-700">
+                <label
+                  htmlFor="zone-radius"
+                  className="text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
                   Allowed Radius
                 </label>
-                <span className="text-xs font-mono font-semibold text-indigo-700 tabular-nums">
+                <span className="text-xs font-mono font-semibold text-indigo-700 dark:text-indigo-400 tabular-nums">
                   {draftRadius}m
                 </span>
               </div>
@@ -246,11 +297,13 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
       </div>
 
       {/* Existing Zones List */}
-      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-200">
-          <h3 className="text-base font-semibold text-slate-900">Configured Work Locations</h3>
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+            Configured Work Locations
+          </h3>
         </div>
-        <div className="divide-y divide-slate-100">
+        <div className="divide-y divide-slate-100 dark:divide-slate-800">
           {geofences.map((zone) => {
             const assignedCount = employees.filter((e) =>
               e.assignedZoneIds.includes(zone.id)
@@ -260,7 +313,9 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
               <div
                 key={zone.id}
                 className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                  isSelected ? 'bg-indigo-50/40' : 'hover:bg-slate-50/70'
+                  isSelected
+                    ? 'bg-indigo-50/40 dark:bg-indigo-950/30'
+                    : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
                 }`}
               >
                 <button
@@ -269,15 +324,17 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                   className="text-left flex-1 cursor-pointer"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-900">{zone.name}</span>
-                    <span className="text-xs font-mono text-indigo-700 font-medium">
+                    <span className="text-sm font-semibold text-slate-900 dark:text-white">
+                      {zone.name}
+                    </span>
+                    <span className="text-xs font-mono text-indigo-700 dark:text-indigo-400 font-medium">
                       {zone.radiusMeters}m radius
                     </span>
                     {!zone.active && (
-                      <span className="text-xs text-slate-500">(Paused)</span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400">(Paused)</span>
                     )}
                   </div>
-                  <p className="text-xs text-slate-500 mt-0.5">
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                     {zone.address} &middot;{' '}
                     <span className="font-mono">
                       {zone.latitude.toFixed(5)}, {zone.longitude.toFixed(5)}
@@ -291,7 +348,7 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onUpdateZone(zone.id, { active: !zone.active })}
-                      className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
                     >
                       {zone.active ? 'Pause' : 'Activate'}
                     </button>
@@ -300,7 +357,7 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                         type="button"
                         onClick={() => onDeleteZone(zone.id)}
                         aria-label={`Delete ${zone.name}`}
-                        className="p-1.5 rounded-lg border border-slate-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                        className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -314,18 +371,18 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
       </section>
 
       {/* PC vs. Mobile Clock-In Policy Panel */}
-      <section className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-5">
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-5">
         <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center shrink-0">
+          <div className="w-9 h-9 rounded-lg bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0">
             <Shield className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-base font-semibold text-slate-900">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">
               PC vs. Mobile Clock-In Policy
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Control whether employees can punch in from desktop workstations or must use verified
-              mobile hardware GPS (&le; {settings.maxMobileAccuracyMeters}m accuracy).
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Control whether employees can punch in from PC browsers or must use verified mobile
+              hardware GPS (&le; {settings.maxMobileAccuracyMeters}m accuracy).
             </p>
           </div>
         </div>
@@ -339,21 +396,23 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
             }
             className={`p-4 rounded-xl border text-left transition-colors cursor-pointer ${
               settings.globalClockInPolicy === ClockInPolicyMode.StrictMobileGPS
-                ? 'border-indigo-500 bg-indigo-50/50'
-                : 'border-slate-200 bg-white hover:bg-slate-50'
+                ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/40'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-800'
             }`}
           >
             <div className="flex items-center justify-between">
-              <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900">
-                <Smartphone className="w-4 h-4 text-indigo-700" />
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                <Smartphone className="w-4 h-4 text-indigo-700 dark:text-indigo-400" />
                 Strict Mobile GPS Only
               </span>
               {settings.globalClockInPolicy === ClockInPolicyMode.StrictMobileGPS && (
-                <span className="text-xs font-semibold text-indigo-700">Active Global Policy</span>
+                <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-400">
+                  Active Global Policy
+                </span>
               )}
             </div>
-            <p className="mt-1.5 text-xs text-slate-600">
-              Blocks clock-ins from desktop PCs and rejects low-accuracy IP geolocation (&gt; 150m
+            <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400">
+              Blocks clock-ins from PC Web and rejects low-accuracy IP geolocation (&gt; 150m
               radius). Ideal for field crews and strict site verification.
             </p>
           </button>
@@ -366,40 +425,42 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
             }
             className={`p-4 rounded-xl border text-left transition-colors cursor-pointer ${
               settings.globalClockInPolicy === ClockInPolicyMode.AllowOfficePC
-                ? 'border-indigo-500 bg-indigo-50/50'
-                : 'border-slate-200 bg-white hover:bg-slate-50'
+                ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/40'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-800'
             }`}
           >
             <div className="flex items-center justify-between">
-              <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900">
-                <Laptop className="w-4 h-4 text-indigo-700" />
+              <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                <Laptop className="w-4 h-4 text-indigo-700 dark:text-indigo-400" />
                 Allow Office Network / PC Clock-In
               </span>
               {settings.globalClockInPolicy === ClockInPolicyMode.AllowOfficePC && (
-                <span className="text-xs font-semibold text-indigo-700">Active Global Policy</span>
+                <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-400">
+                  Active Global Policy
+                </span>
               )}
             </div>
-            <p className="mt-1.5 text-xs text-slate-600">
-              Permits desktop browser clock-in inside assigned geofences while tagging every log as{' '}
-              <strong>Web/PC</strong> vs <strong>Mobile GPS</strong> for HR auditing.
+            <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400">
+              Permits PC browser clock-in inside assigned geofences while tagging every log as{' '}
+              <strong>PC Web</strong> vs <strong>Mobile App</strong> for HR auditing.
             </p>
           </button>
         </div>
 
         {/* Per-Employee Policy Overrides */}
-        <div className="pt-4 border-t border-slate-200">
-          <h4 className="text-sm font-semibold text-slate-900 mb-3">
+        <div className="pt-4 border-t border-slate-200 dark:border-slate-800">
+          <h4 className="text-sm font-semibold text-slate-900 dark:text-white mb-3">
             Per-Employee Policy Overrides
           </h4>
-          <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+          <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
             {employees.map((emp) => (
               <div
                 key={emp.id}
-                className="px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white"
+                className="px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white dark:bg-slate-950"
               >
                 <div className="text-sm">
-                  <span className="font-medium text-slate-900">{emp.fullName}</span>{' '}
-                  <span className="text-xs text-slate-500">
+                  <span className="font-medium text-slate-900 dark:text-white">{emp.fullName}</span>{' '}
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
                     &middot; {emp.department}
                   </span>
                 </div>
@@ -413,7 +474,7 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
                       e.target.value as ClockInPolicyMode | 'inherit'
                     )
                   }
-                  className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 rounded-lg bg-white text-slate-700"
+                  className="px-2.5 py-1.5 text-xs font-medium border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
                 >
                   <option value="inherit">Inherit Global Policy</option>
                   <option value={ClockInPolicyMode.StrictMobileGPS}>Strict Mobile GPS Only</option>
@@ -425,29 +486,92 @@ export const GeofencesSettingsView: React.FC<GeofencesSettingsViewProps> = ({
         </div>
       </section>
 
-      {/* Self-Hosting Backend Info & Demo Reset */}
-      <section className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <Server className="w-5 h-5 text-slate-500 mt-0.5 shrink-0" />
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900">
-              Self-Hosted Server Storage Mode
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Active adapter: <strong className="text-slate-700">LocalStorage Demo Store</strong>{' '}
-              via <code className="font-mono text-indigo-700">src/services/api.ts</code> &middot;
-              Ready to point at Ubuntu LAN FastAPI / PostgreSQL ({settings.apiBaseUrl}).
-            </p>
+      {/* Self-Hosted PC / Ubuntu Backend Configuration */}
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center shrink-0">
+              <Server className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                Self-Hosted Server & API Mode
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Point this client at your self-hosted Ubuntu / PC REST API (JWT Bearer) or run in
+                local Demo Mode.
+              </p>
+            </div>
+          </div>
+
+          <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 self-start shrink-0">
+            <button
+              type="button"
+              onClick={() => onUpdateServerConfig({ ...serverConfig, useMockApi: true })}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                serverConfig.useMockApi
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Demo / Local Mode
+            </button>
+            <button
+              type="button"
+              onClick={() => onUpdateServerConfig({ ...serverConfig, useMockApi: false })}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                !serverConfig.useMockApi
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Self-Hosted REST API
+            </button>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onResetDemoData}
-          className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer whitespace-nowrap shrink-0"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          Reset Sample Data
-        </button>
+
+        <form onSubmit={handleSaveServerUrl} className="flex flex-col sm:flex-row gap-2.5">
+          <input
+            type="url"
+            value={serverUrlDraft}
+            onChange={(e) => {
+              setServerUrlDraft(e.target.value);
+              setServerUrlFeedback(null);
+            }}
+            aria-label="Self-hosted API Base URL"
+            placeholder="http://192.168.1.50:8000/api/v1"
+            className="flex-1 px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 rounded-lg"
+          />
+          <button
+            type="submit"
+            className="px-4 py-2 rounded-lg bg-indigo-700 text-white text-xs font-semibold hover:bg-indigo-800 cursor-pointer whitespace-nowrap shrink-0"
+          >
+            Save Server URL
+          </button>
+        </form>
+        {serverUrlFeedback && (
+          <p className="text-xs text-indigo-700 dark:text-indigo-400">{serverUrlFeedback}</p>
+        )}
+
+        <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={onSimulateOffline}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer whitespace-nowrap"
+          >
+            <WifiOff className="w-3.5 h-3.5" />
+            Preview Offline Screen
+          </button>
+
+          <button
+            type="button"
+            onClick={onResetDemoData}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer whitespace-nowrap"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            Reset Sample Data
+          </button>
+        </div>
       </section>
     </div>
   );

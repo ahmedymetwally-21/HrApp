@@ -54,7 +54,7 @@ export function resolveClockInPolicy(
 
 /**
  * Evaluates whether an employee is allowed to clock in or out based on assigned geofences,
- * GPS accuracy, device type (desktop vs mobile), and active clock-in policy.
+ * GPS accuracy, device type (PC Web vs Mobile App), and active clock-in policy.
  */
 export function evaluateClockInEligibility(params: {
   reading: GPSReading | null;
@@ -72,7 +72,7 @@ export function evaluateClockInEligibility(params: {
   } = params;
 
   const activeZones = assignedZones.filter((z) => z.active);
-  const punchSource: PunchSource = isDesktopDevice ? 'Web/PC' : 'Mobile GPS';
+  const punchSource: PunchSource = isDesktopDevice ? 'PC Web' : 'Mobile App';
 
   if (activeZones.length === 0) {
     return {
@@ -86,7 +86,7 @@ export function evaluateClockInEligibility(params: {
     };
   }
 
-  // Policy Check 1: Strict Mobile GPS Only blocks desktop devices
+  // Policy Check 1: Strict Mobile GPS Only blocks desktop PCs
   if (effectivePolicy === ClockInPolicyMode.StrictMobileGPS && isDesktopDevice) {
     return {
       allowed: false,
@@ -103,7 +103,7 @@ export function evaluateClockInEligibility(params: {
       effectivePolicy,
       punchSource,
       blockReason:
-        'Strict Mobile GPS policy is active. Clock-in from desktop PCs is blocked — use your mobile phone.',
+        'Strict Mobile GPS policy is active. Clock-in from PC Web is restricted — use the mobile app.',
     };
   }
 
@@ -115,7 +115,7 @@ export function evaluateClockInEligibility(params: {
       distanceMeters: null,
       effectivePolicy,
       punchSource,
-      blockReason: 'Waiting for GPS location signal. Enable location permissions or use the GPS Simulator.',
+      blockReason: 'Waiting for GPS location signal. Enable location permissions or open Simulate GPS.',
     };
   }
 
@@ -179,7 +179,7 @@ export function evaluateClockInEligibility(params: {
       distanceMeters: targetDistance,
       effectivePolicy,
       punchSource,
-      blockReason: `Outside allowed zone — you are ${targetDistance}m from ${targetZone.name} (${metersOutside}m outside the ${targetZone.radiusMeters}m boundary).`,
+      blockReason: `You are ${metersOutside}m outside ${targetZone.name} (${targetDistance}m from pin). Move within ${targetZone.radiusMeters}m to clock in.`,
     };
   }
 
@@ -196,7 +196,6 @@ export function evaluateClockInEligibility(params: {
 
 /**
  * Classifies document expiry status relative to a reference YYYY-MM-DD date.
- * Expired: < 0 days remaining; Expiring Soon: 0..30 days remaining; Valid: > 30 days.
  */
 export function getDocumentExpiryStatus(
   expiryDateIso: string,
@@ -217,7 +216,6 @@ export function getDocumentExpiryStatus(
 
 /**
  * Calculates inclusive calendar days between start and end dates (YYYY-MM-DD).
- * Returns 0 if endDate < startDate or invalid.
  */
 export function calculateInclusiveDays(startDateIso: string, endDateIso: string): number {
   if (!startDateIso || !endDateIso) return 0;
@@ -229,9 +227,6 @@ export function calculateInclusiveDays(startDateIso: string, endDateIso: string)
   return Math.floor((endMs - startMs) / (1000 * 60 * 60 * 24)) + 1;
 }
 
-/**
- * Returns remaining leave balance for a specific LeaveType (Infinity for Unpaid Leave).
- */
 export function getRemainingLeaveDays(balance: LeaveBalance, type: LeaveType): number {
   switch (type) {
     case LeaveType.Annual:
@@ -245,9 +240,6 @@ export function getRemainingLeaveDays(balance: LeaveBalance, type: LeaveType): n
   }
 }
 
-/**
- * Validates a leave request before submission.
- */
 export function validateLeaveSubmission(params: {
   type: LeaveType;
   startDate: string;
@@ -274,9 +266,6 @@ export function validateLeaveSubmission(params: {
   return { valid: true, days, error: null };
 }
 
-/**
- * Applies or reverses approved leave days against an employee's leave balance.
- */
 export function adjustLeaveBalance(
   balance: LeaveBalance,
   type: LeaveType,
@@ -303,7 +292,7 @@ export function adjustLeaveBalance(
 /**
  * Calculates monthly payroll row for an employee.
  * Gross = Base + Housing + Transport + Other
- * Net = Gross + Bonuses - Deductions
+ * Net = Gross - Deductions + Bonuses
  */
 export function calculateEmployeePayroll(
   employee: Employee,
@@ -321,7 +310,7 @@ export function calculateEmployeePayroll(
   const grossSalary = baseSalary + totalAllowances;
   const totalBonuses = bonuses.reduce((sum, item) => sum + item.amountAED, 0);
   const totalDeductions = deductions.reduce((sum, item) => sum + item.amountAED, 0);
-  const netSalary = Math.max(0, grossSalary + totalBonuses - totalDeductions);
+  const netSalary = Math.max(0, grossSalary - totalDeductions + totalBonuses);
 
   return {
     employee,
@@ -340,9 +329,6 @@ export function calculateEmployeePayroll(
   };
 }
 
-/**
- * Determines whether a clock-in ISO timestamp is late relative to workStartTime ("HH:MM") + gracePeriodMinutes.
- */
 export function evaluateLateArrival(
   clockInIso: string,
   workStartTime: string,
@@ -357,6 +343,21 @@ export function evaluateLateArrival(
     return { isLate: true, lateMinutes: diff + gracePeriodMinutes };
   }
   return { isLate: false, lateMinutes: 0 };
+}
+
+export function validateApiBaseUrl(url: string): { valid: boolean; normalized: string; error: string | null } {
+  const trimmed = url.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return { valid: false, normalized: '', error: 'Enter a valid http:// or https:// server URL.' };
+  }
+  if (!/^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?(\/.*)?$/.test(trimmed)) {
+    return {
+      valid: false,
+      normalized: trimmed,
+      error: 'Server URL must start with http:// or https:// (e.g. http://192.168.1.50:8000/api/v1).',
+    };
+  }
+  return { valid: true, normalized: trimmed, error: null };
 }
 
 export function formatAED(amount: number): string {
@@ -434,7 +435,7 @@ export function buildAttendanceCSV(logs: AttendanceLog[], employees: Employee[])
     'Zone',
     'Clock In',
     'Clock Out',
-    'Source',
+    'Device Type',
     'GPS Coordinates',
     'Accuracy (m)',
     'Status',

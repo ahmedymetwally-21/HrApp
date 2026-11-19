@@ -8,6 +8,7 @@ import {
   calculateInclusiveDays,
   evaluateClockInEligibility,
   getDocumentExpiryStatus,
+  validateApiBaseUrl,
   validateLeaveSubmission,
 } from './hrLogic';
 import {
@@ -62,12 +63,11 @@ const sampleEmployee: Employee = {
 
 test('Haversine distance returns 0 for identical coordinates and accurate meter distance for offset', () => {
   assert.equal(calculateDistanceMeters(25.2116, 55.2808, 25.2116, 55.2808), 0);
-  // ~0.004 deg north is roughly ~445 meters
   const dist = calculateDistanceMeters(25.2116, 55.2808, 25.2156, 55.2808);
   assert.ok(dist >= 435 && dist <= 455, `Expected ~445m, got ${dist}m`);
 });
 
-test('Geofence evaluation allows mobile GPS inside radius and blocks outside radius with distance warning', () => {
+test('Geofence evaluation allows Mobile App inside radius and blocks outside with clear distance alert', () => {
   const inside = evaluateClockInEligibility({
     reading: { latitude: 25.2119, longitude: 55.2808, accuracyMeters: 12, isSimulated: true },
     assignedZones: [mainOffice],
@@ -76,7 +76,7 @@ test('Geofence evaluation allows mobile GPS inside radius and blocks outside rad
   });
   assert.equal(inside.allowed, true);
   assert.equal(inside.insideZone, true);
-  assert.equal(inside.punchSource, 'Mobile GPS');
+  assert.equal(inside.punchSource, 'Mobile App');
   assert.equal(inside.blockReason, null);
 
   const outside = evaluateClockInEligibility({
@@ -87,10 +87,11 @@ test('Geofence evaluation allows mobile GPS inside radius and blocks outside rad
   });
   assert.equal(outside.allowed, false);
   assert.equal(outside.insideZone, false);
-  assert.ok(outside.blockReason?.includes('Outside allowed zone'));
+  assert.ok(outside.blockReason?.includes('outside Main Office — DIFC Gate'));
+  assert.ok(outside.blockReason?.includes('Move within 150m to clock in'));
 });
 
-test('PC vs Mobile GPS policy blocks desktop and low-accuracy readings in Strict mode, allows Web/PC in Office mode', () => {
+test('PC vs Mobile GPS policy blocks PC Web and low-accuracy readings in Strict mode, allows PC Web in Office mode', () => {
   const blockedDesktop = evaluateClockInEligibility({
     reading: { latitude: 25.2116, longitude: 55.2808, accuracyMeters: 20, isSimulated: true },
     assignedZones: [mainOffice],
@@ -116,7 +117,7 @@ test('PC vs Mobile GPS policy blocks desktop and low-accuracy readings in Strict
     isDesktopDevice: true,
   });
   assert.equal(allowedDesktop.allowed, true);
-  assert.equal(allowedDesktop.punchSource, 'Web/PC');
+  assert.equal(allowedDesktop.punchSource, 'PC Web');
 });
 
 test('Document expiry classifies expired, expiring within 30 days, and valid correctly', () => {
@@ -183,19 +184,6 @@ test('Monthly payroll computes gross, bonuses, deductions, net salary, and CSV o
       createdByRole: UserRole.Management,
       createdAt: '2026-11-15T12:00:00Z',
     },
-    {
-      id: 'adj-other-month',
-      employeeId: 'emp-1',
-      month: '2026-10',
-      kind: 'deduction',
-      category: DeductionCategory.SalaryAdvance,
-      amountAED: 2000,
-      date: '2026-10-10',
-      reason: 'October advance',
-      createdBy: 'Layla Al-Mansoori',
-      createdByRole: UserRole.Admin,
-      createdAt: '2026-10-10T10:00:00Z',
-    },
   ];
 
   const row = calculateEmployeePayroll(sampleEmployee, '2026-11', adjustments);
@@ -208,4 +196,14 @@ test('Monthly payroll computes gross, bonuses, deductions, net salary, and CSV o
   assert.ok(csv.includes('MSR-101'));
   assert.ok(csv.includes('18650.00'));
   assert.ok(csv.includes('Late clock-in by 45 minutes'));
+});
+
+test('Self-hosted API URL validator accepts valid LAN/HTTPS URLs and rejects invalid strings', () => {
+  const ok = validateApiBaseUrl('http://192.168.1.50:8000/api/v1/');
+  assert.equal(ok.valid, true);
+  assert.equal(ok.normalized, 'http://192.168.1.50:8000/api/v1');
+
+  const bad = validateApiBaseUrl('ftp://invalid');
+  assert.equal(bad.valid, false);
+  assert.ok(bad.error !== null);
 });

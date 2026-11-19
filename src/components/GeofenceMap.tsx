@@ -227,7 +227,7 @@ export const GeofenceMap: React.FC<GeofenceMapProps> = ({
 
   return (
     <div
-      className={`relative w-full ${heightClass} rounded-xl overflow-hidden border border-slate-200 bg-slate-100`}
+      className={`relative w-full ${heightClass} rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900`}
       data-testid="geofence-map"
     >
       <div
@@ -235,7 +235,7 @@ export const GeofenceMap: React.FC<GeofenceMapProps> = ({
         className={`w-full h-full ${interactivePinDrop ? 'cursor-crosshair' : ''}`}
       />
       {interactivePinDrop && (
-        <div className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-lg border border-slate-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-slate-700 shadow-xs">
+        <div className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 shadow-xs">
           Click anywhere on the map to position the geofence pin
         </div>
       )}

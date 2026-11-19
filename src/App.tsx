@@ -12,15 +12,19 @@ import {
   Clock,
   FolderOpen,
   LayoutDashboard,
+  LogOut,
   MapPin,
+  Moon,
   Receipt,
   Search,
   Settings2,
+  Sun,
   Users,
   X,
 } from 'lucide-react';
 import {
   AppSettings,
+  AuthSession,
   ClockInPolicyMode,
   Employee,
   EmployeeDocument,
@@ -32,7 +36,8 @@ import {
   PayrollAdjustment,
   UserRole,
 } from './types/hr';
-import { api } from './services/api';
+import { api, ServerConfig, ServerUnreachableError } from './services/api';
+import { nativeBridge } from './services/nativeBridge';
 import {
   evaluateClockInEligibility,
   getDocumentExpiryStatus,
@@ -44,11 +49,13 @@ import { DashboardView, NavSection } from './components/DashboardView';
 import { EmployeesView } from './components/EmployeesView';
 import { GeofencesSettingsView } from './components/GeofencesSettingsView';
 import { LeavesView } from './components/LeavesView';
-import { OfflineIndicator } from './components/OfflineIndicator';
+import { LoginView } from './components/LoginView';
+import { OfflineScreen } from './components/OfflineScreen';
 import { PayrollView } from './components/PayrollView';
-import { PWAInstallButton } from './components/PWAInstallButton';
 
 type SimPreset = 'live' | 'inside_primary' | 'inside_secondary' | 'outside' | 'low_accuracy';
+
+const THEME_KEY = 'masar_hr_theme_v1';
 
 const ROLE_DEFAULT_EMPLOYEE: Record<UserRole, string> = {
   [UserRole.Employee]: 'emp-omar',
@@ -62,24 +69,74 @@ const ROLE_LABELS: Record<UserRole, string> = {
   [UserRole.Management]: 'Management',
 };
 
+function readInitialTheme(): 'light' | 'dark' {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === 'dark' || stored === 'light') return stored;
+  } catch {
+    // Ignore storage error
+  }
+  return 'light';
+}
+
 export default function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(readInitialTheme);
+  const [serverConfig, setServerConfig] = useState<ServerConfig>(() => api.getServerConfig());
+  const [session, setSession] = useState<AuthSession | null>(() => api.auth.getSession());
   const [db, setDb] = useState<HRDatabase | null>(null);
-  const [activeRole, setActiveRole] = useState<UserRole>(UserRole.Employee);
+
+  const [activeRole, setActiveRole] = useState<UserRole>(
+    () => api.auth.getSession()?.role ?? UserRole.Employee
+  );
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Network / Offline Screen state (Apple Guideline 4.2 native UX)
+  const [networkOnline, setNetworkOnline] = useState<boolean>(() => nativeBridge.getNetworkOnline());
+  const [serverOfflineReason, setServerOfflineReason] = useState<string | null>(null);
+  const [simulatedOffline, setSimulatedOffline] = useState(false);
 
   // Top bar search & notification dropdown
   const [globalQuery, setGlobalQuery] = useState('');
   const [showNotifications, setShowNotifications] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  // GPS & Device Simulation State (supports real browser geolocation + desk simulator)
+  // GPS & Device Simulation State (supports real native/browser GPS + Demo simulator)
   const [simPreset, setSimPreset] = useState<SimPreset>('inside_primary');
   const [simulatedDevice, setSimulatedDevice] = useState<'mobile' | 'desktop'>('mobile');
   const [liveGpsReading, setLiveGpsReading] = useState<GPSReading | null>(null);
   const [liveGpsMessage, setLiveGpsMessage] = useState<string>(
     'Simulator active: Inside DIFC Main Office (±12m)'
   );
+
+  // Apply Tailwind v4 `.dark` class on <html> and persist preference
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // Ignore storage error
+    }
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  }, []);
+
+  // Monitor network connectivity via Capacitor-ready nativeBridge
+  useEffect(() => {
+    return nativeBridge.onNetworkChange((online) => {
+      setNetworkOnline(online);
+      if (online && !simulatedOffline) {
+        setServerOfflineReason(null);
+      }
+    });
+  }, [simulatedOffline]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -92,41 +149,147 @@ export default function App() {
   }, [toast]);
 
   const reloadDb = useCallback(async () => {
-    const data = await api.getDatabase();
-    setDb(data);
+    try {
+      const data = await api.getDatabase();
+      setDb(data);
+      setServerOfflineReason(null);
+    } catch (err) {
+      if (err instanceof ServerUnreachableError) {
+        setServerOfflineReason(err.message);
+      } else {
+        setServerOfflineReason(
+          err instanceof Error ? err.message : 'Unable to reach self-hosted HR server.'
+        );
+      }
+    }
   }, []);
 
+  // Support ?autostart=1 for automated testing directly into Demo Employee workspace
   useEffect(() => {
-    void reloadDb();
-  }, [reloadDb]);
+    if (session) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('autostart') === '1') {
+      void api.auth.demoLogin(UserRole.Employee).then((s) => {
+        setSession(s);
+        setActiveRole(s.role);
+      });
+    }
+  }, [session]);
 
-  // Switch active section cleanly if Employee switches away from Geofences admin view
+  // Load workspace data once signed in
+  useEffect(() => {
+    if (!session) return;
+    void reloadDb();
+  }, [session, serverConfig, reloadDb]);
+
+  // --- Auth & Server Config Handlers ---
+  const handleUpdateServerConfig = (next: ServerConfig) => {
+    const saved = api.saveServerConfig(next);
+    setServerConfig(saved);
+    setServerOfflineReason(null);
+    setSimulatedOffline(false);
+    showToast(
+      saved.useMockApi
+        ? 'Switched to Demo / Local Mode.'
+        : `Connected to Self-Hosted API (${saved.apiBaseUrl}).`
+    );
+  };
+
+  const handleEmailLogin = async (email: string, password: string) => {
+    try {
+      const nextSession = await api.auth.login(email, password);
+      setSession(nextSession);
+      setActiveRole(nextSession.role);
+      setActiveSection('dashboard');
+      setServerOfflineReason(null);
+    } catch (err) {
+      if (err instanceof ServerUnreachableError) {
+        setServerOfflineReason(err.message);
+      }
+      throw err;
+    }
+  };
+
+  const handleDemoRoleLogin = async (role: UserRole) => {
+    const nextSession = await api.auth.demoLogin(role);
+    setSession(nextSession);
+    setActiveRole(role);
+    setActiveSection('dashboard');
+    setServerOfflineReason(null);
+    showToast(`Signed in as ${ROLE_LABELS[role]} (Demo Mode).`);
+  };
+
+  const handleSignOut = async () => {
+    await api.auth.logout();
+    setSession(null);
+    setDb(null);
+    setShowNotifications(false);
+    setGlobalQuery('');
+  };
+
+  const handleRetryConnection = async () => {
+    setSimulatedOffline(false);
+    const onlineNow = nativeBridge.getNetworkOnline();
+    setNetworkOnline(onlineNow);
+    if (!onlineNow) {
+      setServerOfflineReason('Your device is still offline. Check Wi-Fi or mobile data and try again.');
+      return;
+    }
+    const reachable = await api.pingServer();
+    if (!reachable) {
+      setServerOfflineReason(`Cannot reach ${serverConfig.apiBaseUrl}/health. Verify your server is online.`);
+      return;
+    }
+    setServerOfflineReason(null);
+    if (session) {
+      await reloadDb();
+      showToast('Connection restored.');
+    }
+  };
+
+  const handleSwitchToDemoMode = () => {
+    const saved = api.saveServerConfig({ ...serverConfig, useMockApi: true });
+    setServerConfig(saved);
+    setSimulatedOffline(false);
+    setServerOfflineReason(null);
+    setNetworkOnline(true);
+    showToast('Switched to Demo / Local Mode.');
+  };
+
+  // Switch active role in Demo Mode without leaving workspace
   const handleRoleSwitch = (nextRole: UserRole) => {
     setActiveRole(nextRole);
     if (nextRole === UserRole.Employee && activeSection === 'geofences') {
       setActiveSection('dashboard');
     }
     setShowNotifications(false);
+    if (serverConfig.useMockApi) {
+      void api.auth.demoLogin(nextRole).then((s) => setSession(s));
+    }
   };
 
   const currentUser: Employee | null = useMemo(() => {
     if (!db || db.employees.length === 0) return null;
+    if (!serverConfig.useMockApi && session?.userId) {
+      const exact = db.employees.find((e) => e.id === session.userId);
+      if (exact) return exact;
+    }
     const preferredId = ROLE_DEFAULT_EMPLOYEE[activeRole];
     return (
       db.employees.find((e) => e.id === preferredId) ??
       db.employees.find((e) => e.role === activeRole) ??
       db.employees[0]
     );
-  }, [db, activeRole]);
+  }, [db, activeRole, serverConfig.useMockApi, session?.userId]);
 
-  // Compute active GPS reading based on selected simulator preset or live browser geolocation
+  // Compute active GPS reading based on selected simulator preset or live native/browser GPS
   const gpsReading: GPSReading | null = useMemo(() => {
     if (!db || !currentUser) return null;
     const assignedZones = db.geofences.filter((z) => currentUser.assignedZoneIds.includes(z.id));
     const primary = assignedZones[0] ?? db.geofences[0];
     const secondary = db.geofences.find((z) => z.id === 'zone-jafza') ?? assignedZones[1] ?? primary;
 
-    if (simPreset === 'live') {
+    if (simPreset === 'live' || !serverConfig.useMockApi) {
       return liveGpsReading;
     }
     if (!primary) return null;
@@ -166,41 +329,47 @@ export default function App() {
       isSimulated: true,
       label: 'Outside Assigned Zone (~420m)',
     };
-  }, [db, currentUser, simPreset, liveGpsReading]);
+  }, [db, currentUser, simPreset, liveGpsReading, serverConfig.useMockApi]);
 
   const gpsStatusMessage = useMemo(() => {
-    if (simPreset === 'live') return liveGpsMessage;
+    if (simPreset === 'live' || !serverConfig.useMockApi) return liveGpsMessage;
     return gpsReading?.label
       ? `Simulated: ${gpsReading.label} (±${gpsReading.accuracyMeters}m)`
       : 'Simulator ready';
-  }, [simPreset, liveGpsMessage, gpsReading]);
+  }, [simPreset, liveGpsMessage, gpsReading, serverConfig.useMockApi]);
 
-  const handleRequestLiveGPS = () => {
+  const handleRequestLiveGPS = async () => {
     setSimPreset('live');
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      setLiveGpsMessage('Browser Geolocation API unavailable on this device.');
-      return;
-    }
     setLiveGpsMessage('Requesting hardware GPS fix...');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLiveGpsReading({
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracyMeters: pos.coords.accuracy || 25,
-          isSimulated: false,
-          label: 'Live Device GPS',
-        });
-        setLiveGpsMessage(
-          `Live GPS acquired (±${Math.round(pos.coords.accuracy || 25)}m)`
-        );
-      },
-      (err) => {
-        setLiveGpsReading(null);
-        setLiveGpsMessage(`GPS permission error: ${err.message}. Use Simulator to test.`);
-      },
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
-    );
+    try {
+      const pos = await nativeBridge.getCurrentPosition();
+      setLiveGpsReading({
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        accuracyMeters: pos.accuracyMeters,
+        isSimulated: false,
+        label: 'Live Device GPS',
+      });
+      setLiveGpsMessage(`Live GPS acquired (±${Math.round(pos.accuracyMeters)}m)`);
+    } catch (err) {
+      setLiveGpsReading(null);
+      setLiveGpsMessage(
+        `GPS error: ${err instanceof Error ? err.message : 'Unavailable'}. Use Demo Simulator to test.`
+      );
+    }
+  };
+
+  // Wrapper to surface ServerUnreachableError into the native Offline Screen
+  const runMutation = async (fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (err) {
+      if (err instanceof ServerUnreachableError) {
+        setServerOfflineReason(err.message);
+      } else {
+        showToast(err instanceof Error ? err.message : 'Action failed. Please retry.');
+      }
+    }
   };
 
   // --- Data Mutations ---
@@ -217,60 +386,77 @@ export default function App() {
     });
     if (!evalRes.allowed || !evalRes.nearestZone) return;
 
-    await api.attendance.clockIn({
-      employeeId: currentUser.id,
-      zoneId: evalRes.nearestZone.id,
-      zoneName: evalRes.nearestZone.name,
-      latitude: gpsReading.latitude,
-      longitude: gpsReading.longitude,
-      accuracyMeters: gpsReading.accuracyMeters,
-      punchSource: evalRes.punchSource,
+    await runMutation(async () => {
+      await api.attendance.clockIn({
+        employeeId: currentUser.id,
+        zoneId: evalRes.nearestZone!.id,
+        zoneName: evalRes.nearestZone!.name,
+        latitude: gpsReading.latitude,
+        longitude: gpsReading.longitude,
+        accuracyMeters: gpsReading.accuracyMeters,
+        punchSource: evalRes.punchSource,
+      });
+      await reloadDb();
+      const msg = `Clocked in at ${evalRes.nearestZone!.name} (${evalRes.punchSource})`;
+      showToast(msg);
+      void nativeBridge.notifyLocal('Masar HR — Clocked In', msg);
     });
-    await reloadDb();
-    showToast(`Clocked in at ${evalRes.nearestZone.name} (${evalRes.punchSource})`);
   };
 
   const handleClockOut = async (logId: string) => {
     if (!gpsReading) return;
-    await api.attendance.clockOut({
-      logId,
-      latitude: gpsReading.latitude,
-      longitude: gpsReading.longitude,
+    await runMutation(async () => {
+      await api.attendance.clockOut({
+        logId,
+        latitude: gpsReading.latitude,
+        longitude: gpsReading.longitude,
+      });
+      await reloadDb();
+      showToast('Clock-out recorded successfully.');
+      void nativeBridge.notifyLocal('Masar HR — Clocked Out', 'Your shift punch-out has been saved.');
     });
-    await reloadDb();
-    showToast('Clock-out recorded successfully.');
   };
 
   const handleCreateEmployee = async (emp: Omit<Employee, 'id'>) => {
-    await api.employees.create(emp);
-    await reloadDb();
-    showToast(`Added ${emp.fullName} to employee directory.`);
+    await runMutation(async () => {
+      await api.employees.create(emp);
+      await reloadDb();
+      showToast(`Added ${emp.fullName} to employee directory.`);
+    });
   };
 
   const handleUpdateEmployee = async (id: string, patch: Partial<Employee>) => {
-    await api.employees.update(id, patch);
-    await reloadDb();
-    showToast('Employee profile updated.');
+    await runMutation(async () => {
+      await api.employees.update(id, patch);
+      await reloadDb();
+      showToast('Employee profile updated.');
+    });
   };
 
   const handleUploadDocument = async (doc: Omit<EmployeeDocument, 'id' | 'uploadedAt'>) => {
-    await api.documents.upload(doc);
-    await reloadDb();
-    showToast(`${doc.type} uploaded to document vault.`);
+    await runMutation(async () => {
+      await api.documents.upload(doc);
+      await reloadDb();
+      showToast(`${doc.type} uploaded to document vault.`);
+    });
   };
 
   const handleDeleteDocument = async (id: string) => {
-    await api.documents.remove(id);
-    await reloadDb();
-    showToast('Document removed from vault.');
+    await runMutation(async () => {
+      await api.documents.remove(id);
+      await reloadDb();
+      showToast('Document removed from vault.');
+    });
   };
 
   const handleSubmitLeave = async (
     input: Omit<LeaveRequest, 'id' | 'status' | 'submittedAt'>
   ) => {
-    await api.leaves.submit(input);
-    await reloadDb();
-    showToast('Leave request submitted for approval.');
+    await runMutation(async () => {
+      await api.leaves.submit(input);
+      await reloadDb();
+      showToast('Leave request submitted for approval.');
+    });
   };
 
   const handleDecideLeave = async (params: {
@@ -279,55 +465,69 @@ export default function App() {
     comment: string;
   }) => {
     if (!currentUser) return;
-    await api.leaves.decide({
-      leaveId: params.leaveId,
-      status: params.status,
-      reviewerName: currentUser.fullName,
-      reviewerRole: activeRole,
-      comment: params.comment,
+    await runMutation(async () => {
+      await api.leaves.decide({
+        leaveId: params.leaveId,
+        status: params.status,
+        reviewerName: currentUser.fullName,
+        reviewerRole: activeRole,
+        comment: params.comment,
+      });
+      await reloadDb();
+      showToast(`Leave request marked as ${params.status}.`);
     });
-    await reloadDb();
-    showToast(`Leave request marked as ${params.status}.`);
   };
 
   const handleAddAdjustment = async (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => {
-    await api.payroll.addAdjustment(input);
-    await reloadDb();
-    showToast(
-      input.kind === 'deduction'
-        ? 'Salary deduction logged and reflected in monthly payroll.'
-        : 'Bonus added to monthly payroll.'
-    );
+    await runMutation(async () => {
+      await api.payroll.addAdjustment(input);
+      await reloadDb();
+      showToast(
+        input.kind === 'deduction'
+          ? 'Salary deduction logged and reflected in monthly payroll.'
+          : 'Bonus added to monthly payroll.'
+      );
+    });
   };
 
   const handleRemoveAdjustment = async (id: string) => {
-    await api.payroll.removeAdjustment(id);
-    await reloadDb();
-    showToast('Payroll adjustment removed.');
+    await runMutation(async () => {
+      await api.payroll.removeAdjustment(id);
+      await reloadDb();
+      showToast('Payroll adjustment removed.');
+    });
   };
 
   const handleCreateZone = async (zone: Omit<GeofenceZone, 'id'>) => {
-    await api.geofences.create(zone);
-    await reloadDb();
-    showToast(`Geofence "${zone.name}" saved.`);
+    await runMutation(async () => {
+      await api.geofences.create(zone);
+      await reloadDb();
+      showToast(`Geofence "${zone.name}" saved.`);
+    });
   };
 
   const handleUpdateZone = async (id: string, patch: Partial<GeofenceZone>) => {
-    await api.geofences.update(id, patch);
-    await reloadDb();
-    showToast('Geofence updated.');
+    await runMutation(async () => {
+      await api.geofences.update(id, patch);
+      await reloadDb();
+      showToast('Geofence updated.');
+    });
   };
 
   const handleDeleteZone = async (id: string) => {
-    await api.geofences.remove(id);
-    await reloadDb();
-    showToast('Geofence removed.');
+    await runMutation(async () => {
+      await api.geofences.remove(id);
+      await reloadDb();
+      showToast('Geofence removed.');
+    });
   };
 
   const handleUpdateSettings = async (patch: Partial<AppSettings>) => {
-    await api.settings.update(patch);
-    await reloadDb();
-    showToast('Clock-in policy settings updated.');
+    await runMutation(async () => {
+      await api.settings.update(patch);
+      await reloadDb();
+      showToast('Clock-in policy settings updated.');
+    });
   };
 
   const handleResetDemoData = async () => {
@@ -336,10 +536,21 @@ export default function App() {
     showToast('Workspace reset to default sample dataset.');
   };
 
+  const handleRefreshWorkspace = async () => {
+    await reloadDb();
+    showToast('Workspace data refreshed.');
+  };
+
   // --- Notifications (Expiring Docs + Pending Leaves) ---
   const notifications = useMemo(() => {
     if (!db || !currentUser) return [];
-    const items: { id: string; title: string; detail: string; target: NavSection; tone: 'rose' | 'amber' }[] = [];
+    const items: {
+      id: string;
+      title: string;
+      detail: string;
+      target: NavSection;
+      tone: 'rose' | 'amber';
+    }[] = [];
 
     const scopeDocs =
       activeRole === UserRole.Employee
@@ -423,7 +634,12 @@ export default function App() {
   }, [db, globalQuery, activeRole]);
 
   const navItems = useMemo(() => {
-    const base: { id: NavSection; label: string; mobileLabel: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    const base: {
+      id: NavSection;
+      label: string;
+      mobileLabel: string;
+      icon: React.ComponentType<{ className?: string }>;
+    }[] = [
       { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Home', icon: LayoutDashboard },
       { id: 'attendance', label: 'Clock-In & Logs', mobileLabel: 'Clock-In', icon: Clock },
       {
@@ -452,14 +668,43 @@ export default function App() {
     return base;
   }, [activeRole]);
 
-  const mobileNavItems = useMemo(() => {
-    // Keep thumb-friendly bottom nav to 5 crisp items max
-    return navItems.slice(0, 5);
-  }, [navItems]);
+  const mobileNavItems = useMemo(() => navItems.slice(0, 5), [navItems]);
+
+  // 1) Native Offline Mode Screen when network is down, server unreachable, or previewed in Settings
+  const showOfflineScreen = simulatedOffline || !networkOnline || Boolean(serverOfflineReason);
+  if (showOfflineScreen) {
+    return (
+      <OfflineScreen
+        serverUrl={serverConfig.apiBaseUrl}
+        reason={
+          simulatedOffline
+            ? 'Previewing native Offline Mode Screen. Tap Retry Connection to return to your workspace.'
+            : serverOfflineReason ||
+              'Your device is offline. Reconnect to Wi-Fi or mobile data to sync with your company HR server.'
+        }
+        onRetry={handleRetryConnection}
+        onSwitchToDemoMode={!serverConfig.useMockApi ? handleSwitchToDemoMode : undefined}
+      />
+    );
+  }
+
+  // 2) Login Screen when unauthenticated
+  if (!session) {
+    return (
+      <LoginView
+        serverConfig={serverConfig}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onUpdateServerConfig={handleUpdateServerConfig}
+        onEmailLogin={handleEmailLogin}
+        onDemoRoleLogin={handleDemoRoleLogin}
+      />
+    );
+  }
 
   if (!db || !currentUser) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-600 text-sm">
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 text-sm">
         Loading Masar HR workspace...
       </div>
     );
@@ -468,22 +713,22 @@ export default function App() {
   const activeNavTitle = navItems.find((n) => n.id === activeSection)?.label ?? 'Dashboard';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col lg:flex-row">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col lg:flex-row">
       {/* DESKTOP PERSISTENT COLLAPSIBLE SIDEBAR (1024px+) */}
       <aside
         aria-label="Primary navigation"
-        className={`hidden lg:flex lg:flex-col shrink-0 bg-white border-r border-slate-200 transition-[width] duration-200 sticky top-0 h-screen ${
+        className={`hidden lg:flex lg:flex-col shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 transition-[width] duration-200 sticky top-0 h-screen ${
           sidebarCollapsed ? 'w-[76px]' : 'w-[252px]'
         }`}
       >
         {/* Brand Row */}
-        <div className="h-16 px-4 border-b border-slate-200 flex items-center justify-between gap-2">
+        <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-indigo-700 text-white flex items-center justify-center shrink-0">
               <MapPin className="w-4 h-4" />
             </div>
             {!sidebarCollapsed && (
-              <span className="font-display text-base font-bold tracking-tight text-slate-900 whitespace-nowrap truncate">
+              <span className="font-display text-base font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap truncate">
                 Masar HR
               </span>
             )}
@@ -492,7 +737,7 @@ export default function App() {
             type="button"
             onClick={() => setSidebarCollapsed((c) => !c)}
             aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer shrink-0"
           >
             {sidebarCollapsed ? (
               <ChevronRight className="w-4 h-4" />
@@ -516,39 +761,54 @@ export default function App() {
                 aria-current={active ? 'page' : undefined}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap ${
                   active
-                    ? 'bg-indigo-50 text-indigo-800'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-indigo-700' : 'text-slate-400'}`} />
+                <Icon
+                  className={`w-4 h-4 shrink-0 ${
+                    active ? 'text-indigo-700 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'
+                  }`}
+                />
                 {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
               </button>
             );
           })}
         </nav>
 
-        {/* Active Signed-In Profile Footer */}
-        <div className="p-3 border-t border-slate-200">
-          <div className="flex items-center gap-2.5 p-2 rounded-lg bg-slate-50 border border-slate-200/70">
+        {/* Active Signed-In Profile Footer + Sign Out */}
+        <div className="p-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+          <div className="flex items-center gap-2.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200/70 dark:border-slate-800">
             <Avatar src={currentUser.avatarUrl} name={currentUser.fullName} size="sm" />
             {!sidebarCollapsed && (
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold text-slate-900 truncate">
+                <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                   {currentUser.fullName}
                 </p>
-                <p className="text-[11px] text-slate-500 truncate">{ROLE_LABELS[activeRole]}</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {ROLE_LABELS[activeRole]}
+                </p>
               </div>
             )}
           </div>
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            title={sidebarCollapsed ? 'Sign out' : undefined}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5 shrink-0" />
+            {!sidebarCollapsed && <span>Sign Out</span>}
+          </button>
         </div>
       </aside>
 
       {/* MAIN VIEWPORT */}
       <div className="flex-1 min-w-0 flex flex-col">
         {/* DESKTOP TOP HEADER BAR (1024px+) */}
-        <header className="hidden lg:flex h-16 bg-white border-b border-slate-200 px-6 items-center justify-between gap-6 sticky top-0 z-30">
+        <header className="hidden lg:flex h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 items-center justify-between gap-6 sticky top-0 z-30">
           <div className="flex items-center gap-4 min-w-0 flex-1">
-            <h1 className="text-base font-semibold text-slate-900 whitespace-nowrap shrink-0">
+            <h1 className="text-base font-semibold text-slate-900 dark:text-white whitespace-nowrap shrink-0">
               {activeNavTitle}
             </h1>
 
@@ -561,10 +821,10 @@ export default function App() {
                 onChange={(e) => setGlobalQuery(e.target.value)}
                 placeholder="Jump to staff or geofence..."
                 aria-label="Global workspace search"
-                className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50/70 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50/70 dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
               />
               {quickSearchResults.length > 0 && (
-                <div className="absolute left-0 right-0 mt-1.5 rounded-xl border border-slate-200 bg-white shadow-lg py-1 z-40">
+                <div className="absolute left-0 right-0 mt-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg py-1 z-40">
                   {quickSearchResults.map((res) => (
                     <button
                       key={res.id}
@@ -573,10 +833,12 @@ export default function App() {
                         setActiveSection(res.target);
                         setGlobalQuery('');
                       }}
-                      className="w-full px-3 py-2 text-left hover:bg-slate-50 flex flex-col cursor-pointer"
+                      className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800 flex flex-col cursor-pointer"
                     >
-                      <span className="text-xs font-semibold text-slate-900">{res.label}</span>
-                      <span className="text-[11px] text-slate-500">{res.sub}</span>
+                      <span className="text-xs font-semibold text-slate-900 dark:text-white">
+                        {res.label}
+                      </span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">{res.sub}</span>
                     </button>
                   ))}
                 </div>
@@ -584,28 +846,39 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right Controls: Role Switcher + Notifications + PWA Install */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div
-              role="group"
-              aria-label="Switch demo role"
-              className="inline-flex items-center rounded-lg bg-slate-100 p-0.5 border border-slate-200/80"
+          {/* Right Controls: Demo Role Switcher + Theme Toggle + Notifications */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            {serverConfig.useMockApi && (
+              <div
+                role="group"
+                aria-label="Switch demo role"
+                className="inline-flex items-center rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200/80 dark:border-slate-700"
+              >
+                {(Object.values(UserRole) as UserRole[]).map((role) => (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => handleRoleSwitch(role)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      activeRole === role
+                        ? 'bg-white dark:bg-slate-900 text-indigo-800 dark:text-indigo-300 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {ROLE_LABELS[role]}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
             >
-              {(Object.values(UserRole) as UserRole[]).map((role) => (
-                <button
-                  key={role}
-                  type="button"
-                  onClick={() => handleRoleSwitch(role)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    activeRole === role
-                      ? 'bg-white text-indigo-800 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {ROLE_LABELS[role]}
-                </button>
-              ))}
-            </div>
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
 
             <div className="relative">
               <button
@@ -614,7 +887,7 @@ export default function App() {
                 aria-label={`Notifications (${notifications.length} ${
                   notifications.length === 1 ? 'alert' : 'alerts'
                 })`}
-                className="relative p-2 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 cursor-pointer"
+                className="relative p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <Bell className="w-4 h-4" />
                 {notifications.length > 0 && (
@@ -625,24 +898,26 @@ export default function App() {
               </button>
 
               {showNotifications && (
-                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-slate-200 bg-white shadow-xl z-40 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-900">
+                <div className="absolute right-0 mt-2 w-80 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl z-40 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-900 dark:text-white">
                       Workspace Alerts ({notifications.length})
                     </span>
                     <button
                       type="button"
                       onClick={() => setShowNotifications(false)}
                       aria-label="Close notifications"
-                      className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                   {notifications.length === 0 ? (
-                    <p className="p-4 text-xs text-slate-500">All clear — no pending alerts.</p>
+                    <p className="p-4 text-xs text-slate-500 dark:text-slate-400">
+                      All clear — no pending alerts.
+                    </p>
                   ) : (
-                    <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+                    <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
                       {notifications.map((n) => (
                         <button
                           key={n.id}
@@ -651,16 +926,20 @@ export default function App() {
                             setActiveSection(n.target);
                             setShowNotifications(false);
                           }}
-                          className="w-full px-4 py-3 text-left hover:bg-slate-50 transition-colors cursor-pointer"
+                          className="w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                         >
                           <p
                             className={`text-xs font-semibold ${
-                              n.tone === 'rose' ? 'text-rose-700' : 'text-amber-800'
+                              n.tone === 'rose'
+                                ? 'text-rose-700 dark:text-rose-400'
+                                : 'text-amber-800 dark:text-amber-400'
                             }`}
                           >
                             {n.title}
                           </p>
-                          <p className="text-xs text-slate-600 mt-0.5">{n.detail}</p>
+                          <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                            {n.detail}
+                          </p>
                         </button>
                       ))}
                     </div>
@@ -668,50 +947,68 @@ export default function App() {
                 </div>
               )}
             </div>
-
-            <PWAInstallButton />
           </div>
         </header>
 
-        {/* MOBILE COMPACT TOP BAR (< 1024px) — 52px tall (combined with 60px bottom nav = 112px < 15% of 844px) */}
-        <header className="lg:hidden sticky top-0 z-30 h-[52px] bg-white/95 backdrop-blur-md border-b border-slate-200 px-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-indigo-700 text-white flex items-center justify-center shrink-0">
-              <MapPin className="w-3.5 h-3.5" />
+        {/* MOBILE NATIVE TOP BAR (< 1024px) — Apple Guideline 4.2 safe-area padded, compact 52px */}
+        <header className="lg:hidden sticky top-0 z-30 pt-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-3">
+          <div className="h-[52px] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-indigo-700 text-white flex items-center justify-center shrink-0">
+                <MapPin className="w-3.5 h-3.5" />
+              </div>
+              <span className="font-display text-sm font-bold text-slate-900 dark:text-white truncate">
+                Masar HR
+              </span>
             </div>
-            <span className="font-display text-sm font-bold text-slate-900 truncate">
-              Masar HR
-            </span>
-          </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            <select
-              aria-label="Switch user role"
-              value={activeRole}
-              onChange={(e) => handleRoleSwitch(e.target.value as UserRole)}
-              className="h-9 px-2 text-xs font-medium border border-slate-200 rounded-lg bg-slate-50 text-slate-800"
-            >
-              <option value={UserRole.Employee}>Employee</option>
-              <option value={UserRole.Admin}>Admin (HR)</option>
-              <option value={UserRole.Management}>Management</option>
-            </select>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {serverConfig.useMockApi && (
+                <select
+                  aria-label="Switch user role"
+                  value={activeRole}
+                  onChange={(e) => handleRoleSwitch(e.target.value as UserRole)}
+                  className="h-9 px-2 text-xs font-medium border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                >
+                  <option value={UserRole.Employee}>Employee</option>
+                  <option value={UserRole.Admin}>Admin (HR)</option>
+                  <option value={UserRole.Management}>Management</option>
+                </select>
+              )}
 
-            {activeRole !== UserRole.Employee && (
               <button
                 type="button"
-                onClick={() => setActiveSection('geofences')}
-                aria-label="Geofences and Policy Settings"
-                className={`min-h-[40px] min-w-[40px] rounded-lg border flex items-center justify-center cursor-pointer ${
-                  activeSection === 'geofences'
-                    ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
-                    : 'border-slate-200 bg-white text-slate-600'
-                }`}
+                onClick={toggleTheme}
+                aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                className="h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center cursor-pointer"
               >
-                <Settings2 className="w-4 h-4" />
+                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
               </button>
-            )}
 
-            <PWAInstallButton compact />
+              {activeRole !== UserRole.Employee && (
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('geofences')}
+                  aria-label="Geofences and Policy Settings"
+                  className={`h-9 w-9 rounded-lg border flex items-center justify-center cursor-pointer ${
+                    activeSection === 'geofences'
+                      ? 'border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  <Settings2 className="w-4 h-4" />
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => void handleSignOut()}
+                aria-label="Sign out"
+                className="h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </header>
 
@@ -733,6 +1030,7 @@ export default function App() {
               onNavigate={setActiveSection}
               onClockIn={handleClockIn}
               onClockOut={handleClockOut}
+              onRefresh={handleRefreshWorkspace}
               onQuickLeaveDecision={(leaveId, status) =>
                 handleDecideLeave({
                   leaveId,
@@ -750,6 +1048,7 @@ export default function App() {
             <AttendanceView
               currentUser={currentUser}
               activeRole={activeRole}
+              isDemoMode={serverConfig.useMockApi}
               employees={db.employees}
               geofences={db.geofences}
               attendance={db.attendance}
@@ -760,7 +1059,8 @@ export default function App() {
               simulatedDevice={simulatedDevice}
               onChangeSimPreset={setSimPreset}
               onChangeSimulatedDevice={setSimulatedDevice}
-              onRequestLiveGPS={handleRequestLiveGPS}
+              onRequestLiveGPS={() => void handleRequestLiveGPS()}
+              onRefresh={handleRefreshWorkspace}
               onClockIn={handleClockIn}
               onClockOut={handleClockOut}
             />
@@ -809,6 +1109,9 @@ export default function App() {
               geofences={db.geofences}
               employees={db.employees}
               settings={db.settings}
+              serverConfig={serverConfig}
+              onUpdateServerConfig={handleUpdateServerConfig}
+              onSimulateOffline={() => setSimulatedOffline(true)}
               onCreateZone={handleCreateZone}
               onUpdateZone={handleUpdateZone}
               onDeleteZone={handleDeleteZone}
@@ -822,36 +1125,40 @@ export default function App() {
         </main>
       </div>
 
-      {/* MOBILE THUMB-FRIENDLY BOTTOM NAVIGATION BAR (< 1024px) — 60px tall */}
+      {/* MOBILE THUMB-FRIENDLY BOTTOM NAVIGATION BAR (< 1024px) — 60px + safe-area inset */}
       <nav
         aria-label="Mobile navigation"
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 h-[60px] bg-white/95 backdrop-blur-md border-t border-slate-200 grid grid-cols-5 items-center pb-safe"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800"
       >
-        {mobileNavItems.map((item) => {
-          const Icon = item.icon;
-          const active = activeSection === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setActiveSection(item.id)}
-              aria-current={active ? 'page' : undefined}
-              className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer ${
-                active ? 'text-indigo-700' : 'text-slate-500 hover:text-slate-900'
-              }`}
-            >
-              <Icon className="w-5 h-5" />
-              <span className="text-[10px] font-medium leading-none">{item.mobileLabel}</span>
-            </button>
-          );
-        })}
+        <div className="h-[60px] grid grid-cols-5 items-center">
+          {mobileNavItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeSection === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveSection(item.id)}
+                aria-current={active ? 'page' : undefined}
+                className={`min-h-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer ${
+                  active
+                    ? 'text-indigo-700 dark:text-indigo-400'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Icon className="w-5 h-5" />
+                <span className="text-[10px] font-medium leading-none">{item.mobileLabel}</span>
+              </button>
+            );
+          })}
+        </div>
       </nav>
 
       {/* Action Feedback Toast */}
       {toast && (
         <div
           role="status"
-          className="fixed top-16 inset-x-4 lg:top-auto lg:left-auto lg:bottom-6 lg:right-6 z-50 rounded-xl bg-slate-900 text-white px-4 py-2.5 text-xs font-medium shadow-lg flex items-center justify-between gap-3"
+          className="fixed top-16 inset-x-4 lg:top-auto lg:left-auto lg:bottom-6 lg:right-6 z-50 rounded-xl bg-slate-900 dark:bg-slate-800 border border-slate-800 dark:border-slate-700 text-white px-4 py-2.5 text-xs font-medium shadow-lg flex items-center justify-between gap-3"
         >
           <span>{toast}</span>
           <button
@@ -864,8 +1171,6 @@ export default function App() {
           </button>
         </div>
       )}
-
-      <OfflineIndicator />
     </div>
   );
 }

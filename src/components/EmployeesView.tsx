@@ -25,6 +25,7 @@ import {
   GeofenceZone,
   UserRole,
 } from '../types/hr';
+import { nativeBridge } from '../services/nativeBridge';
 import { formatAED, formatShortDate, getDocumentExpiryStatus } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 
@@ -47,6 +48,9 @@ const DOC_TYPES: DocumentType[] = [
   DocumentType.LaborCard,
   DocumentType.EmploymentContract,
 ];
+
+const INPUT_CLASS =
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
 
 export const EmployeesView: React.FC<EmployeesViewProps> = ({
   currentUser,
@@ -269,28 +273,20 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     }));
   };
 
-  const handleFilePicked = (file: File | null) => {
+  const handleFilePicked = async (file: File | null) => {
     if (!file) return;
-    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-    if (!allowed.includes(file.type)) {
-      setDocFormError('Please upload a PDF, JPG, or PNG file.');
-      return;
-    }
-    if (file.size > 3 * 1024 * 1024) {
-      setDocFormError('File size must be under 3 MB for local preview storage.');
-      return;
-    }
     setDocFormError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
+    try {
+      const captured = await nativeBridge.readFileAsDocument(file);
       setDocForm((prev) => ({
         ...prev,
-        fileName: file.name,
-        fileType: file.type,
-        fileDataUrl: typeof reader.result === 'string' ? reader.result : '',
+        fileName: captured.fileName,
+        fileType: captured.mimeType,
+        fileDataUrl: captured.dataUrl,
       }));
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      setDocFormError(err instanceof Error ? err.message : 'Unable to read file.');
+    }
   };
 
   const handleUploadDoc = async (e: React.FormEvent) => {
@@ -336,10 +332,10 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       {/* Header & Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-slate-900">
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
             {isEmployeeOnly ? 'My Profile & Document Vault' : 'Employee Directory & Document Vault'}
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             {isEmployeeOnly
               ? 'View assigned work zones, employment details, and compliance document expiry dates.'
               : 'Manage workforce profiles, geofence assignments, salaries, and UAE compliance documents.'}
@@ -359,7 +355,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
 
       {/* Filters (Admin / Management) */}
       {!isEmployeeOnly && (
-        <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="relative flex-1 max-w-md">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
@@ -368,7 +364,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search by name, ID, title, or email..."
               aria-label="Search employees"
-              className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
             />
           </div>
 
@@ -377,7 +373,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               value={deptFilter}
               onChange={(e) => setDeptFilter(e.target.value)}
               aria-label="Filter by department"
-              className="px-3 py-2 text-xs font-medium border border-slate-200 rounded-lg bg-white text-slate-700"
+              className="px-3 py-2 text-xs font-medium border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200"
             >
               <option value="all">All Departments</option>
               {departments.map((d) => (
@@ -387,14 +383,14 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               ))}
             </select>
 
-            <div className="inline-flex rounded-lg bg-slate-100 p-0.5">
+            <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5">
               <button
                 type="button"
                 onClick={() => setDocAlertFilter('all')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                   docAlertFilter === 'all'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 All Staff ({employees.length})
@@ -404,8 +400,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 onClick={() => setDocAlertFilter('alerts')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                   docAlertFilter === 'alerts'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
                 Expiring Docs
@@ -416,9 +412,9 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       )}
 
       {/* Employee Directory Table (Desktop) */}
-      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
         {visibleEmployees.length === 0 ? (
-          <div className="p-10 text-center text-sm text-slate-500">
+          <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
             No employees match your filter criteria.
           </div>
         ) : (
@@ -426,7 +422,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
             <div className="hidden lg:block overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-medium text-slate-500">
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/60 text-xs font-medium text-slate-500 dark:text-slate-400">
                     <th className="py-3 px-4">Employee</th>
                     <th className="py-3 px-4">Department & Role</th>
                     <th className="py-3 px-4">Contact</th>
@@ -435,7 +431,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 text-sm">
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
                   {visibleEmployees.map((emp) => {
                     const docStats = getEmployeeDocStats(emp.id);
                     const zones = emp.assignedZoneIds
@@ -444,52 +440,52 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     return (
                       <tr
                         key={emp.id}
-                        className={`hover:bg-slate-50/70 transition-colors ${!emp.active ? 'opacity-60' : ''}`}
+                        className={`hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors ${!emp.active ? 'opacity-60' : ''}`}
                       >
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-3">
                             <Avatar src={emp.avatarUrl} name={emp.fullName} size="md" />
                             <div>
-                              <div className="font-semibold text-slate-900 flex items-center gap-2">
+                              <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-2">
                                 <span>{emp.fullName}</span>
                                 {!emp.active && (
-                                  <span className="text-[11px] font-medium text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
+                                  <span className="text-[11px] font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 px-1.5 py-0.5 rounded">
                                     Inactive
                                   </span>
                                 )}
                               </div>
-                              <div className="text-xs text-slate-500 font-mono">
+                              <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">
                                 {emp.employeeCode} &middot; Joined {formatShortDate(emp.joinDate)}
                               </div>
                             </div>
                           </div>
                         </td>
                         <td className="py-3.5 px-4">
-                          <div className="font-medium text-slate-800">{emp.jobTitle}</div>
-                          <div className="text-xs text-slate-500 capitalize">
+                          <div className="font-medium text-slate-800 dark:text-slate-200">{emp.jobTitle}</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 capitalize">
                             {emp.department} &middot; {emp.role === UserRole.Admin ? 'HR Admin' : emp.role}
                           </div>
                         </td>
-                        <td className="py-3.5 px-4 text-xs text-slate-600 space-y-0.5">
+                        <td className="py-3.5 px-4 text-xs text-slate-600 dark:text-slate-300 space-y-0.5">
                           <div>{emp.email}</div>
-                          <div className="font-mono text-slate-500">{emp.phone}</div>
+                          <div className="font-mono text-slate-500 dark:text-slate-400">{emp.phone}</div>
                         </td>
-                        <td className="py-3.5 px-4 text-xs text-slate-700 max-w-[200px]">
+                        <td className="py-3.5 px-4 text-xs text-slate-700 dark:text-slate-300 max-w-[200px]">
                           {zones.length > 0 ? zones.join(' · ') : 'Unassigned'}
                         </td>
                         <td className="py-3.5 px-4 whitespace-nowrap">
                           {docStats.expired > 0 ? (
-                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-md">
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 px-2.5 py-1 rounded-md">
                               <AlertTriangle className="w-3.5 h-3.5" />
                               {docStats.expired} Expired
                             </span>
                           ) : docStats.expiringSoon > 0 ? (
-                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md">
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 px-2.5 py-1 rounded-md">
                               <AlertTriangle className="w-3.5 h-3.5" />
                               {docStats.expiringSoon} Expiring &le; 30d
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               {docStats.total} Compliant
                             </span>
@@ -500,7 +496,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                             <button
                               type="button"
                               onClick={() => setVaultEmployeeId(emp.id)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 hover:text-indigo-700 cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer"
                             >
                               <FolderOpen className="w-3.5 h-3.5" />
                               Docs ({docStats.total})
@@ -511,7 +507,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                                   type="button"
                                   onClick={() => openEditEmployee(emp)}
                                   aria-label={`Edit ${emp.fullName}`}
-                                  className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-indigo-700 cursor-pointer"
+                                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer"
                                 >
                                   <Edit3 className="w-3.5 h-3.5" />
                                 </button>
@@ -521,7 +517,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                                   aria-label={
                                     emp.active ? `Deactivate ${emp.fullName}` : `Activate ${emp.fullName}`
                                   }
-                                  className="p-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-rose-700 cursor-pointer"
+                                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-rose-700 dark:hover:text-rose-400 cursor-pointer"
                                 >
                                   {emp.active ? (
                                     <UserX className="w-3.5 h-3.5" />
@@ -541,7 +537,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
             </div>
 
             {/* Mobile & Tablet Profile Cards */}
-            <div className="lg:hidden divide-y divide-slate-100">
+            <div className="lg:hidden divide-y divide-slate-100 dark:divide-slate-800">
               {visibleEmployees.map((emp) => {
                 const docStats = getEmployeeDocStats(emp.id);
                 const zones = emp.assignedZoneIds
@@ -553,33 +549,33 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                       <div className="flex items-center gap-3 min-w-0">
                         <Avatar src={emp.avatarUrl} name={emp.fullName} size="lg" />
                         <div className="min-w-0">
-                          <h3 className="text-sm font-semibold text-slate-900 truncate">
+                          <h3 className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                             {emp.fullName}
                           </h3>
-                          <p className="text-xs text-slate-600 truncate">
+                          <p className="text-xs text-slate-600 dark:text-slate-300 truncate">
                             {emp.jobTitle} &middot; {emp.department}
                           </p>
-                          <p className="text-[11px] font-mono text-slate-500 mt-0.5">
+                          <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5">
                             {emp.employeeCode} &middot; Joined {formatShortDate(emp.joinDate)}
                           </p>
                         </div>
                       </div>
                       {docStats.expired > 0 ? (
-                        <span className="text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded shrink-0">
+                        <span className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 px-2 py-0.5 rounded shrink-0">
                           {docStats.expired} Expired
                         </span>
                       ) : docStats.expiringSoon > 0 ? (
-                        <span className="text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded shrink-0">
+                        <span className="text-xs font-medium text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 px-2 py-0.5 rounded shrink-0">
                           {docStats.expiringSoon} Expiring
                         </span>
                       ) : (
-                        <span className="text-xs font-medium text-emerald-700 shrink-0">
+                        <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400 shrink-0">
                           Compliant
                         </span>
                       )}
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs text-slate-600">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs text-slate-600 dark:text-slate-300">
                       <div className="flex items-center gap-1.5 truncate">
                         <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                         <span className="truncate">{emp.email}</span>
@@ -600,7 +596,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setVaultEmployeeId(emp.id)}
-                        className="flex-1 min-h-[40px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                        className="flex-1 min-h-[40px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
                       >
                         <FolderOpen className="w-3.5 h-3.5" />
                         Open Document Vault ({docStats.total})
@@ -609,7 +605,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                         <button
                           type="button"
                           onClick={() => openEditEmployee(emp)}
-                          className="min-h-[40px] px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                          className="min-h-[40px] px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
                         >
                           Edit
                         </button>
@@ -627,16 +623,16 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       {vaultEmployee && (
         <section
           aria-label="Employee Document Vault"
-          className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6 space-y-5"
+          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 sm:p-6 space-y-5"
         >
-          <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+          <div className="flex items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
             <div className="flex items-center gap-3">
               <Avatar src={vaultEmployee.avatarUrl} name={vaultEmployee.fullName} size="md" />
               <div>
-                <h3 className="text-base font-semibold text-slate-900">
+                <h3 className="text-base font-semibold text-slate-900 dark:text-white">
                   Document Vault — {vaultEmployee.fullName}
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
                   {vaultEmployee.employeeCode} &middot; {vaultEmployee.jobTitle} &middot; Gross{' '}
                   <span className="font-mono tabular-nums">
                     {formatAED(
@@ -654,7 +650,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 type="button"
                 onClick={() => setVaultEmployeeId(null)}
                 aria-label="Close document vault"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -663,7 +659,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
 
           {/* Document Cards */}
           {vaultDocs.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">
+            <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-700 p-8 text-center text-sm text-slate-500 dark:text-slate-400">
               No compliance documents uploaded yet for {vaultEmployee.fullName}.
             </div>
           ) : (
@@ -673,47 +669,55 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 return (
                   <div
                     key={doc.id}
-                    className="rounded-xl border border-slate-200 p-4 flex flex-col justify-between gap-3 bg-slate-50/40"
+                    className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 flex flex-col justify-between gap-3 bg-slate-50/40 dark:bg-slate-950/60"
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          <FileText className="w-4 h-4 text-indigo-600 shrink-0" />
-                          <span className="text-sm font-semibold text-slate-900 truncate">
+                          <FileText className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                          <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                             {doc.type}
                           </span>
                         </div>
                         {status === 'expired' ? (
-                          <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded whitespace-nowrap shrink-0">
+                          <span className="text-[11px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 px-2 py-0.5 rounded whitespace-nowrap shrink-0">
                             Expired ({Math.abs(daysRemaining)}d ago)
                           </span>
                         ) : status === 'expiring_soon' ? (
-                          <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded whitespace-nowrap shrink-0">
+                          <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 px-2 py-0.5 rounded whitespace-nowrap shrink-0">
                             Expires in {daysRemaining}d
                           </span>
                         ) : (
-                          <span className="text-[11px] font-medium text-emerald-700 whitespace-nowrap shrink-0">
+                          <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400 whitespace-nowrap shrink-0">
                             Valid
                           </span>
                         )}
                       </div>
 
-                      <p className="mt-2 text-xs font-mono text-slate-700">No: {doc.documentNumber}</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        Issued {formatShortDate(doc.issueDate)} &middot; Expires{' '}
-                        <strong className="text-slate-700">{formatShortDate(doc.expiryDate)}</strong>
+                      <p className="mt-2 text-xs font-mono text-slate-700 dark:text-slate-300">
+                        No: {doc.documentNumber}
                       </p>
-                      <p className="mt-1 text-xs text-slate-500 truncate">{doc.fileName}</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        Issued {formatShortDate(doc.issueDate)} &middot; Expires{' '}
+                        <strong className="text-slate-700 dark:text-slate-200">
+                          {formatShortDate(doc.expiryDate)}
+                        </strong>
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 truncate">
+                        {doc.fileName}
+                      </p>
                       {doc.notes && (
-                        <p className="mt-1.5 text-xs text-slate-600 italic">{doc.notes}</p>
+                        <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-300 italic">
+                          {doc.notes}
+                        </p>
                       )}
                     </div>
 
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/70">
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/70 dark:border-slate-800">
                       <button
                         type="button"
                         onClick={() => setPreviewDoc(doc)}
-                        className="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                        className="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 dark:text-indigo-400 hover:text-indigo-900 dark:hover:text-indigo-300 cursor-pointer"
                       >
                         <Eye className="w-3.5 h-3.5" />
                         Preview
@@ -723,7 +727,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                           type="button"
                           onClick={() => onDeleteDocument(doc.id)}
                           aria-label={`Delete ${doc.type} document`}
-                          className="inline-flex items-center gap-1 text-xs font-medium text-rose-600 hover:text-rose-800 cursor-pointer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:text-rose-800 dark:hover:text-rose-300 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           Remove
@@ -738,24 +742,29 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
 
           {/* Drag-and-Drop Document Uploader (Admin Only) */}
           {isAdmin && (
-            <form onSubmit={handleUploadDoc} className="pt-4 border-t border-slate-200 space-y-4">
-              <h4 className="text-sm font-semibold text-slate-900">Upload New Employee Document</h4>
+            <form onSubmit={handleUploadDoc} className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-4">
+              <h4 className="text-sm font-semibold text-slate-900 dark:text-white">
+                Upload New Employee Document
+              </h4>
               {docFormError && (
-                <p role="alert" className="text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                <p
+                  role="alert"
+                  className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-lg px-3 py-2"
+                >
                   {docFormError}
                 </p>
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div>
-                  <label htmlFor="doc-type" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="doc-type" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Document Type
                   </label>
                   <select
                     id="doc-type"
                     value={docForm.type}
                     onChange={(e) => setDocForm((p) => ({ ...p, type: e.target.value as DocumentType }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    className={INPUT_CLASS}
                   >
                     {DOC_TYPES.map((t) => (
                       <option key={t} value={t}>
@@ -766,7 +775,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 </div>
 
                 <div>
-                  <label htmlFor="doc-num" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="doc-num" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Document Number
                   </label>
                   <input
@@ -775,12 +784,12 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     value={docForm.documentNumber}
                     onChange={(e) => setDocForm((p) => ({ ...p, documentNumber: e.target.value }))}
                     placeholder="e.g. 784-1994-..."
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
 
                 <div>
-                  <label htmlFor="doc-issue" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="doc-issue" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Issue Date
                   </label>
                   <input
@@ -788,12 +797,12 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     type="date"
                     value={docForm.issueDate}
                     onChange={(e) => setDocForm((p) => ({ ...p, issueDate: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
 
                 <div>
-                  <label htmlFor="doc-expiry" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="doc-expiry" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Expiry Date
                   </label>
                   <input
@@ -801,7 +810,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     type="date"
                     value={docForm.expiryDate}
                     onChange={(e) => setDocForm((p) => ({ ...p, expiryDate: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
               </div>
@@ -816,28 +825,30 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragActive(false);
-                  handleFilePicked(e.dataTransfer.files?.[0] ?? null);
+                  void handleFilePicked(e.dataTransfer.files?.[0] ?? null);
                 }}
                 className={`rounded-xl border-2 border-dashed p-5 text-center transition-colors ${
                   dragActive
-                    ? 'border-indigo-500 bg-indigo-50/50'
-                    : 'border-slate-200 bg-slate-50/60 hover:border-slate-300'
+                    ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/30'
+                    : 'border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-950/60 hover:border-slate-300 dark:hover:border-slate-600'
                 }`}
               >
-                <UploadCloud className="w-6 h-6 text-indigo-600 mx-auto" />
-                <p className="mt-2 text-sm font-medium text-slate-800">
+                <UploadCloud className="w-6 h-6 text-indigo-600 dark:text-indigo-400 mx-auto" />
+                <p className="mt-2 text-sm font-medium text-slate-800 dark:text-slate-200">
                   {docForm.fileName
                     ? `Selected: ${docForm.fileName}`
                     : 'Drag and drop PDF, JPG, or PNG here'}
                 </p>
-                <p className="text-xs text-slate-500 mt-0.5">or click below to browse from your computer</p>
-                <label className="mt-3 inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  or tap below to browse or capture from device camera
+                </p>
+                <label className="mt-3 inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer">
                   Choose File
                   <input
                     type="file"
                     accept=".pdf,.jpg,.jpeg,.png"
                     className="sr-only"
-                    onChange={(e) => handleFilePicked(e.target.files?.[0] ?? null)}
+                    onChange={(e) => void handleFilePicked(e.target.files?.[0] ?? null)}
                   />
                 </label>
               </div>
@@ -849,7 +860,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                   onChange={(e) => setDocForm((p) => ({ ...p, notes: e.target.value }))}
                   placeholder="Optional compliance notes (e.g. renewal tracking number)..."
                   aria-label="Document compliance notes"
-                  className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  className={`flex-1 ${INPUT_CLASS}`}
                 />
                 <button
                   type="submit"
@@ -866,18 +877,18 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       {/* Document Preview Modal */}
       {previewDoc && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="preview-doc-title"
         >
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 shadow-xl">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h3 id="preview-doc-title" className="text-base font-semibold text-slate-900">
+                <h3 id="preview-doc-title" className="text-base font-semibold text-slate-900 dark:text-white">
                   {previewDoc.type}
                 </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                   {previewDoc.fileName} &middot; No. {previewDoc.documentNumber}
                 </p>
               </div>
@@ -885,13 +896,13 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 type="button"
                 onClick={() => setPreviewDoc(null)}
                 aria-label="Close document preview"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="mt-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-4">
               {previewDoc.fileDataUrl && previewDoc.fileType.startsWith('image/') ? (
                 <img
                   src={previewDoc.fileDataUrl}
@@ -900,9 +911,9 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 />
               ) : (
                 <div className="py-8 text-center space-y-2">
-                  <FileText className="w-10 h-10 text-indigo-600 mx-auto" />
-                  <p className="text-sm font-medium text-slate-900">{previewDoc.fileName}</p>
-                  <p className="text-xs text-slate-500">
+                  <FileText className="w-10 h-10 text-indigo-600 dark:text-indigo-400 mx-auto" />
+                  <p className="text-sm font-medium text-slate-900 dark:text-white">{previewDoc.fileName}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
                     Issue Date: {formatShortDate(previewDoc.issueDate)} &middot; Expiry Date:{' '}
                     {formatShortDate(previewDoc.expiryDate)}
                   </p>
@@ -923,7 +934,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               <button
                 type="button"
                 onClick={() => setPreviewDoc(null)}
-                className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
               >
                 Close
               </button>
@@ -935,21 +946,21 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       {/* Add / Edit Employee Modal (Admin) */}
       {showEmpModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto"
           role="dialog"
           aria-modal="true"
           aria-labelledby="emp-modal-title"
         >
-          <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-6 shadow-xl my-8">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-4">
-              <h3 id="emp-modal-title" className="text-lg font-semibold text-slate-900">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl my-8">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+              <h3 id="emp-modal-title" className="text-lg font-semibold text-slate-900 dark:text-white">
                 {editingEmp ? `Edit Employee — ${editingEmp.fullName}` : 'Add New Employee'}
               </h3>
               <button
                 type="button"
                 onClick={() => setShowEmpModal(false)}
                 aria-label="Close employee modal"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -957,14 +968,17 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
 
             <form onSubmit={handleSaveEmployee} className="mt-4 space-y-4">
               {empFormError && (
-                <p role="alert" className="text-xs font-medium text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                <p
+                  role="alert"
+                  className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-lg px-3 py-2"
+                >
                   {empFormError}
                 </p>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
-                  <label htmlFor="emp-name" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-name" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Full Name
                   </label>
                   <input
@@ -973,11 +987,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     required
                     value={empForm.fullName}
                     onChange={(e) => setEmpForm((p) => ({ ...p, fullName: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
                 <div>
-                  <label htmlFor="emp-code" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-code" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Employee ID
                   </label>
                   <input
@@ -986,11 +1000,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     required
                     value={empForm.employeeCode}
                     onChange={(e) => setEmpForm((p) => ({ ...p, employeeCode: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                    className={`${INPUT_CLASS} font-mono`}
                   />
                 </div>
                 <div>
-                  <label htmlFor="emp-email" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-email" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Work Email
                   </label>
                   <input
@@ -999,11 +1013,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     required
                     value={empForm.email}
                     onChange={(e) => setEmpForm((p) => ({ ...p, email: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
                 <div>
-                  <label htmlFor="emp-phone" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-phone" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Phone Number
                   </label>
                   <input
@@ -1011,11 +1025,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     type="text"
                     value={empForm.phone}
                     onChange={(e) => setEmpForm((p) => ({ ...p, phone: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-lg"
+                    className={`${INPUT_CLASS} font-mono`}
                   />
                 </div>
                 <div>
-                  <label htmlFor="emp-dept" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-dept" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Department
                   </label>
                   <input
@@ -1024,11 +1038,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     required
                     value={empForm.department}
                     onChange={(e) => setEmpForm((p) => ({ ...p, department: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
                 <div>
-                  <label htmlFor="emp-title" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-title" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     Job Title
                   </label>
                   <input
@@ -1037,18 +1051,18 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     required
                     value={empForm.jobTitle}
                     onChange={(e) => setEmpForm((p) => ({ ...p, jobTitle: e.target.value }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                    className={INPUT_CLASS}
                   />
                 </div>
                 <div>
-                  <label htmlFor="emp-role" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-role" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     System Role
                   </label>
                   <select
                     id="emp-role"
                     value={empForm.role}
                     onChange={(e) => setEmpForm((p) => ({ ...p, role: e.target.value as UserRole }))}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    className={INPUT_CLASS}
                   >
                     <option value={UserRole.Employee}>Employee</option>
                     <option value={UserRole.Admin}>Admin (HR)</option>
@@ -1056,7 +1070,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                   </select>
                 </div>
                 <div>
-                  <label htmlFor="emp-policy" className="block text-xs font-medium text-slate-700 mb-1">
+                  <label htmlFor="emp-policy" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                     PC vs Mobile Clock-In Policy
                   </label>
                   <select
@@ -1068,7 +1082,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                         clockInPolicyOverride: e.target.value as ClockInPolicyMode | 'inherit',
                       }))
                     }
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    className={INPUT_CLASS}
                   >
                     <option value="inherit">Use Global Company Policy</option>
                     <option value={ClockInPolicyMode.StrictMobileGPS}>Strict Mobile GPS Only</option>
@@ -1078,13 +1092,13 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               </div>
 
               {/* Salary Structure (AED) */}
-              <div className="pt-3 border-t border-slate-200">
-                <p className="text-xs font-semibold text-slate-800 mb-2.5">
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
+                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 mb-2.5">
                   Monthly Compensation Structure (AED)
                 </p>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div>
-                    <label htmlFor="sal-base" className="block text-xs text-slate-600 mb-1">
+                    <label htmlFor="sal-base" className="block text-xs text-slate-600 dark:text-slate-400 mb-1">
                       Base Salary
                     </label>
                     <input
@@ -1093,11 +1107,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                       min={0}
                       value={empForm.baseSalary}
                       onChange={(e) => setEmpForm((p) => ({ ...p, baseSalary: Number(e.target.value) }))}
-                      className="w-full px-3 py-1.5 text-sm font-mono border border-slate-200 rounded-lg"
+                      className={`${INPUT_CLASS} font-mono py-1.5`}
                     />
                   </div>
                   <div>
-                    <label htmlFor="sal-housing" className="block text-xs text-slate-600 mb-1">
+                    <label htmlFor="sal-housing" className="block text-xs text-slate-600 dark:text-slate-400 mb-1">
                       Housing
                     </label>
                     <input
@@ -1108,11 +1122,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                       onChange={(e) =>
                         setEmpForm((p) => ({ ...p, housingAllowance: Number(e.target.value) }))
                       }
-                      className="w-full px-3 py-1.5 text-sm font-mono border border-slate-200 rounded-lg"
+                      className={`${INPUT_CLASS} font-mono py-1.5`}
                     />
                   </div>
                   <div>
-                    <label htmlFor="sal-transport" className="block text-xs text-slate-600 mb-1">
+                    <label htmlFor="sal-transport" className="block text-xs text-slate-600 dark:text-slate-400 mb-1">
                       Transport
                     </label>
                     <input
@@ -1123,11 +1137,11 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                       onChange={(e) =>
                         setEmpForm((p) => ({ ...p, transportAllowance: Number(e.target.value) }))
                       }
-                      className="w-full px-3 py-1.5 text-sm font-mono border border-slate-200 rounded-lg"
+                      className={`${INPUT_CLASS} font-mono py-1.5`}
                     />
                   </div>
                   <div>
-                    <label htmlFor="sal-other" className="block text-xs text-slate-600 mb-1">
+                    <label htmlFor="sal-other" className="block text-xs text-slate-600 dark:text-slate-400 mb-1">
                       Other
                     </label>
                     <input
@@ -1138,15 +1152,15 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                       onChange={(e) =>
                         setEmpForm((p) => ({ ...p, otherAllowance: Number(e.target.value) }))
                       }
-                      className="w-full px-3 py-1.5 text-sm font-mono border border-slate-200 rounded-lg"
+                      className={`${INPUT_CLASS} font-mono py-1.5`}
                     />
                   </div>
                 </div>
               </div>
 
               {/* Assigned Geofence Locations */}
-              <div className="pt-3 border-t border-slate-200">
-                <p className="text-xs font-semibold text-slate-800 mb-2">
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
+                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 mb-2">
                   Assigned Geofence Locations
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1157,29 +1171,31 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                         key={zone.id}
                         className={`flex items-center gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
                           checked
-                            ? 'border-indigo-300 bg-indigo-50/50 text-indigo-950'
-                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                            ? 'border-indigo-300 dark:border-indigo-700 bg-indigo-50/50 dark:bg-indigo-950/40 text-indigo-950 dark:text-indigo-200'
+                            : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
                         }`}
                       >
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={() => toggleZoneAssignment(zone.id)}
-                          className="rounded border-slate-300 text-indigo-700 focus:ring-indigo-500"
+                          className="rounded border-slate-300 dark:border-slate-600 text-indigo-700 focus:ring-indigo-500"
                         />
                         <span className="font-medium truncate">{zone.name}</span>
-                        <span className="ml-auto font-mono text-slate-500">{zone.radiusMeters}m</span>
+                        <span className="ml-auto font-mono text-slate-500 dark:text-slate-400">
+                          {zone.radiusMeters}m
+                        </span>
                       </label>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-slate-200 flex justify-end gap-2">
+              <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowEmpModal(false)}
-                  className="px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
                 >
                   Cancel
                 </button>

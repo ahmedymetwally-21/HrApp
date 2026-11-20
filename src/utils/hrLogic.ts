@@ -10,6 +10,7 @@ import {
   Employee,
   EmployeeDocument,
   EmployeeModel,
+  EndpointFailure,
   GeofenceZone,
   GPSReading,
   LeaveBalance,
@@ -26,15 +27,265 @@ import {
 } from '../types/hr';
 
 /**
+ * Case-insensitive role normalization so Live PostgreSQL/FastAPI roles
+ * (e.g. `admin`, `ADMIN`, `main_manager`, `Main Manager`, `hr`, `HR Admin`, `section_manager`)
+ * resolve to the exact same canonical `UserRole` permissions as Demo Mode.
+ */
+export function normalizeUserRole(raw: unknown): UserRole {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return UserRole.Employee;
+  }
+  const key = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/_+/g, '_');
+
+  switch (key) {
+    case 'main_manager':
+    case 'mainmanager':
+    case 'admin':
+    case 'super_admin':
+    case 'superadmin':
+    case 'owner':
+    case 'ceo':
+    case 'director':
+    case 'general_manager':
+    case 'gm':
+      return UserRole.MainManager;
+    case 'hr_admin':
+    case 'hradmin':
+    case 'hr':
+    case 'hr_manager':
+    case 'human_resources':
+    case 'human_resource':
+      return UserRole.HRAdmin;
+    case 'section_manager':
+    case 'sectionmanager':
+    case 'manager':
+    case 'dept_manager':
+    case 'department_manager':
+    case 'team_lead':
+      return UserRole.SectionManager;
+    case 'section_co_manager':
+    case 'sectioncomanager':
+    case 'co_manager':
+    case 'comanager':
+    case 'assistant_manager':
+    case 'deputy_manager':
+      return UserRole.SectionCoManager;
+    case 'pro':
+    case 'pro_officer':
+    case 'public_relations':
+    case 'public_relations_officer':
+      return UserRole.PRO;
+    case 'accounting':
+    case 'accountant':
+    case 'finance':
+    case 'payroll_officer':
+    case 'payroll':
+      return UserRole.Accounting;
+    case 'employee':
+    case 'staff':
+    case 'driver':
+    case 'user':
+    case 'worker':
+    default:
+      return UserRole.Employee;
+  }
+}
+
+export function isMainManagerRole(role: unknown): boolean {
+  return normalizeUserRole(role) === UserRole.MainManager;
+}
+
+export function isAdminOrHRRole(role: unknown): boolean {
+  const normalized = normalizeUserRole(role);
+  return normalized === UserRole.MainManager || normalized === UserRole.HRAdmin;
+}
+
+export type StartupEndpointKey =
+  | 'companies'
+  | 'sections'
+  | 'labels'
+  | 'employeeModels'
+  | 'employees'
+  | 'proAssignments'
+  | 'geofences'
+  | 'documents'
+  | 'attendance'
+  | 'attendanceAudit'
+  | 'leaves'
+  | 'workflows'
+  | 'payrollAdjustments'
+  | 'salaryReleases'
+  | 'settings';
+
+export interface StartupEndpointSpec {
+  key: StartupEndpointKey;
+  path: string;
+}
+
+export const ALL_STARTUP_ENDPOINTS: StartupEndpointSpec[] = [
+  { key: 'companies', path: '/companies' },
+  { key: 'sections', path: '/sections' },
+  { key: 'labels', path: '/labels' },
+  { key: 'employeeModels', path: '/employee-models' },
+  { key: 'employees', path: '/users' },
+  { key: 'proAssignments', path: '/pro-assignments' },
+  { key: 'geofences', path: '/locations' },
+  { key: 'documents', path: '/documents' },
+  { key: 'attendance', path: '/attendance' },
+  { key: 'attendanceAudit', path: '/attendance/audit' },
+  { key: 'leaves', path: '/leaves' },
+  { key: 'workflows', path: '/approval-workflows' },
+  { key: 'payrollAdjustments', path: '/payroll/deductions' },
+  { key: 'salaryReleases', path: '/payroll/releases' },
+  { key: 'settings', path: '/settings' },
+];
+
+/**
+ * Returns only the startup endpoints allowed for the authenticated user's role,
+ * preventing unnecessary 403 Forbidden bursts for non-admin users while keeping
+ * full access for Main Manager & HR Admin.
+ */
+export function getStartupEndpointsForRole(role: UserRole | string): StartupEndpointSpec[] {
+  const normalized = normalizeUserRole(role);
+  if (normalized === UserRole.MainManager || normalized === UserRole.HRAdmin) {
+    return ALL_STARTUP_ENDPOINTS;
+  }
+
+  let allowedKeys: Set<StartupEndpointKey>;
+  if (normalized === UserRole.Accounting) {
+    allowedKeys = new Set<StartupEndpointKey>([
+      'companies',
+      'sections',
+      'labels',
+      'employees',
+      'attendance',
+      'payrollAdjustments',
+      'salaryReleases',
+      'settings',
+    ]);
+  } else if (normalized === UserRole.PRO) {
+    allowedKeys = new Set<StartupEndpointKey>([
+      'companies',
+      'sections',
+      'labels',
+      'employeeModels',
+      'employees',
+      'proAssignments',
+      'documents',
+      'settings',
+    ]);
+  } else if (normalized === UserRole.SectionManager || normalized === UserRole.SectionCoManager) {
+    allowedKeys = new Set<StartupEndpointKey>([
+      'companies',
+      'sections',
+      'labels',
+      'employeeModels',
+      'employees',
+      'geofences',
+      'documents',
+      'attendance',
+      'attendanceAudit',
+      'leaves',
+      'payrollAdjustments',
+      'salaryReleases',
+      'settings',
+    ]);
+  } else {
+    // Employee
+    allowedKeys = new Set<StartupEndpointKey>([
+      'companies',
+      'sections',
+      'labels',
+      'employeeModels',
+      'employees',
+      'geofences',
+      'documents',
+      'attendance',
+      'leaves',
+      'payrollAdjustments',
+      'salaryReleases',
+      'settings',
+    ]);
+  }
+
+  return ALL_STARTUP_ENDPOINTS.filter((spec) => allowedKeys.has(spec.key));
+}
+
+export interface SettledStartupItem {
+  key: StartupEndpointKey;
+  path: string;
+  ok: boolean;
+  value?: unknown;
+  failure?: EndpointFailure;
+}
+
+/**
+ * Evaluates settled startup endpoint results:
+ * - Individual `403 Forbidden` responses default gracefully to empty collections (`[]`)
+ *   so non-admin users are never blocked by restricted endpoints.
+ * - Non-403 failures (401, 404, 500, 408 timeout, network errors) OR a 100% 403 failure
+ *   across every requested endpoint are surfaced as fatal startup failures so the
+ *   Error Card can display exact endpoints and HTTP status codes.
+ */
+export function evaluateStartupEndpointResults(items: SettledStartupItem[]): {
+  fatalFailures: EndpointFailure[];
+  forbiddenEndpoints: string[];
+  values: Partial<Record<StartupEndpointKey, unknown>>;
+} {
+  const fatalFailures: EndpointFailure[] = [];
+  const forbiddenFailures: EndpointFailure[] = [];
+  const values: Partial<Record<StartupEndpointKey, unknown>> = {};
+
+  for (const item of items) {
+    if (item.ok) {
+      values[item.key] = item.value;
+      continue;
+    }
+    const fail = item.failure ?? {
+      endpoint: item.path,
+      status: null,
+      statusText: 'Error',
+      message: 'Unknown error while loading endpoint.',
+    };
+    if (fail.status === 403) {
+      forbiddenFailures.push(fail);
+    } else {
+      fatalFailures.push(fail);
+    }
+  }
+
+  // If EVERY single requested endpoint returned 403 (nothing succeeded), surface them as fatal
+  // so the user sees the 403 Forbidden error card instead of an empty broken app.
+  const succeededCount = items.filter((i) => i.ok).length;
+  if (succeededCount === 0 && forbiddenFailures.length > 0 && fatalFailures.length === 0) {
+    return {
+      fatalFailures: forbiddenFailures,
+      forbiddenEndpoints: forbiddenFailures.map((f) => f.endpoint),
+      values,
+    };
+  }
+
+  return {
+    fatalFailures,
+    forbiddenEndpoints: forbiddenFailures.map((f) => f.endpoint),
+    values,
+  };
+}
+
+/**
  * Main Manager Executive Exemptions:
  * Main Managers are strictly exempt from attendance tracking and monthly payroll.
  */
 export function isAttendanceTracked(employee: Pick<Employee, 'role'>): boolean {
-  return employee.role !== UserRole.MainManager;
+  return normalizeUserRole(employee.role) !== UserRole.MainManager;
 }
 
 export function isPayrollEligible(employee: Pick<Employee, 'role'>): boolean {
-  return employee.role !== UserRole.MainManager;
+  return normalizeUserRole(employee.role) !== UserRole.MainManager;
 }
 
 const EARTH_RADIUS_METERS = 6_371_000;
@@ -331,11 +582,12 @@ export function getScopedEmployees(params: {
   const {
     employees,
     viewer,
-    activeRole,
+    activeRole: rawActiveRole,
     selectedCompanyId,
     proAssignments = [],
     now = new Date(),
   } = params;
+  const activeRole = normalizeUserRole(rawActiveRole);
 
   if (activeRole === UserRole.PRO) {
     const activeIds = getActiveProAssignedEmployeeIds(proAssignments, viewer.id, now);
@@ -478,7 +730,8 @@ export function canRoleActOnLeaveStep(params: {
   actorRole: UserRole;
   actorEmployee: Employee;
 }): boolean {
-  const { leave, actorRole, actorEmployee } = params;
+  const { leave, actorEmployee } = params;
+  const actorRole = normalizeUserRole(params.actorRole);
   if (leave.status !== LeaveStatus.Pending || leave.currentStepIndex < 0) return false;
   if (leave.employeeId === actorEmployee.id && actorRole !== UserRole.MainManager) return false;
 
@@ -738,12 +991,13 @@ export function adjustLeaveBalance(
  * Schedule/Delay/Status controls are shown ONLY to HR, Main Manager, Section Managers, and Co-Managers.
  * Accounting & Employees NEVER see release/delay controls.
  */
-export function canControlSalaryRelease(role: UserRole): boolean {
+export function canControlSalaryRelease(role: UserRole | string): boolean {
+  const normalized = normalizeUserRole(role);
   return (
-    role === UserRole.HRAdmin ||
-    role === UserRole.MainManager ||
-    role === UserRole.SectionManager ||
-    role === UserRole.SectionCoManager
+    normalized === UserRole.HRAdmin ||
+    normalized === UserRole.MainManager ||
+    normalized === UserRole.SectionManager ||
+    normalized === UserRole.SectionCoManager
   );
 }
 

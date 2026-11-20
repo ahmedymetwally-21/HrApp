@@ -5,6 +5,7 @@ import {
   SalaryReleaseStatus,
   UserRole,
 } from '../types/hr';
+import { normalizeUserRole } from '../utils/hrLogic';
 
 export const LANGUAGE_META: Record<
   Language,
@@ -148,6 +149,14 @@ const EN: Dict = {
   passwordMinLengthError: 'Password must be at least 6 characters.',
   passwordMismatchError: 'Passwords do not match.',
   passwordUpdateError: 'Unable to update password.',
+  loadingWorkspace: 'Loading Yaldi HR workspace...',
+  startupErrorTitle: 'Unable to Load Workspace Data',
+  startupTimeoutTitle: 'Server Request Timed Out',
+  startupErrorSubtitle:
+    'One or more live API requests failed while loading your HR workspace. Review the details below and retry or sign out.',
+  failedEndpoints: 'Failed Endpoints',
+  retry: 'Retry',
+  retrying: 'Retrying...',
 };
 
 const AR: Dict = {
@@ -277,6 +286,14 @@ const AR: Dict = {
   passwordMinLengthError: 'يجب أن تتكون كلمة المرور من ٦ أحرف على الأقل.',
   passwordMismatchError: 'كلمتا المرور غير متطابقتين.',
   passwordUpdateError: 'تعذر تحديث كلمة المرور.',
+  loadingWorkspace: 'جارٍ تحميل مساحة عمل يالدي HR...',
+  startupErrorTitle: 'تعذر تحميل بيانات مساحة العمل',
+  startupTimeoutTitle: 'انتهت مهلة الاتصال بالخادم',
+  startupErrorSubtitle:
+    'فشل طلب واحد أو أكثر من الخادم المباشر أثناء تحميل البيانات. راجع التفاصيل أدناه ثم أعد المحاولة أو سجّل الخروج.',
+  failedEndpoints: 'نقاط النهاية الفاشلة',
+  retry: 'إعادة المحاولة',
+  retrying: 'جارٍ إعادة المحاولة...',
 };
 
 const UR: Dict = {
@@ -406,6 +423,14 @@ const UR: Dict = {
   passwordMinLengthError: 'پاس ورڈ کم از کم 6 حروف کا ہونا چاہیے۔',
   passwordMismatchError: 'دونوں پاس ورڈ آپس میں میل نہیں کھاتے۔',
   passwordUpdateError: 'پاس ورڈ اپ ڈیٹ نہیں ہو سکا۔',
+  loadingWorkspace: 'یالدی HR ورک اسپیس لوڈ ہو رہا ہے...',
+  startupErrorTitle: 'ورک اسپیس ڈیٹا لوڈ نہیں ہو سکا',
+  startupTimeoutTitle: 'سرور درخواست کا وقت ختم ہو گیا',
+  startupErrorSubtitle:
+    'لائیو API سے ڈیٹا لوڈ کرتے وقت ایک یا زیادہ درخواستیں ناکام ہو گئیں۔ نیچے تفصیلات دیکھیں اور دوبارہ کوشش کریں یا سائن آؤٹ کریں۔',
+  failedEndpoints: 'ناکام اینڈ پوائنٹس',
+  retry: 'دوبارہ کوشش کریں',
+  retrying: 'دوبارہ کوشش ہو رہی ہے...',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };
@@ -414,7 +439,8 @@ export function t(lang: Language, key: string): string {
   return DICTS[lang]?.[key] ?? EN[key] ?? key;
 }
 
-export function getRoleLabel(lang: Language, role: UserRole): string {
+export function getRoleLabel(lang: Language, role: UserRole | string): string {
+  const normalized = normalizeUserRole(role);
   const map: Record<Language, Record<UserRole, string>> = {
     en: {
       [UserRole.MainManager]: 'Main Manager',
@@ -444,7 +470,7 @@ export function getRoleLabel(lang: Language, role: UserRole): string {
       [UserRole.Employee]: 'ملازم',
     },
   };
-  return map[lang][role];
+  return map[lang][normalized];
 }
 
 export function getStepRoleLabel(lang: Language, step: ApprovalStepRole): string {

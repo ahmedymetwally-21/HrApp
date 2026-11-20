@@ -13,12 +13,14 @@ import {
   AttendanceAuditEntry,
   AttendanceLog,
   AuthSession,
+  ClockInPolicyMode,
   Company,
   CreateEmployeePayload,
   Employee,
   EmployeeDocument,
   EmployeeLabel,
   EmployeeModel,
+  EndpointFailure,
   GeofenceZone,
   HRDatabase,
   LeaveRequest,
@@ -37,9 +39,13 @@ import {
   advanceLeaveApproval,
   buildLeaveApprovalChain,
   evaluateModelLateness,
+  evaluateStartupEndpointResults,
   getEffectiveShiftStart,
+  getStartupEndpointsForRole,
   isAttendanceTracked,
+  normalizeUserRole,
   resolveApprovalWorkflow,
+  SettledStartupItem,
 } from '../utils/hrLogic';
 import { createInitialSeedData } from './seedData';
 
@@ -53,15 +59,68 @@ const STORAGE_KEY = 'yaldi_hr_db_v2';
 const SESSION_KEY = 'yaldi_hr_session_v2';
 const SERVER_CONFIG_KEY = 'yaldi_hr_server_config_v1';
 
+export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
 export interface ServerConfig {
   useMockApi: boolean;
   apiBaseUrl: string;
 }
 
 export class ServerUnreachableError extends Error {
-  constructor(message: string) {
+  endpoint?: string;
+  constructor(message: string, endpoint?: string) {
     super(message);
     this.name = 'ServerUnreachableError';
+    this.endpoint = endpoint;
+  }
+}
+
+export class ApiHttpError extends Error {
+  endpoint: string;
+  status: number | null;
+  statusText: string;
+  isTimeout: boolean;
+
+  constructor(params: {
+    endpoint: string;
+    status: number | null;
+    statusText: string;
+    message: string;
+    isTimeout?: boolean;
+  }) {
+    super(params.message);
+    this.name = 'ApiHttpError';
+    this.endpoint = params.endpoint;
+    this.status = params.status;
+    this.statusText = params.statusText;
+    this.isTimeout = Boolean(params.isTimeout);
+  }
+
+  toEndpointFailure(): EndpointFailure {
+    return {
+      endpoint: this.endpoint,
+      status: this.status,
+      statusText: this.statusText,
+      message: this.message,
+      isTimeout: this.isTimeout,
+    };
+  }
+}
+
+export class StartupLoadError extends Error {
+  failures: EndpointFailure[];
+  isTimeout: boolean;
+
+  constructor(failures: EndpointFailure[], message?: string) {
+    const summary =
+      message ||
+      failures
+        .map((f) => `${f.endpoint} (${f.status ?? (f.isTimeout ? 'TIMEOUT' : 'NETWORK')}): ${f.message}`)
+        .join('; ');
+    super(summary || 'Failed to load workspace data.');
+    this.name = 'StartupLoadError';
+    this.failures = failures;
+    this.isTimeout = failures.some((f) => f.isTimeout || f.status === 408);
   }
 }
 
@@ -97,7 +156,9 @@ export function saveServerConfig(config: ServerConfig): ServerConfig {
 function getStoredSession(): AuthSession | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? (JSON.parse(raw) as AuthSession) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return normalizeAuthSession(parsed);
   } catch {
     return null;
   }
@@ -115,7 +176,232 @@ function saveSession(session: AuthSession | null): void {
   }
 }
 
-async function restFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function asString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  return fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((v) => String(v)).filter(Boolean);
+  if (typeof value === 'string' && value.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.map((v) => String(v)).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function asBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true' || value === 1) return true;
+  if (value === 'false' || value === 0) return false;
+  return fallback;
+}
+
+/**
+ * Normalizes Live FastAPI/PostgreSQL or Demo login responses (camelCase, snake_case, or nested `user` object)
+ * into a canonical `AuthSession` with a case-insensitively normalized `UserRole`.
+ */
+export function normalizeAuthSession(
+  raw: unknown,
+  fallbackEmail?: string,
+  defaultMode: 'demo' | 'live' = 'live'
+): AuthSession {
+  const obj = asRecord(raw);
+  const userObj = asRecord(obj.user);
+
+  const token = asString(obj.token ?? obj.access_token ?? obj.jwt ?? '');
+  const userId = asString(
+    obj.userId ?? obj.user_id ?? userObj.id ?? userObj.user_id ?? obj.id ?? ''
+  );
+  const rawRole = obj.role ?? userObj.role ?? UserRole.Employee;
+  const role = normalizeUserRole(rawRole);
+  const mustChangePassword = asBoolean(
+    obj.mustChangePassword ??
+      obj.must_change_password ??
+      userObj.mustChangePassword ??
+      userObj.must_change_password,
+    false
+  );
+  const mode = obj.mode === 'demo' ? 'demo' : obj.mode === 'live' ? 'live' : defaultMode;
+
+  return {
+    token,
+    userId,
+    role,
+    mode,
+    mustChangePassword,
+    fullName: asString(
+      obj.fullName ?? obj.full_name ?? userObj.fullName ?? userObj.full_name ?? userObj.name ?? ''
+    ) || undefined,
+    email: asString(obj.email ?? userObj.email ?? fallbackEmail ?? '') || undefined,
+    employeeCode:
+      asString(
+        obj.employeeCode ?? obj.employee_code ?? userObj.employeeCode ?? userObj.employee_code ?? ''
+      ) || undefined,
+    avatarUrl:
+      asString(
+        obj.avatarUrl ?? obj.avatar_url ?? userObj.avatarUrl ?? userObj.avatar_url ?? ''
+      ) || undefined,
+    primaryCompanyId:
+      asString(
+        obj.primaryCompanyId ??
+          obj.primary_company_id ??
+          userObj.primaryCompanyId ??
+          userObj.primary_company_id ??
+          ''
+      ) || undefined,
+    sectionId:
+      asString(
+        obj.sectionId ?? obj.section_id ?? userObj.sectionId ?? userObj.section_id ?? ''
+      ) || undefined,
+  };
+}
+
+export function normalizeEmployee(raw: unknown): Employee {
+  const obj = asRecord(raw);
+  const salaryObj = asRecord(obj.salary);
+  const bankObj = asRecord(obj.bankDetails ?? obj.bank_details);
+  const leaveObj = asRecord(obj.leaveBalance ?? obj.leave_balance);
+
+  const bankName = asString(bankObj.bankName ?? bankObj.bank_name ?? obj.bank_name ?? '');
+  const accountNumber = asString(
+    bankObj.accountNumber ?? bankObj.account_number ?? obj.account_number ?? ''
+  );
+  const iban = asString(bankObj.iban ?? obj.iban ?? '');
+
+  return {
+    id: asString(obj.id ?? obj.user_id ?? ''),
+    employeeCode: asString(obj.employeeCode ?? obj.employee_code ?? ''),
+    fullName: asString(obj.fullName ?? obj.full_name ?? obj.name ?? 'Employee'),
+    email: asString(obj.email ?? ''),
+    phone: asString(obj.phone ?? ''),
+    avatarUrl: asString(obj.avatarUrl ?? obj.avatar_url ?? '') || undefined,
+    passwordHash: asString(obj.passwordHash ?? obj.password_hash ?? '') || undefined,
+    mustChangePassword: asBoolean(obj.mustChangePassword ?? obj.must_change_password, false),
+    role: normalizeUserRole(obj.role),
+    primaryCompanyId: asString(obj.primaryCompanyId ?? obj.primary_company_id ?? ''),
+    sharedCompanyIds: asStringArray(obj.sharedCompanyIds ?? obj.shared_company_ids),
+    sectionId: asString(obj.sectionId ?? obj.section_id ?? ''),
+    managedSectionIds: asStringArray(
+      obj.managedSectionIds ?? obj.managed_section_ids ?? obj.managed_section_ids_json
+    ),
+    labelIds: asStringArray(obj.labelIds ?? obj.label_ids),
+    modelId: asString(obj.modelId ?? obj.model_id ?? ''),
+    jobTitle: asString(obj.jobTitle ?? obj.job_title ?? ''),
+    joinDate: asString(obj.joinDate ?? obj.join_date ?? new Date().toISOString().slice(0, 10)),
+    active: asBoolean(obj.active, true),
+    assignedZoneIds: asStringArray(
+      obj.assignedZoneIds ?? obj.assigned_zone_ids ?? obj.assigned_zone_ids_json
+    ),
+    clockInPolicyOverride:
+      (obj.clockInPolicyOverride ?? obj.clock_in_policy_override ?? 'inherit') as
+        | ClockInPolicyMode
+        | 'inherit',
+    salary: {
+      baseSalary: asNumber(
+        salaryObj.baseSalary ?? salaryObj.base_salary ?? obj.base_salary_aed ?? obj.base_salary,
+        0
+      ),
+      housingAllowance: asNumber(
+        salaryObj.housingAllowance ?? salaryObj.housing_allowance ?? obj.housing_allowance,
+        0
+      ),
+      transportAllowance: asNumber(
+        salaryObj.transportAllowance ?? salaryObj.transport_allowance ?? obj.transport_allowance,
+        0
+      ),
+      otherAllowance: asNumber(
+        salaryObj.otherAllowance ??
+          salaryObj.other_allowance ??
+          obj.other_allowance ??
+          obj.allowances_aed,
+        0
+      ),
+    },
+    bankDetails:
+      bankName || accountNumber || iban
+        ? { bankName, accountNumber, iban }
+        : undefined,
+    leaveBalance: {
+      annualTotal: asNumber(leaveObj.annualTotal ?? leaveObj.annual_total, 30),
+      annualUsed: asNumber(leaveObj.annualUsed ?? leaveObj.annual_used, 0),
+      sickTotal: asNumber(leaveObj.sickTotal ?? leaveObj.sick_total, 15),
+      sickUsed: asNumber(leaveObj.sickUsed ?? leaveObj.sick_used, 0),
+      emergencyTotal: asNumber(leaveObj.emergencyTotal ?? leaveObj.emergency_total, 5),
+      emergencyUsed: asNumber(leaveObj.emergencyUsed ?? leaveObj.emergency_used, 0),
+      unpaidUsed: asNumber(leaveObj.unpaidUsed ?? leaveObj.unpaid_used, 0),
+    },
+    customShift: (obj.customShift ?? obj.custom_shift) as ShiftSchedule | undefined,
+    pendingShiftProposal: (obj.pendingShiftProposal ??
+      obj.pending_shift_proposal ??
+      null) as Employee['pendingShiftProposal'],
+  };
+}
+
+function createDefaultLiveSettings(apiBaseUrl: string): AppSettings {
+  return {
+    groupName: 'Yaldi HR',
+    currency: 'AED',
+    globalClockInPolicy: ClockInPolicyMode.StrictMobileGPS,
+    maxMobileAccuracyMeters: 150,
+    customDocumentTypes: [],
+    apiBaseUrl,
+  };
+}
+
+function getDefaultStatusText(status: number): string {
+  const map: Record<number, string> = {
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    408: 'Request Timeout',
+    422: 'Unprocessable Entity',
+    500: 'Internal Server Error',
+    502: 'Bad Gateway',
+    503: 'Service Unavailable',
+    504: 'Gateway Timeout',
+  };
+  return map[status] ?? 'HTTP Error';
+}
+
+function extractErrorMessage(rawBody: string, status: number, statusText: string): string {
+  const trimmed = rawBody.trim();
+  if (!trimmed) return `HTTP ${status} ${statusText}`;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (typeof parsed.detail === 'string' && parsed.detail.trim()) return parsed.detail;
+    if (Array.isArray(parsed.detail)) {
+      const first = asRecord(parsed.detail[0]);
+      if (typeof first.msg === 'string') return first.msg;
+    }
+    if (typeof parsed.message === 'string' && parsed.message.trim()) return parsed.message;
+    if (typeof parsed.error === 'string' && parsed.error.trim()) return parsed.error;
+  } catch {
+    // Plain text response
+  }
+  return trimmed.slice(0, 240);
+}
+
+async function restFetch<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<T> {
   const config = getServerConfig();
   const session = getStoredSession();
   const headers: Record<string, string> = {
@@ -126,18 +412,52 @@ async function restFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.Authorization = `Bearer ${session.token}`;
   }
 
+  const controller = new AbortController();
+  const timerId = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+
   let res: Response;
   try {
-    res = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers });
-  } catch {
+    res = await fetch(`${config.apiBaseUrl}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    globalThis.clearTimeout(timerId);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new ApiHttpError({
+        endpoint: path,
+        status: 408,
+        statusText: 'Request Timeout',
+        message: `Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+        isTimeout: true,
+      });
+    }
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new ApiHttpError({
+        endpoint: path,
+        status: 408,
+        statusText: 'Request Timeout',
+        message: `Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+        isTimeout: true,
+      });
+    }
     throw new ServerUnreachableError(
-      `Cannot connect to self-hosted server at ${config.apiBaseUrl}.`
+      `Cannot connect to self-hosted server at ${config.apiBaseUrl}.`,
+      path
     );
   }
+  globalThis.clearTimeout(timerId);
 
   if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText);
-    throw new Error(msg || `Server error (${res.status})`);
+    const rawBody = await res.text().catch(() => '');
+    const statusText = res.statusText || getDefaultStatusText(res.status);
+    throw new ApiHttpError({
+      endpoint: path,
+      status: res.status,
+      statusText,
+      message: extractErrorMessage(rawBody, res.status, statusText),
+    });
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -205,10 +525,11 @@ export const api = {
     async login(email: string, password: string): Promise<AuthSession> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        const session = await restFetch<AuthSession>('/auth/login', {
+        const raw = await restFetch<unknown>('/auth/login', {
           method: 'POST',
           body: JSON.stringify({ email, password }),
         });
+        const session = normalizeAuthSession(raw, email.trim(), 'live');
         saveSession(session);
         return session;
       }
@@ -229,9 +550,15 @@ export const api = {
       const session: AuthSession = {
         token: `demo-jwt-${matched.id}-${Date.now()}`,
         userId: matched.id,
-        role: matched.role,
+        role: normalizeUserRole(matched.role),
         mode: 'demo',
         mustChangePassword: matched.mustChangePassword,
+        fullName: matched.fullName,
+        email: matched.email,
+        employeeCode: matched.employeeCode,
+        avatarUrl: matched.avatarUrl,
+        primaryCompanyId: matched.primaryCompanyId,
+        sectionId: matched.sectionId,
       };
       saveSession(session);
       return session;
@@ -239,17 +566,24 @@ export const api = {
 
     async demoLogin(role: UserRole): Promise<AuthSession> {
       const db = readDb();
-      const preferred = ROLE_DEFAULT_DEMO_USER[role];
+      const normalizedRole = normalizeUserRole(role);
+      const preferred = ROLE_DEFAULT_DEMO_USER[normalizedRole];
       const emp =
         db.employees.find((e) => e.id === preferred) ??
-        db.employees.find((e) => e.role === role) ??
+        db.employees.find((e) => normalizeUserRole(e.role) === normalizedRole) ??
         db.employees[0];
       const session: AuthSession = {
         token: `demo-jwt-${emp.id}-${Date.now()}`,
         userId: emp.id,
-        role,
+        role: normalizedRole,
         mode: 'demo',
         mustChangePassword: false,
+        fullName: emp.fullName,
+        email: emp.email,
+        employeeCode: emp.employeeCode,
+        avatarUrl: emp.avatarUrl,
+        primaryCompanyId: emp.primaryCompanyId,
+        sectionId: emp.sectionId,
       };
       saveSession(session);
       return session;
@@ -263,13 +597,26 @@ export const api = {
     }): Promise<AuthSession | null> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        const res = await restFetch<{ session?: AuthSession }>('/auth/change-password', {
+        const res = await restFetch<Record<string, unknown>>('/auth/change-password', {
           method: 'POST',
-          body: JSON.stringify(params),
+          body: JSON.stringify({
+            ...params,
+            user_id: params.userId,
+            current_password: params.currentPassword,
+            new_password: params.newPassword,
+            is_forced_first_login: Boolean(params.isForcedFirstLogin),
+          }),
         });
         const current = getStoredSession();
-        const next = res.session ?? (current ? { ...current, mustChangePassword: false } : null);
-        if (next) saveSession(next);
+        const next = res?.session
+          ? normalizeAuthSession(res.session, current?.email, 'live')
+          : current
+            ? { ...current, mustChangePassword: false }
+            : null;
+        if (next) {
+          next.mustChangePassword = false;
+          saveSession(next);
+        }
         return next;
       }
       if (!params.newPassword || params.newPassword.trim().length < 6) {
@@ -304,63 +651,91 @@ export const api = {
     },
   },
 
-  async getDatabase(): Promise<HRDatabase> {
+  async getDatabase(roleHint?: UserRole): Promise<HRDatabase> {
     const cfg = getServerConfig();
     if (!cfg.useMockApi) {
-      const [
-        companies,
-        sections,
-        labels,
-        employeeModels,
-        employees,
-        proAssignments,
-        geofences,
-        documents,
-        attendance,
-        attendanceAudit,
-        leaves,
-        workflows,
-        payrollAdjustments,
-        salaryReleases,
-        settings,
-      ] = await Promise.all([
-        restFetch<Company[]>('/companies'),
-        restFetch<Section[]>('/sections'),
-        restFetch<EmployeeLabel[]>('/labels'),
-        restFetch<EmployeeModel[]>('/employee-models'),
-        restFetch<Employee[]>('/users'),
-        restFetch<ProAssignment[]>('/pro-assignments'),
-        restFetch<GeofenceZone[]>('/locations'),
-        restFetch<EmployeeDocument[]>('/documents'),
-        restFetch<AttendanceLog[]>('/attendance'),
-        restFetch<AttendanceAuditEntry[]>('/attendance/audit'),
-        restFetch<LeaveRequest[]>('/leaves'),
-        restFetch<ApprovalWorkflow[]>('/approval-workflows'),
-        restFetch<PayrollAdjustment[]>('/payroll/deductions'),
-        restFetch<SalaryReleaseSchedule[]>('/payroll/releases'),
-        restFetch<AppSettings>('/settings'),
-      ]);
+      const activeRole = normalizeUserRole(roleHint ?? getStoredSession()?.role);
+      const specs = getStartupEndpointsForRole(activeRole);
+
+      const settled = await Promise.allSettled(
+        specs.map((spec) => restFetch<unknown>(spec.path, {}, DEFAULT_REQUEST_TIMEOUT_MS))
+      );
+
+      const items: SettledStartupItem[] = specs.map((spec, idx) => {
+        const result = settled[idx];
+        if (result.status === 'fulfilled') {
+          return { key: spec.key, path: spec.path, ok: true, value: result.value };
+        }
+        const reason = result.reason;
+        let failure: EndpointFailure;
+        if (reason instanceof ApiHttpError) {
+          failure = reason.toEndpointFailure();
+        } else if (reason instanceof ServerUnreachableError) {
+          failure = {
+            endpoint: spec.path,
+            status: null,
+            statusText: 'Network Error',
+            message: reason.message,
+          };
+        } else {
+          failure = {
+            endpoint: spec.path,
+            status: null,
+            statusText: 'Error',
+            message: reason instanceof Error ? reason.message : 'Unexpected error while loading data.',
+          };
+        }
+        return { key: spec.key, path: spec.path, ok: false, failure };
+      });
+
+      const evaluated = evaluateStartupEndpointResults(items);
+      if (evaluated.fatalFailures.length > 0) {
+        throw new StartupLoadError(evaluated.fatalFailures);
+      }
+
+      const rawValues = evaluated.values;
+      const rawEmployees = Array.isArray(rawValues.employees) ? rawValues.employees : [];
+      const rawSettings =
+        rawValues.settings && typeof rawValues.settings === 'object'
+          ? {
+              ...createDefaultLiveSettings(cfg.apiBaseUrl),
+              ...(rawValues.settings as Partial<AppSettings>),
+              apiBaseUrl: cfg.apiBaseUrl,
+            }
+          : createDefaultLiveSettings(cfg.apiBaseUrl);
+
       return {
-        companies,
-        sections,
-        labels,
-        employeeModels,
-        employees,
-        proAssignments,
-        geofences,
-        documents,
-        attendance,
-        attendanceAudit,
-        leaves,
-        workflows,
-        payrollAdjustments,
-        salaryReleases,
-        settings,
+        companies: Array.isArray(rawValues.companies) ? (rawValues.companies as Company[]) : [],
+        sections: Array.isArray(rawValues.sections) ? (rawValues.sections as Section[]) : [],
+        labels: Array.isArray(rawValues.labels) ? (rawValues.labels as EmployeeLabel[]) : [],
+        employeeModels: Array.isArray(rawValues.employeeModels)
+          ? (rawValues.employeeModels as EmployeeModel[])
+          : [],
+        employees: rawEmployees.map(normalizeEmployee),
+        proAssignments: Array.isArray(rawValues.proAssignments)
+          ? (rawValues.proAssignments as ProAssignment[])
+          : [],
+        geofences: Array.isArray(rawValues.geofences) ? (rawValues.geofences as GeofenceZone[]) : [],
+        documents: Array.isArray(rawValues.documents) ? (rawValues.documents as EmployeeDocument[]) : [],
+        attendance: Array.isArray(rawValues.attendance) ? (rawValues.attendance as AttendanceLog[]) : [],
+        attendanceAudit: Array.isArray(rawValues.attendanceAudit)
+          ? (rawValues.attendanceAudit as AttendanceAuditEntry[])
+          : [],
+        leaves: Array.isArray(rawValues.leaves) ? (rawValues.leaves as LeaveRequest[]) : [],
+        workflows: Array.isArray(rawValues.workflows) ? (rawValues.workflows as ApprovalWorkflow[]) : [],
+        payrollAdjustments: Array.isArray(rawValues.payrollAdjustments)
+          ? (rawValues.payrollAdjustments as PayrollAdjustment[])
+          : [],
+        salaryReleases: Array.isArray(rawValues.salaryReleases)
+          ? (rawValues.salaryReleases as SalaryReleaseSchedule[])
+          : [],
+        settings: rawSettings,
       };
     }
     const db = readDb();
     return {
       ...db,
+      employees: db.employees.map((e) => ({ ...e, role: normalizeUserRole(e.role) })),
       labels: db.labels ?? [],
       proAssignments: db.proAssignments ?? [],
       salaryReleases: db.salaryReleases ?? [],

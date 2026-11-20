@@ -389,6 +389,20 @@ export interface AuthSession {
   role: UserRole;
   mode: 'demo' | 'live';
   mustChangePassword?: boolean;
+  fullName?: string;
+  email?: string;
+  employeeCode?: string;
+  avatarUrl?: string;
+  primaryCompanyId?: string;
+  sectionId?: string;
+}
+
+export interface EndpointFailure {
+  endpoint: string;
+  status: number | null;
+  statusText: string;
+  message: string;
+  isTimeout?: boolean;
 }
 
 export interface GPSReading {

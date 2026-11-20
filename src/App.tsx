@@ -28,8 +28,16 @@ import { OfflineScreen } from './components/OfflineScreen';
 import { PayrollView } from './components/PayrollView';
 import { ProfileSettingsMenu, SimPreset } from './components/ProfileSettingsMenu';
 import { SettingsHubView } from './components/SettingsHubView';
+import { StartupErrorScreen } from './components/StartupErrorScreen';
 import { getDirection, t } from './i18n/translations';
-import { api, ServerConfig, ServerUnreachableError } from './services/api';
+import {
+  api,
+  ApiHttpError,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  ServerConfig,
+  ServerUnreachableError,
+  StartupLoadError,
+} from './services/api';
 import { nativeBridge } from './services/nativeBridge';
 import {
   AppSettings,
@@ -41,6 +49,7 @@ import {
   EmployeeDocument,
   EmployeeLabel,
   EmployeeModel,
+  EndpointFailure,
   GeofenceZone,
   GPSReading,
   HRDatabase,
@@ -60,6 +69,7 @@ import {
   getDocumentExpiryStatus,
   getScopedEmployees,
   getUserAttachedCompanyIds,
+  normalizeUserRole,
   resolveClockInPolicy,
 } from './utils/hrLogic';
 
@@ -86,6 +96,48 @@ function getInitialTheme(): 'light' | 'dark' {
   return 'light';
 }
 
+function buildSessionFallbackEmployee(
+  session: AuthSession,
+  db?: HRDatabase | null
+): Employee {
+  const role = normalizeUserRole(session.role);
+  return {
+    id: session.userId || 'current-user',
+    employeeCode: session.employeeCode || 'USER',
+    fullName: session.fullName || session.email || 'Yaldi HR User',
+    email: session.email || '',
+    phone: '',
+    avatarUrl: session.avatarUrl,
+    mustChangePassword: Boolean(session.mustChangePassword),
+    role,
+    primaryCompanyId: session.primaryCompanyId || db?.companies[0]?.id || '',
+    sharedCompanyIds: [],
+    sectionId: session.sectionId || db?.sections[0]?.id || '',
+    managedSectionIds: session.sectionId ? [session.sectionId] : [],
+    labelIds: [],
+    modelId: db?.employeeModels[0]?.id || '',
+    jobTitle: '',
+    joinDate: new Date().toISOString().slice(0, 10),
+    active: true,
+    assignedZoneIds: [],
+    salary: {
+      baseSalary: 0,
+      housingAllowance: 0,
+      transportAllowance: 0,
+      otherAllowance: 0,
+    },
+    leaveBalance: {
+      annualTotal: 30,
+      annualUsed: 0,
+      sickTotal: 15,
+      sickUsed: 0,
+      emergencyTotal: 5,
+      emergencyUsed: 0,
+      unpaidUsed: 0,
+    },
+  };
+}
+
 export function App() {
   const [lang, setLang] = useState<Language>(getInitialLang);
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
@@ -94,6 +146,10 @@ export function App() {
   const [db, setDb] = useState<HRDatabase | null>(null);
   const [loading, setLoading] = useState(true);
   const [offlineReason, setOfflineReason] = useState<string | null>(null);
+  const [startupError, setStartupError] = useState<{
+    failures: EndpointFailure[];
+    isTimeout: boolean;
+  } | null>(null);
 
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('all');
   const [activeNav, setActiveNav] = useState<NavSection>('dashboard');
@@ -148,21 +204,94 @@ export function App() {
     });
   }, [serverConfig.useMockApi]);
 
-  const loadDatabase = useCallback(async () => {
-    try {
-      const data = await api.getDatabase();
-      setDb(data);
-      setOfflineReason(null);
-    } catch (err) {
-      if (err instanceof ServerUnreachableError) {
-        setOfflineReason(err.message);
-      } else {
-        showToast(err instanceof Error ? err.message : 'Unable to load HR data.', 'error');
+  const loadDatabase = useCallback(
+    async (sessionOverride?: AuthSession | null, showFullScreenLoader = false) => {
+      const targetSession = sessionOverride !== undefined ? sessionOverride : session;
+      if (targetSession?.mustChangePassword) {
+        // Never fetch dashboard endpoints while a forced password change is pending
+        setLoading(false);
+        setStartupError(null);
+        return;
       }
-    } finally {
-      setLoading(false);
-    }
-  }, [showToast]);
+
+      if (showFullScreenLoader) {
+        setLoading(true);
+      }
+      setStartupError(null);
+
+      let timeoutTimer: number | undefined;
+      try {
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutTimer = window.setTimeout(() => {
+            reject(
+              new StartupLoadError(
+                [
+                  {
+                    endpoint: '/api/v1/*',
+                    status: 408,
+                    statusText: 'Request Timeout',
+                    message:
+                      'Initial workspace loading timed out after 10 seconds. Verify your server is running and reachable.',
+                    isTimeout: true,
+                  },
+                ],
+                'Initial workspace loading timed out after 10 seconds.'
+              )
+            );
+          }, DEFAULT_REQUEST_TIMEOUT_MS);
+        });
+
+        const data = await Promise.race([
+          api.getDatabase(targetSession ? normalizeUserRole(targetSession.role) : undefined),
+          timeoutPromise,
+        ]);
+        if (timeoutTimer !== undefined) window.clearTimeout(timeoutTimer);
+
+        setDb(data);
+        setOfflineReason(null);
+        setStartupError(null);
+        setToast((prev) => (prev?.kind === 'error' ? null : prev));
+      } catch (err) {
+        if (timeoutTimer !== undefined) window.clearTimeout(timeoutTimer);
+        if (err instanceof StartupLoadError) {
+          setStartupError({ failures: err.failures, isTimeout: err.isTimeout });
+          if (db) showToast(err.message, 'error');
+        } else if (err instanceof ApiHttpError) {
+          setStartupError({ failures: [err.toEndpointFailure()], isTimeout: err.isTimeout });
+          if (db) showToast(err.message, 'error');
+        } else if (err instanceof ServerUnreachableError) {
+          setStartupError({
+            failures: [
+              {
+                endpoint: err.endpoint || '/health',
+                status: null,
+                statusText: 'Network Error',
+                message: err.message,
+              },
+            ],
+            isTimeout: false,
+          });
+        } else {
+          const msg = err instanceof Error ? err.message : 'Unable to load HR data.';
+          setStartupError({
+            failures: [
+              {
+                endpoint: '/api',
+                status: null,
+                statusText: 'Error',
+                message: msg,
+              },
+            ],
+            isTimeout: false,
+          });
+          if (db) showToast(msg, 'error');
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [db, session, showToast]
+  );
 
   // Support ?autostart=1 for automated walkthroughs & quick preview
   useEffect(() => {
@@ -170,23 +299,39 @@ export function App() {
     if (params.get('autostart') === '1' && !session) {
       void api.auth.demoLogin(UserRole.MainManager).then((s) => {
         setSession(s);
-        void loadDatabase();
       });
       return;
     }
-    if (session) {
-      void loadDatabase();
-    } else {
+    if (!session) {
       setLoading(false);
+      setStartupError(null);
+      return;
     }
-  }, [session, loadDatabase]);
+    if (session.mustChangePassword) {
+      // Immediately render ForcePasswordChangeScreen WITHOUT calling dashboard endpoints
+      setLoading(false);
+      setStartupError(null);
+      return;
+    }
+    void loadDatabase(session, true);
+  }, [session?.token, session?.mustChangePassword]);
 
   const currentUser = useMemo<Employee | null>(() => {
-    if (!db || !session) return null;
-    return db.employees.find((e) => e.id === session.userId) ?? db.employees[0] ?? null;
+    if (!session) return null;
+    if (!db) return null;
+    const byId = db.employees.find((e) => String(e.id) === String(session.userId));
+    if (byId) return byId;
+    if (session.email) {
+      const byEmail = db.employees.find(
+        (e) => e.email.toLowerCase() === session.email!.toLowerCase()
+      );
+      if (byEmail) return byEmail;
+    }
+    // Always fall back to a safe session-derived user so Live Mode never gets stuck on Loading
+    return buildSessionFallbackEmployee(session, db);
   }, [db, session]);
 
-  const activeRole: UserRole = session?.role ?? currentUser?.role ?? UserRole.Employee;
+  const activeRole: UserRole = normalizeUserRole(session?.role ?? currentUser?.role);
 
   // Companies accessible to the current user
   const accessibleCompanies = useMemo<Company[]>(() => {
@@ -385,34 +530,51 @@ export function App() {
   const handleUpdateServerConfig = (next: ServerConfig) => {
     const saved = api.saveServerConfig(next);
     setServerConfig(saved);
-    if (session) void loadDatabase();
+    if (session && !session.mustChangePassword) {
+      void loadDatabase(session);
+    }
   };
 
   const handleEmailLogin = async (email: string, password: string) => {
     const nextSession = await api.auth.login(email, password);
+    setDb(null);
+    setStartupError(null);
+    setOfflineReason(null);
+    setSelectedCompanyId(
+      normalizeUserRole(nextSession.role) === UserRole.MainManager ? 'all' : 'all'
+    );
+    if (nextSession.mustChangePassword) {
+      // Do NOT trigger dashboard fetch when must_change_password is true
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setSession(nextSession);
-    setSelectedCompanyId(nextSession.role === UserRole.MainManager ? 'all' : 'all');
-    await loadDatabase();
   };
 
   const handleDemoRoleLogin = async (role: UserRole) => {
-    const nextSession = await api.auth.demoLogin(role);
+    const normalized = normalizeUserRole(role);
+    const nextSession = await api.auth.demoLogin(normalized);
+    setStartupError(null);
+    setOfflineReason(null);
     setSession(nextSession);
-    if (role === UserRole.Accounting) {
+    if (normalized === UserRole.Accounting) {
       setActiveNav('payroll');
-    } else if (role === UserRole.PRO) {
+    } else if (normalized === UserRole.PRO) {
       setSelectedCompanyId('all');
       setActiveNav('employees');
     } else {
       setActiveNav('dashboard');
     }
-    await loadDatabase();
   };
 
   const handleSignOut = async () => {
     await api.auth.logout();
     setSession(null);
     setDb(null);
+    setStartupError(null);
+    setOfflineReason(null);
+    setLoading(false);
     setActiveNav('dashboard');
   };
 
@@ -531,34 +693,84 @@ export function App() {
     );
   }
 
-  // --- Loading State ---
-  if (loading || !db || !currentUser) {
-    return (
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center text-sm text-slate-500">
-        Loading Yaldi HR...
-      </div>
-    );
-  }
-
-  // --- MANDATORY FIRST-LOGIN PASSWORD CHANGE BLOCKER ---
-  if (session.mustChangePassword || currentUser.mustChangePassword) {
+  // --- MANDATORY FIRST-LOGIN PASSWORD CHANGE BLOCKER (BEFORE DASHBOARD FETCH!) ---
+  if (session.mustChangePassword || currentUser?.mustChangePassword) {
+    const forceUser = currentUser ?? buildSessionFallbackEmployee(session, db);
     return (
       <ForcePasswordChangeScreen
         lang={lang}
-        currentUser={currentUser}
+        currentUser={forceUser}
         activeRole={activeRole}
         onChangePassword={async (newPassword: string) => {
           const updatedSession = await api.auth.changePassword({
-            userId: currentUser.id,
+            userId: session.userId || forceUser.id,
             newPassword,
             isForcedFirstLogin: true,
           });
-          if (updatedSession) setSession(updatedSession);
-          await loadDatabase();
+          const nextSession: AuthSession = updatedSession
+            ? { ...updatedSession, mustChangePassword: false }
+            : { ...session, mustChangePassword: false };
+          setStartupError(null);
+          setLoading(true);
+          setSession(nextSession);
           showToast('Password updated. Welcome to Yaldi HR!');
         }}
         onSignOut={() => handleSignOut()}
       />
+    );
+  }
+
+  // --- Startup Loading Error / Timeout Card (No Infinite White Screen) ---
+  if (startupError && !db) {
+    return (
+      <StartupErrorScreen
+        lang={lang}
+        apiBaseUrl={serverConfig.apiBaseUrl}
+        failures={startupError.failures}
+        isTimeout={startupError.isTimeout}
+        onRetry={async () => {
+          await loadDatabase(session);
+        }}
+        onSignOut={() => handleSignOut()}
+        onSwitchToDemoMode={
+          !serverConfig.useMockApi
+            ? () => {
+                const saved = api.saveServerConfig({ ...serverConfig, useMockApi: true });
+                setServerConfig(saved);
+                setStartupError(null);
+                void api.auth.demoLogin(activeRole).then((s) => setSession(s));
+              }
+            : undefined
+        }
+      />
+    );
+  }
+
+  // --- Loading State (Protected by 10-Second Timeout) ---
+  if (loading || !db || !currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center px-5">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs text-center space-y-4">
+          <div className="w-9 h-9 mx-auto rounded-full border-2 border-indigo-200 dark:border-indigo-900 border-t-indigo-600 dark:border-t-indigo-400 animate-spin" />
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">
+              {t(lang, 'loadingWorkspace')}
+            </p>
+            {!serverConfig.useMockApi && (
+              <p className="text-[11px] font-mono text-slate-400 truncate" dir="ltr">
+                {serverConfig.apiBaseUrl}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            className="text-xs font-medium text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 cursor-pointer"
+          >
+            {t(lang, 'signOut')}
+          </button>
+        </div>
+      </div>
     );
   }
 

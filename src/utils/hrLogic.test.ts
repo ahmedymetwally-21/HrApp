@@ -23,12 +23,17 @@ import {
   canRoleActOnLeaveStep,
   evaluateClockInEligibility,
   evaluateModelLateness,
+  evaluateStartupEndpointResults,
   getDocumentExpiryStatus,
   getDocumentPreviewSource,
   getMissingModelDocuments,
   getScopedEmployees,
+  getStartupEndpointsForRole,
+  isAdminOrHRRole,
   isAttendanceTracked,
+  isMainManagerRole,
   isPayrollEligible,
+  normalizeUserRole,
   resolveApprovalWorkflow,
 } from './hrLogic';
 
@@ -454,3 +459,111 @@ test('Model document compliance and preview URL synthesis work accurately', () =
   const exp = getDocumentExpiryStatus('2020-01-01', new Date('2026-06-01'));
   assert.equal(exp.status, 'expired');
 });
+
+test('Case-insensitive Live PostgreSQL role normalization matches Demo Mode permissions', () => {
+  assert.equal(normalizeUserRole('main_manager'), UserRole.MainManager);
+  assert.equal(normalizeUserRole('MAIN_MANAGER'), UserRole.MainManager);
+  assert.equal(normalizeUserRole('Main Manager'), UserRole.MainManager);
+  assert.equal(normalizeUserRole('admin'), UserRole.MainManager);
+  assert.equal(normalizeUserRole('ADMIN'), UserRole.MainManager);
+  assert.equal(normalizeUserRole('super_admin'), UserRole.MainManager);
+
+  assert.equal(normalizeUserRole('hr'), UserRole.HRAdmin);
+  assert.equal(normalizeUserRole('HR'), UserRole.HRAdmin);
+  assert.equal(normalizeUserRole('hr_admin'), UserRole.HRAdmin);
+  assert.equal(normalizeUserRole('HR Admin'), UserRole.HRAdmin);
+
+  assert.equal(normalizeUserRole('section_manager'), UserRole.SectionManager);
+  assert.equal(normalizeUserRole('Section Manager'), UserRole.SectionManager);
+  assert.equal(normalizeUserRole('section_co_manager'), UserRole.SectionCoManager);
+  assert.equal(normalizeUserRole('Co-Manager'), UserRole.SectionCoManager);
+  assert.equal(normalizeUserRole('PRO'), UserRole.PRO);
+  assert.equal(normalizeUserRole('Accounting'), UserRole.Accounting);
+  assert.equal(normalizeUserRole('employee'), UserRole.Employee);
+  assert.equal(normalizeUserRole(undefined), UserRole.Employee);
+
+  assert.equal(isMainManagerRole('MAIN_MANAGER'), true);
+  assert.equal(isMainManagerRole('admin'), true);
+  assert.equal(isAdminOrHRRole('hr'), true);
+  assert.equal(isAdminOrHRRole('section_manager'), false);
+  assert.equal(canControlSalaryRelease('ADMIN'), true);
+  assert.equal(canControlSalaryRelease('hr'), true);
+});
+
+test('Role-based startup endpoints skip admin-only endpoints for non-admin users', () => {
+  const mainMgrPaths = getStartupEndpointsForRole('main_manager').map((s) => s.path);
+  assert.ok(mainMgrPaths.includes('/pro-assignments'));
+  assert.ok(mainMgrPaths.includes('/approval-workflows'));
+  assert.ok(mainMgrPaths.includes('/attendance/audit'));
+
+  const empPaths = getStartupEndpointsForRole('employee').map((s) => s.path);
+  assert.equal(empPaths.includes('/pro-assignments'), false);
+  assert.equal(empPaths.includes('/approval-workflows'), false);
+  assert.equal(empPaths.includes('/attendance/audit'), false);
+
+  const accPaths = getStartupEndpointsForRole('Accounting').map((s) => s.path);
+  assert.ok(accPaths.includes('/payroll/deductions'));
+  assert.ok(accPaths.includes('/payroll/releases'));
+  assert.equal(accPaths.includes('/documents'), false);
+  assert.equal(accPaths.includes('/pro-assignments'), false);
+});
+
+test('Promise.allSettled startup evaluator defaults partial 403s to empty while surfacing 500/404/timeout failures', () => {
+  const partial403 = evaluateStartupEndpointResults([
+    { key: 'companies', path: '/companies', ok: true, value: [{ id: 'c1' }] },
+    { key: 'employees', path: '/users', ok: true, value: [{ id: 'u1' }] },
+    {
+      key: 'attendanceAudit',
+      path: '/attendance/audit',
+      ok: false,
+      failure: { endpoint: '/attendance/audit', status: 403, statusText: 'Forbidden', message: 'Admin only' },
+    },
+    {
+      key: 'workflows',
+      path: '/approval-workflows',
+      ok: false,
+      failure: { endpoint: '/approval-workflows', status: 403, statusText: 'Forbidden', message: 'Admin only' },
+    },
+  ]);
+  assert.equal(partial403.fatalFailures.length, 0);
+  assert.deepEqual(partial403.forbiddenEndpoints, ['/attendance/audit', '/approval-workflows']);
+  assert.equal(partial403.values.attendanceAudit, undefined);
+
+  const serverFail = evaluateStartupEndpointResults([
+    { key: 'companies', path: '/companies', ok: true, value: [] },
+    {
+      key: 'employees',
+      path: '/users',
+      ok: false,
+      failure: { endpoint: '/users', status: 500, statusText: 'Internal Server Error', message: 'DB error' },
+    },
+    {
+      key: 'geofences',
+      path: '/locations',
+      ok: false,
+      failure: { endpoint: '/locations', status: 404, statusText: 'Not Found', message: 'Not found' },
+    },
+  ]);
+  assert.equal(serverFail.fatalFailures.length, 2);
+  assert.equal(serverFail.fatalFailures[0].endpoint, '/users');
+  assert.equal(serverFail.fatalFailures[0].status, 500);
+  assert.equal(serverFail.fatalFailures[1].status, 404);
+
+  const total403 = evaluateStartupEndpointResults([
+    {
+      key: 'companies',
+      path: '/companies',
+      ok: false,
+      failure: { endpoint: '/companies', status: 403, statusText: 'Forbidden', message: 'Password change required' },
+    },
+    {
+      key: 'employees',
+      path: '/users',
+      ok: false,
+      failure: { endpoint: '/users', status: 403, statusText: 'Forbidden', message: 'Password change required' },
+    },
+  ]);
+  assert.equal(total403.fatalFailures.length, 2);
+  assert.equal(total403.fatalFailures[0].status, 403);
+});
+

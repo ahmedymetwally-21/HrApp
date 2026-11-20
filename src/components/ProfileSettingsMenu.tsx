@@ -4,6 +4,7 @@ import {
   ChevronUp,
   Crosshair,
   Globe,
+  KeyRound,
   Laptop,
   LogOut,
   Moon,
@@ -43,6 +44,7 @@ interface ProfileSettingsMenuProps {
   onChangeSimulatedDevice: (device: 'mobile' | 'desktop') => void;
   onRequestLiveGPS: () => void;
   onUpdateServerConfig: (cfg: ServerConfig) => void;
+  onOpenChangePassword: () => void;
   onSignOut: () => void;
 }
 
@@ -63,6 +65,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
   onChangeSimulatedDevice,
   onRequestLiveGPS,
   onUpdateServerConfig,
+  onOpenChangePassword,
   onSignOut,
 }) => {
   const [showSim, setShowSim] = useState(false);
@@ -343,8 +346,19 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
           </div>
         </div>
 
-        {/* Sign Out */}
-        <div className="p-4 pb-safe border-t border-slate-200 dark:border-slate-800">
+        {/* Account Actions: Change Password + Sign Out */}
+        <div className="p-4 pb-safe border-t border-slate-200 dark:border-slate-800 space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onOpenChangePassword();
+            }}
+            className="w-full min-h-[40px] rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+          >
+            <KeyRound className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            {t(lang, 'changePassword')}
+          </button>
           <button
             type="button"
             onClick={() => {

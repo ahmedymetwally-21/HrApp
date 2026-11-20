@@ -5,6 +5,8 @@ import {
   ArrowUp,
   Building2,
   ChevronRight,
+  Edit3,
+  FileBadge,
   FolderKanban,
   GitBranch,
   Laptop,
@@ -15,11 +17,13 @@ import {
   RotateCcw,
   ShieldCheck,
   Smartphone,
+  Tag,
   Trash2,
+  Users,
   WifiOff,
   X,
 } from 'lucide-react';
-import { getStepRoleLabel, t } from '../i18n/translations';
+import { getRoleLabel, getStepRoleLabel, t } from '../i18n/translations';
 import {
   AppSettings,
   ApprovalStepRole,
@@ -29,29 +33,37 @@ import {
   Company,
   DocumentTypeValue,
   Employee,
+  EmployeeLabel,
   EmployeeModel,
   GeofenceZone,
   Language,
   LatenessPenaltyTier,
+  ProAssignment,
   Section,
   UserRole,
   Weekday,
 } from '../types/hr';
+import { formatShortDate, isProAssignmentActive } from '../utils/hrLogic';
 import { GeofenceMap } from './GeofenceMap';
 
 type SettingsSection =
   | 'hub'
   | 'companies'
   | 'models'
+  | 'labels'
+  | 'pro_access'
   | 'workflows'
   | 'geofences'
   | 'sections';
 
 interface SettingsHubViewProps {
   lang: Language;
+  currentUser: Employee;
   activeRole: UserRole;
   companies: Company[];
   sections: Section[];
+  labels: EmployeeLabel[];
+  proAssignments: ProAssignment[];
   models: EmployeeModel[];
   employees: Employee[];
   geofences: GeofenceZone[];
@@ -60,6 +72,18 @@ interface SettingsHubViewProps {
   onCreateCompany: (input: Omit<Company, 'id'>) => Promise<void>;
   onToggleCompanyActive: (id: string) => Promise<void>;
   onCreateSection: (input: Omit<Section, 'id'>) => Promise<void>;
+  onCreateLabel: (input: Omit<EmployeeLabel, 'id'>) => Promise<void>;
+  onUpdateLabel: (id: string, patch: Partial<EmployeeLabel>) => Promise<void>;
+  onDeleteLabel: (id: string) => Promise<void>;
+  onCreateProAssignment: (input: Omit<ProAssignment, 'id' | 'createdAt'>) => Promise<void>;
+  onDeleteProAssignment: (id: string) => Promise<void>;
+  onBulkAssignZones: (params: {
+    companyId: string | 'all';
+    sectionId: string | 'all';
+    zoneIds: string[];
+    replaceExisting: boolean;
+  }) => Promise<number>;
+  onUpdateEmployee: (id: string, patch: Partial<Employee>) => Promise<void>;
   onCreateModel: (input: Omit<EmployeeModel, 'id'>) => Promise<void>;
   onUpdateModel: (id: string, patch: Partial<EmployeeModel>) => Promise<void>;
   onSaveWorkflow: (wf: Omit<ApprovalWorkflow, 'id'> & { id?: string }) => Promise<void>;
@@ -72,6 +96,19 @@ interface SettingsHubViewProps {
   onResetDemoData: () => Promise<void>;
 }
 
+const PRESET_LABEL_COLORS = [
+  '#D97706',
+  '#2563EB',
+  '#7C3AED',
+  '#EA580C',
+  '#0891B2',
+  '#DC2626',
+  '#64748B',
+  '#16A34A',
+  '#DB2777',
+  '#4F46E5',
+];
+
 const ALL_WEEKDAYS: Weekday[] = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const BUILT_IN_DOCS: DocumentTypeValue[] = Object.values(BuiltInDocumentType);
 const STEP_ROLES: ApprovalStepRole[] = ['section_manager', 'hr_admin', 'main_manager'];
@@ -81,9 +118,12 @@ const INPUT_CLASS =
 
 export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   lang,
+  currentUser,
   activeRole,
   companies,
   sections,
+  labels,
+  proAssignments,
   models,
   employees,
   geofences,
@@ -92,6 +132,13 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   onCreateCompany,
   onToggleCompanyActive,
   onCreateSection,
+  onCreateLabel,
+  onUpdateLabel,
+  onDeleteLabel,
+  onCreateProAssignment,
+  onDeleteProAssignment,
+  onBulkAssignZones,
+  onUpdateEmployee,
   onCreateModel,
   onUpdateModel,
   onSaveWorkflow,
@@ -160,6 +207,35 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   const [secName, setSecName] = useState('');
   const [secCode, setSecCode] = useState('');
   const [customDocDraft, setCustomDocDraft] = useState('');
+
+  // --- Custom Employee Status Labels state ---
+  const [labelName, setLabelName] = useState('');
+  const [labelColor, setLabelColor] = useState('#2563EB');
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
+
+  // --- PRO Time-Limited Document Access state ---
+  const proUsers = useMemo(
+    () => employees.filter((e) => e.role === UserRole.PRO && e.active),
+    [employees]
+  );
+  const assignableProEmployees = useMemo(
+    () => employees.filter((e) => e.role !== UserRole.PRO && e.active),
+    [employees]
+  );
+  const [proUserId, setProUserId] = useState(proUsers[0]?.id ?? '');
+  const [proEmpId, setProEmpId] = useState(assignableProEmployees[0]?.id ?? '');
+  const [proStart, setProStart] = useState(() => new Date().toISOString().slice(0, 16));
+  const [proExpires, setProExpires] = useState(() =>
+    new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 16)
+  );
+  const [proNotes, setProNotes] = useState('');
+
+  // --- Bulk Assign Geofence Zones state ---
+  const [bulkCompanyId, setBulkCompanyId] = useState<string>('all');
+  const [bulkSectionId, setBulkSectionId] = useState<string>('all');
+  const [bulkZoneIds, setBulkZoneIds] = useState<string[]>([]);
+  const [bulkReplace, setBulkReplace] = useState(true);
+  const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
   const allDocTypes = useMemo(
     () => [...BUILT_IN_DOCS, ...settings.customDocumentTypes],
@@ -369,6 +445,20 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
       icon: Layers,
     },
     {
+      id: 'labels',
+      title: t(lang, 'labelsManager'),
+      description: 'Create color-coded HR status tags (Visa, Emirates ID, Medical, Probation) and filter staff.',
+      metric: `${labels.length} status labels`,
+      icon: Tag,
+    },
+    {
+      id: 'pro_access',
+      title: t(lang, 'proAccessManager'),
+      description: 'Grant PRO officers time-limited document viewing & download access per employee.',
+      metric: `${proAssignments.filter((a) => isProAssignmentActive(a)).length} active grants`,
+      icon: FileBadge,
+    },
+    {
       id: 'workflows',
       title: t(lang, 'workflowBuilder'),
       description: 'Customize multi-step leave chains per company or section with auto-approve rules.',
@@ -379,14 +469,14 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     {
       id: 'geofences',
       title: t(lang, 'geofencesPolicy'),
-      description: 'Interactive OpenStreetMap geofence pins, radii, and PC vs. Mobile GPS policy.',
+      description: 'OpenStreetMap pins, PC vs. Mobile policy, and bulk zone assignment / exemption.',
       metric: `${geofences.filter((z) => z.active).length} active zones`,
       icon: MapPin,
     },
     {
       id: 'sections',
       title: t(lang, 'sectionsDocs'),
-      description: 'Manage organizational sections, custom document types, and offline preview.',
+      description: 'Manage sections, assign Section Managers & Co-Managers, and custom doc types.',
       metric: `${sections.length} sections · ${settings.customDocumentTypes.length} custom docs`,
       icon: FolderKanban,
     },
@@ -916,6 +1006,357 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     );
   }
 
+  // --- 2B. CUSTOM EMPLOYEE STATUS LABELS SUB-VIEW ---
+  if (subView === 'labels') {
+    const handleSaveLabel = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!labelName.trim()) return;
+      setSaving(true);
+      try {
+        if (editingLabelId) {
+          await onUpdateLabel(editingLabelId, { name: labelName.trim(), color: labelColor });
+          setEditingLabelId(null);
+        } else {
+          await onCreateLabel({ name: labelName.trim(), color: labelColor });
+        }
+        setLabelName('');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="space-y-5">
+        {renderSubHeader(
+          t(lang, 'labelsManager'),
+          'Create, rename, recolor, and manage multi-select status badges shown across Employee Directory and Payroll.'
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+            {labels.map((lbl) => {
+              const count = employees.filter((e) => e.labelIds.includes(lbl.id)).length;
+              return (
+                <div key={lbl.id} className="p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span
+                      style={{
+                        backgroundColor: `${lbl.color}1A`,
+                        color: lbl.color,
+                        borderColor: `${lbl.color}55`,
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold truncate"
+                    >
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: lbl.color }}
+                      />
+                      {lbl.name}
+                    </span>
+                    <span className="text-xs text-slate-500 shrink-0">
+                      {count} staff
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingLabelId(lbl.id);
+                        setLabelName(lbl.name);
+                        setLabelColor(lbl.color);
+                      }}
+                      aria-label={`Edit ${lbl.name}`}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteLabel(lbl.id)}
+                      aria-label={`Delete ${lbl.name}`}
+                      className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <form
+            onSubmit={handleSaveLabel}
+            className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Tag className="w-4 h-4 text-indigo-600" />
+                {editingLabelId ? 'Edit Status Label' : 'Create Custom Label'}
+              </h2>
+              {editingLabelId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingLabelId(null);
+                    setLabelName('');
+                  }}
+                  className="text-xs text-slate-500 hover:underline cursor-pointer"
+                >
+                  {t(lang, 'cancel')}
+                </button>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Label Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g., Golden Visa Pending"
+                value={labelName}
+                onChange={(e) => setLabelName(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+                Badge Color
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                {PRESET_LABEL_COLORS.map((hex) => (
+                  <button
+                    key={hex}
+                    type="button"
+                    onClick={() => setLabelColor(hex)}
+                    style={{ backgroundColor: hex }}
+                    aria-label={`Color ${hex}`}
+                    className={`w-7 h-7 rounded-full cursor-pointer transition-transform ${
+                      labelColor.toLowerCase() === hex.toLowerCase()
+                        ? 'ring-2 ring-offset-2 ring-indigo-600 scale-110'
+                        : ''
+                    }`}
+                  />
+                ))}
+                <input
+                  type="color"
+                  value={labelColor}
+                  onChange={(e) => setLabelColor(e.target.value)}
+                  aria-label="Custom badge color picker"
+                  className="w-8 h-8 rounded cursor-pointer border border-slate-200 dark:border-slate-700"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-slate-50 dark:bg-slate-950 p-3 flex items-center justify-between text-xs">
+              <span className="text-slate-500">Live Preview</span>
+              <span
+                style={{
+                  backgroundColor: `${labelColor}1A`,
+                  color: labelColor,
+                  borderColor: `${labelColor}55`,
+                }}
+                className="px-2.5 py-1 rounded-lg border font-semibold"
+              >
+                {labelName.trim() || 'Sample Label'}
+              </span>
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+            >
+              {editingLabelId ? t(lang, 'save') : 'Create Label'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- 2C. PRO TIME-LIMITED DOCUMENT ACCESS SUB-VIEW ---
+  if (subView === 'pro_access') {
+    const handleAssignPro = async (e: React.FormEvent) => {
+      e.preventDefault();
+      const chosenPro = proUserId || proUsers[0]?.id;
+      const chosenEmp = proEmpId || assignableProEmployees[0]?.id;
+      if (!chosenPro || !chosenEmp || !proStart || !proExpires) return;
+      setSaving(true);
+      try {
+        await onCreateProAssignment({
+          proUserId: chosenPro,
+          employeeId: chosenEmp,
+          accessStart: new Date(proStart).toISOString(),
+          accessExpiresAt: new Date(proExpires).toISOString(),
+          assignedBy: currentUser.fullName,
+          notes: proNotes.trim() || undefined,
+        });
+        setProNotes('');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="space-y-5">
+        {renderSubHeader(
+          t(lang, 'proAccessManager'),
+          'Assign specific employees to a PRO officer for a limited time window. Expired grants hide automatically.'
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+            {proAssignments.length === 0 ? (
+              <p className="p-8 text-center text-xs text-slate-500">
+                No PRO document assignments configured yet.
+              </p>
+            ) : (
+              proAssignments.map((grant) => {
+                const proEmp = employees.find((e) => e.id === grant.proUserId);
+                const targetEmp = employees.find((e) => e.id === grant.employeeId);
+                const active = isProAssignmentActive(grant);
+                return (
+                  <div key={grant.id} className="p-4 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900 dark:text-white">
+                          {targetEmp?.fullName ?? grant.employeeId}
+                        </span>
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-md ${
+                            active
+                              ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                          }`}
+                        >
+                          {active ? 'Active Access' : 'Expired'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        PRO: <strong>{proEmp?.fullName ?? grant.proUserId}</strong> ·{' '}
+                        {formatShortDate(grant.accessStart)} →{' '}
+                        {formatShortDate(grant.accessExpiresAt)}
+                      </p>
+                      {grant.notes && (
+                        <p className="text-[11px] text-slate-500 mt-0.5">{grant.notes}</p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteProAssignment(grant.id)}
+                      aria-label="Revoke PRO access"
+                      className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <form
+            onSubmit={handleAssignPro}
+            className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
+          >
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <FileBadge className="w-4 h-4 text-indigo-600" />
+              Grant Time-Limited Access
+            </h2>
+            {proUsers.length === 0 ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Create an employee with the PRO role first to assign document access.
+              </p>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    PRO Officer
+                  </label>
+                  <select
+                    value={proUserId || proUsers[0]?.id}
+                    onChange={(e) => setProUserId(e.target.value)}
+                    className={INPUT_CLASS}
+                  >
+                    {proUsers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.fullName} ({p.employeeCode})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    Target Employee (Documents Only)
+                  </label>
+                  <select
+                    value={proEmpId || assignableProEmployees[0]?.id}
+                    onChange={(e) => setProEmpId(e.target.value)}
+                    className={INPUT_CLASS}
+                  >
+                    {assignableProEmployees.map((emp) => (
+                      <option key={emp.id} value={emp.id}>
+                        {emp.fullName} ({emp.employeeCode})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      Access Start
+                    </label>
+                    <input
+                      type="datetime-local"
+                      required
+                      value={proStart}
+                      onChange={(e) => setProStart(e.target.value)}
+                      className={INPUT_CLASS}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      Access Expires At
+                    </label>
+                    <input
+                      type="datetime-local"
+                      required
+                      value={proExpires}
+                      onChange={(e) => setProExpires(e.target.value)}
+                      className={INPUT_CLASS}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    Purpose / Notes (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., Emirates ID & Visa stamping"
+                    value={proNotes}
+                    onChange={(e) => setProNotes(e.target.value)}
+                    className={INPUT_CLASS}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+                >
+                  Grant PRO Document Access
+                </button>
+              </>
+            )}
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   // --- 3. APPROVAL WORKFLOW BUILDER SUB-VIEW (MAIN MANAGER ONLY) ---
   if (subView === 'workflows') {
     return (
@@ -1403,6 +1844,143 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             </button>
           </form>
         </div>
+
+        {/* Bulk Assign Zones to Group (Company + Section) or Mark Geofence Exempt */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Users className="w-4 h-4 text-indigo-600" />
+                {t(lang, 'bulkAssignZones')}
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Assign multiple map zones to an entire company/section in one action, or clear all
+                zones to mark staff Geofence Exempt.
+              </p>
+            </div>
+            {bulkFeedback && (
+              <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                {bulkFeedback}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Target Company
+              </label>
+              <select
+                value={bulkCompanyId}
+                onChange={(e) => setBulkCompanyId(e.target.value)}
+                className={INPUT_CLASS}
+              >
+                <option value="all">{t(lang, 'allCompanies')}</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Target Section
+              </label>
+              <select
+                value={bulkSectionId}
+                onChange={(e) => setBulkSectionId(e.target.value)}
+                className={INPUT_CLASS}
+              >
+                <option value="all">All Sections</option>
+                {sections.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Assignment Mode
+              </label>
+              <select
+                value={bulkReplace ? 'replace' : 'append'}
+                onChange={(e) => setBulkReplace(e.target.value === 'replace')}
+                className={INPUT_CLASS}
+              >
+                <option value="replace">Replace existing zones</option>
+                <option value="append">Add to existing zones</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Zones to Assign ({bulkZoneIds.length === 0 ? 'None — Geofence Exempt' : `${bulkZoneIds.length} selected`})
+              </p>
+              <button
+                type="button"
+                onClick={() => setBulkZoneIds([])}
+                className="text-xs font-medium text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+              >
+                Clear (Mark Exempt)
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {geofences.map((z) => {
+                const selected = bulkZoneIds.includes(z.id);
+                return (
+                  <button
+                    key={z.id}
+                    type="button"
+                    onClick={() =>
+                      setBulkZoneIds((prev) =>
+                        selected ? prev.filter((id) => id !== z.id) : [...prev, z.id]
+                      )
+                    }
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
+                      selected
+                        ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
+                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {z.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={async () => {
+                setSaving(true);
+                try {
+                  const count = await onBulkAssignZones({
+                    companyId: bulkCompanyId,
+                    sectionId: bulkSectionId,
+                    zoneIds: bulkZoneIds,
+                    replaceExisting: bulkReplace,
+                  });
+                  setBulkFeedback(
+                    bulkZoneIds.length === 0
+                      ? `Updated ${count} employee${count === 1 ? '' : 's'} to Geofence Exempt.`
+                      : `Assigned ${bulkZoneIds.length} zone(s) to ${count} employee${count === 1 ? '' : 's'}.`
+                  );
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+            >
+              Apply Bulk Zone Assignment
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -1517,6 +2095,67 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               {t(lang, 'add')}
             </button>
           </form>
+        </div>
+      </div>
+
+      {/* Manager & Co-Manager Section Assignment Panel */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Users className="w-4 h-4 text-indigo-600" />
+            Manager & Co-Manager Section Assignments
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Assign one or more sections directly to Section Managers and Section Co-Managers.
+          </p>
+        </div>
+        <div className="divide-y divide-slate-100 dark:divide-slate-800">
+          {employees
+            .filter(
+              (e) =>
+                e.role === UserRole.SectionManager || e.role === UserRole.SectionCoManager
+            )
+            .map((mgr) => (
+              <div
+                key={mgr.id}
+                className="py-3 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                    {mgr.fullName}
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {getRoleLabel(lang, mgr.role)} · {mgr.jobTitle}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sections.map((sec) => {
+                    const assigned = mgr.managedSectionIds.includes(sec.id);
+                    return (
+                      <button
+                        key={sec.id}
+                        type="button"
+                        onClick={() => {
+                          const next = assigned
+                            ? mgr.managedSectionIds.filter((id) => id !== sec.id)
+                            : [...mgr.managedSectionIds, sec.id];
+                          void onUpdateEmployee(mgr.id, {
+                            managedSectionIds: next.length > 0 ? next : [mgr.sectionId],
+                          });
+                        }}
+                        className={`px-2.5 py-1 rounded-lg border text-xs font-medium cursor-pointer ${
+                          assigned
+                            ? 'border-indigo-600 bg-indigo-600 text-white'
+                            : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        {sec.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
         </div>
       </div>
 

@@ -33,6 +33,7 @@ import {
   formatAED,
   formatShortDate,
   formatTime,
+  isAttendanceTracked,
   resolveClockInPolicy,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
@@ -123,15 +124,19 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       effectivePolicy,
       isDesktopDevice: simulatedDevice === 'desktop',
       maxAccuracyMeters: settings.maxMobileAccuracyMeters,
+      hasNoAssignedZones: currentUser.assignedZoneIds.length === 0,
     });
   }, [currentUser, settings, gpsReading, assignedZones, simulatedDevice]);
 
   const visibleLogs = useMemo(() => {
     return attendance.filter((log) => {
-      if (!empMap.has(log.employeeId)) return false;
+      const emp = empMap.get(log.employeeId);
+      if (!emp || !isAttendanceTracked(emp)) return false;
       if (selectedCompanyId !== 'all' && log.companyId !== selectedCompanyId) {
-        const emp = empMap.get(log.employeeId);
-        if (!emp || (emp.primaryCompanyId !== selectedCompanyId && !emp.sharedCompanyIds.includes(selectedCompanyId))) {
+        if (
+          emp.primaryCompanyId !== selectedCompanyId &&
+          !emp.sharedCompanyIds.includes(selectedCompanyId)
+        ) {
           return false;
         }
       }
@@ -200,68 +205,74 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
 
   return (
     <div className="space-y-5">
-      {/* Compact Top Clock-In Strip + Expandable Map Icon */}
-      <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div
-              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                clockEval.allowed ? 'bg-emerald-500' : 'bg-rose-500'
-              }`}
-            />
-            <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                {clockEval.allowed
-                  ? `${t(lang, 'insideZone')} · ${clockEval.nearestZone?.name}`
-                  : clockEval.reason}
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {openShiftLog
-                  ? `${t(lang, 'onShift')} since ${formatTime(openShiftLog.clockInTime)}`
-                  : t(lang, 'offShift')}{' '}
-                · {clockEval.punchSource}
-              </p>
+      {/* Compact Top Clock-In Strip — STRICTLY HIDDEN for Main Manager (Executive Exemption) */}
+      {activeRole !== UserRole.MainManager && (
+        <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                  clockEval.allowed ? 'bg-emerald-500' : 'bg-rose-500'
+                }`}
+              />
+              <div>
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                  {clockEval.isGeofenceExempt && clockEval.allowed
+                    ? t(lang, 'geofenceExempt')
+                    : clockEval.allowed
+                      ? `${t(lang, 'insideZone')} · ${clockEval.nearestZone?.name}`
+                      : clockEval.reason}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {openShiftLog
+                    ? `${t(lang, 'onShift')} since ${formatTime(openShiftLog.clockInTime)}`
+                    : t(lang, 'offShift')}{' '}
+                  · {clockEval.punchSource}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowMap((v) => !v)}
+                aria-expanded={showMap}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <Info className="w-3.5 h-3.5" />
+                {showMap ? t(lang, 'hideMap') : t(lang, 'mapDetails')}
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  openShiftLog ? void onClockOut(openShiftLog.id) : void onClockIn()
+                }
+                disabled={!openShiftLog && !clockEval.allowed}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+                  openShiftLog
+                    ? 'bg-rose-600 hover:bg-rose-700'
+                    : 'bg-indigo-700 hover:bg-indigo-800'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+                {openShiftLog ? t(lang, 'clockOut') : t(lang, 'clockIn')}
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowMap((v) => !v)}
-              aria-expanded={showMap}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-            >
-              <Info className="w-3.5 h-3.5" />
-              {showMap ? t(lang, 'hideMap') : t(lang, 'mapDetails')}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => (openShiftLog ? void onClockOut(openShiftLog.id) : void onClockIn())}
-              disabled={!openShiftLog && !clockEval.allowed}
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
-                openShiftLog
-                  ? 'bg-rose-600 hover:bg-rose-700'
-                  : 'bg-indigo-700 hover:bg-indigo-800'
-              }`}
-            >
-              <Clock className="w-4 h-4" />
-              {openShiftLog ? t(lang, 'clockOut') : t(lang, 'clockIn')}
-            </button>
-          </div>
-        </div>
-
-        {showMap && (
-          <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
-            <GeofenceMap
-              zones={assignedZones}
-              userLocation={gpsReading}
-              isInsideZone={clockEval.allowed}
-              heightClass="h-64"
-            />
-          </div>
-        )}
-      </section>
+          {showMap && (
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
+              <GeofenceMap
+                zones={assignedZones}
+                userLocation={gpsReading}
+                isInsideZone={clockEval.allowed}
+                heightClass="h-64"
+              />
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Minimalist Attendance List (Max 3–4 Visible Fields per Row) */}
       <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">

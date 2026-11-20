@@ -14,7 +14,7 @@ import {
   Users,
   Wallet,
 } from 'lucide-react';
-import { getStepRoleLabel, t } from '../i18n/translations';
+import { getSalaryStatusLabel, getStepRoleLabel, t } from '../i18n/translations';
 import {
   AppSettings,
   AttendanceLog,
@@ -28,6 +28,8 @@ import {
   LeaveRequest,
   LeaveStatus,
   PayrollAdjustment,
+  ProAssignment,
+  SalaryReleaseSchedule,
   Section,
   UserRole,
 } from '../types/hr';
@@ -41,6 +43,9 @@ import {
   getDocumentExpiryStatus,
   getEffectiveShiftEnd,
   getEffectiveShiftStart,
+  isAttendanceTracked,
+  isPayrollEligible,
+  isProAssignmentActive,
   resolveClockInPolicy,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
@@ -68,6 +73,8 @@ interface DashboardViewProps {
   attendance: AttendanceLog[];
   leaves: LeaveRequest[];
   payrollAdjustments: PayrollAdjustment[];
+  salaryReleases: SalaryReleaseSchedule[];
+  proAssignments: ProAssignment[];
   settings: AppSettings;
   gpsReading: GPSReading | null;
   simulatedDevice: 'mobile' | 'desktop';
@@ -92,6 +99,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   attendance,
   leaves,
   payrollAdjustments,
+  salaryReleases,
+  proAssignments,
   settings,
   gpsReading,
   simulatedDevice,
@@ -134,6 +143,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       effectivePolicy,
       isDesktopDevice: simulatedDevice === 'desktop',
       maxAccuracyMeters: settings.maxMobileAccuracyMeters,
+      hasNoAssignedZones: currentUser.assignedZoneIds.length === 0,
     });
   }, [currentUser, settings, gpsReading, assignedZones, simulatedDevice]);
 
@@ -151,6 +161,120 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   // ============================================================================
+  // PRO HOME SCREEN (Strictly Time-Limited Assigned Documents Only — Zero Salary)
+  // ============================================================================
+  if (activeRole === UserRole.PRO) {
+    const activeGrants = proAssignments.filter(
+      (a) => a.proUserId === currentUser.id && isProAssignmentActive(a)
+    );
+    const proDocAlerts = documents.filter(
+      (d) => getDocumentExpiryStatus(d.expiryDate).status !== 'valid'
+    );
+
+    return (
+      <div className="max-w-3xl mx-auto space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
+              {t(lang, 'navProDocs')}
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Time-limited government & visa document access for assigned employees.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('employees')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+          >
+            <FolderOpen className="w-4 h-4" />
+            Open Assigned Docs
+          </button>
+        </div>
+
+        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <button
+            type="button"
+            onClick={() => onNavigate('employees')}
+            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
+          >
+            <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <p className="mt-2.5 text-2xl font-bold font-mono text-slate-900 dark:text-white">
+              {scopedEmployees.length}
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5">Active Assigned Employees</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('employees')}
+            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
+          >
+            <FolderOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <p className="mt-2.5 text-2xl font-bold font-mono text-slate-900 dark:text-white">
+              {documents.length}
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5">Accessible Documents</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('employees')}
+            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
+          >
+            <FileWarning className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <p className="mt-2.5 text-2xl font-bold font-mono text-amber-700 dark:text-amber-400">
+              {proDocAlerts.length}
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5">{t(lang, 'expiringDocs')}</p>
+          </button>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+              Active Access Windows
+            </h3>
+            <span className="text-xs text-slate-500">{activeGrants.length} active</span>
+          </div>
+          {activeGrants.length === 0 ? (
+            <p className="p-8 text-center text-xs text-slate-500">
+              No active employee assignments at the moment.
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+              {activeGrants.map((g) => {
+                const emp = scopedEmployees.find((e) => e.id === g.employeeId);
+                return (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => onNavigate('employees')}
+                    className="w-full px-5 py-3.5 flex items-center justify-between gap-3 text-start hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Avatar src={emp?.avatarUrl} name={emp?.fullName ?? 'Employee'} size="sm" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {emp?.fullName ?? g.employeeId}
+                        </p>
+                        <p className="text-xs text-slate-500 truncate">
+                          {g.notes || 'Document access'}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 shrink-0">
+                      {t(lang, 'accessExpires')}: {formatShortDate(g.accessExpiresAt)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  // ============================================================================
   // CLEAN EMPLOYEE HOME SCREEN (Radical Simplicity: ONE Primary CTA + Hidden Map)
   // ============================================================================
   if (activeRole === UserRole.Employee) {
@@ -165,7 +289,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       currentUser,
       currentMonth,
       payrollAdjustments,
-      attendance
+      attendance,
+      salaryReleases
     );
     const shiftStart = userModel ? getEffectiveShiftStart(currentUser, userModel) : '08:00';
     const shiftEnd = userModel ? getEffectiveShiftEnd(currentUser, userModel) : '17:00';
@@ -217,9 +342,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 }`}
               />
               <span>
-                {clockEval.allowed
-                  ? `${t(lang, 'insideZone')} · ${clockEval.nearestZone?.name}`
-                  : t(lang, 'outsideZone')}
+                {clockEval.isGeofenceExempt && clockEval.allowed
+                  ? t(lang, 'geofenceExempt')
+                  : clockEval.allowed
+                    ? `${t(lang, 'insideZone')} · ${clockEval.nearestZone?.name}`
+                    : t(lang, 'outsideZone')}
               </span>
             </div>
 
@@ -323,7 +450,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="mt-2.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white truncate">
               {myPayroll.netSalary.toLocaleString()}
             </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 truncate">AED Net</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+              {getSalaryStatusLabel(lang, myPayroll.release.status)} ·{' '}
+              {formatShortDate(
+                myPayroll.release.status === 'Delayed' && myPayroll.release.delayedUntilDate
+                  ? myPayroll.release.delayedUntilDate
+                  : myPayroll.release.releaseDate
+              )}
+            </p>
           </button>
         </section>
       </div>
@@ -332,12 +466,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // ============================================================================
   // MANAGEMENT / HR / SECTION MANAGER / CO-MANAGER WORKSPACE HOME
+  // (Main Manager accounts are strictly excluded from Attendance & Payroll metrics)
   // ============================================================================
   const activeScoped = scopedEmployees.filter((e) => e.active);
-  const todayLogs = attendance.filter((a) => a.date === todayIso && scopedIds.has(a.employeeId));
+  const trackedActiveScoped = activeScoped.filter(isAttendanceTracked);
+  const trackedIds = new Set(trackedActiveScoped.map((e) => e.id));
+  const todayLogs = attendance.filter((a) => a.date === todayIso && trackedIds.has(a.employeeId));
   const presentIds = new Set(todayLogs.map((a) => a.employeeId));
   const lateTodayCount = todayLogs.filter((a) => a.isLate && !a.latenessExcused).length;
-  const absentTodayCount = Math.max(0, activeScoped.length - presentIds.size);
+  const absentTodayCount = Math.max(0, trackedActiveScoped.length - presentIds.size);
 
   const actionableLeaves = leaves.filter(
     (l) =>
@@ -357,13 +494,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .filter((x) => x.expiry.status !== 'valid')
     .sort((a, b) => a.expiry.daysRemaining - b.expiry.daysRemaining);
 
-  const totalNetPayroll = activeScoped.reduce((sum, emp) => {
-    // Keep core payroll consolidated under primary company when filtered to a single company
-    if (selectedCompanyId !== 'all' && emp.primaryCompanyId !== selectedCompanyId) {
-      return sum;
-    }
-    return sum + calculateEmployeePayroll(emp, currentMonth, payrollAdjustments, attendance).netSalary;
-  }, 0);
+  const totalNetPayroll = activeScoped
+    .filter(isPayrollEligible)
+    .reduce((sum, emp) => {
+      if (selectedCompanyId !== 'all' && emp.primaryCompanyId !== selectedCompanyId) {
+        return sum;
+      }
+      return (
+        sum +
+        calculateEmployeePayroll(emp, currentMonth, payrollAdjustments, attendance, salaryReleases)
+          .netSalary
+      );
+    }, 0);
 
   const scopeTitle =
     selectedCompanyId === 'all'
@@ -409,7 +551,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <p className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
             {presentIds.size}
-            <span className="text-sm font-normal text-slate-400"> / {activeScoped.length}</span>
+            <span className="text-sm font-normal text-slate-400">
+              {' '}
+              / {trackedActiveScoped.length}
+            </span>
           </p>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             {lateTodayCount} {t(lang, 'late')} · {absentTodayCount} absent

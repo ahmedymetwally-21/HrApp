@@ -14,15 +14,20 @@ import {
   AttendanceLog,
   AuthSession,
   Company,
+  CreateEmployeePayload,
   Employee,
   EmployeeDocument,
+  EmployeeLabel,
   EmployeeModel,
   GeofenceZone,
   HRDatabase,
   LeaveRequest,
   LeaveStatus,
   PayrollAdjustment,
+  ProAssignment,
   PunchSource,
+  SalaryReleaseSchedule,
+  SalaryReleaseStatus,
   Section,
   ShiftSchedule,
   UserRole,
@@ -33,6 +38,7 @@ import {
   buildLeaveApprovalChain,
   evaluateModelLateness,
   getEffectiveShiftStart,
+  isAttendanceTracked,
   resolveApprovalWorkflow,
 } from '../utils/hrLogic';
 import { createInitialSeedData } from './seedData';
@@ -43,8 +49,8 @@ export const USE_MOCK_API =
 const DEFAULT_API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://192.168.1.50:8000/api/v1';
 
-const STORAGE_KEY = 'yaldi_hr_db_v1';
-const SESSION_KEY = 'yaldi_hr_session_v1';
+const STORAGE_KEY = 'yaldi_hr_db_v2';
+const SESSION_KEY = 'yaldi_hr_session_v2';
 const SERVER_CONFIG_KEY = 'yaldi_hr_server_config_v1';
 
 export interface ServerConfig {
@@ -171,6 +177,8 @@ const ROLE_DEFAULT_DEMO_USER: Record<UserRole, string> = {
   [UserRole.HRAdmin]: 'emp-layla',
   [UserRole.SectionManager]: 'emp-karim',
   [UserRole.SectionCoManager]: 'emp-priya',
+  [UserRole.PRO]: 'emp-hassan',
+  [UserRole.Accounting]: 'emp-nadia',
   [UserRole.Employee]: 'emp-omar',
 };
 
@@ -214,11 +222,16 @@ export const api = {
       if (!matched) {
         throw new Error('Account not found. Try tariq.hashemi@yaldi.ae or use the Demo Role Switcher.');
       }
+      const expectedPassword = matched.passwordHash || 'demo1234';
+      if (password !== expectedPassword) {
+        throw new Error('Incorrect password. Please check your credentials and try again.');
+      }
       const session: AuthSession = {
         token: `demo-jwt-${matched.id}-${Date.now()}`,
         userId: matched.id,
         role: matched.role,
         mode: 'demo',
+        mustChangePassword: matched.mustChangePassword,
       };
       saveSession(session);
       return session;
@@ -236,9 +249,54 @@ export const api = {
         userId: emp.id,
         role,
         mode: 'demo',
+        mustChangePassword: false,
       };
       saveSession(session);
       return session;
+    },
+
+    async changePassword(params: {
+      userId: string;
+      currentPassword?: string;
+      newPassword: string;
+      isForcedFirstLogin?: boolean;
+    }): Promise<AuthSession | null> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<{ session?: AuthSession }>('/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify(params),
+        });
+        const current = getStoredSession();
+        const next = res.session ?? (current ? { ...current, mustChangePassword: false } : null);
+        if (next) saveSession(next);
+        return next;
+      }
+      if (!params.newPassword || params.newPassword.trim().length < 6) {
+        throw new Error('New password must be at least 6 characters.');
+      }
+      const db = readDb();
+      const emp = db.employees.find((e) => e.id === params.userId);
+      if (!emp) throw new Error('Account not found.');
+      if (!params.isForcedFirstLogin) {
+        const expected = emp.passwordHash || 'demo1234';
+        if (params.currentPassword !== expected) {
+          throw new Error('Current password is incorrect.');
+        }
+      }
+      db.employees = db.employees.map((e) =>
+        e.id === params.userId
+          ? { ...e, passwordHash: params.newPassword.trim(), mustChangePassword: false }
+          : e
+      );
+      writeDb(db);
+      const current = getStoredSession();
+      if (current && current.userId === params.userId) {
+        const updated: AuthSession = { ...current, mustChangePassword: false };
+        saveSession(updated);
+        return updated;
+      }
+      return current;
     },
 
     async logout(): Promise<void> {
@@ -252,8 +310,10 @@ export const api = {
       const [
         companies,
         sections,
+        labels,
         employeeModels,
         employees,
+        proAssignments,
         geofences,
         documents,
         attendance,
@@ -261,12 +321,15 @@ export const api = {
         leaves,
         workflows,
         payrollAdjustments,
+        salaryReleases,
         settings,
       ] = await Promise.all([
         restFetch<Company[]>('/companies'),
         restFetch<Section[]>('/sections'),
+        restFetch<EmployeeLabel[]>('/labels'),
         restFetch<EmployeeModel[]>('/employee-models'),
         restFetch<Employee[]>('/users'),
+        restFetch<ProAssignment[]>('/pro-assignments'),
         restFetch<GeofenceZone[]>('/locations'),
         restFetch<EmployeeDocument[]>('/documents'),
         restFetch<AttendanceLog[]>('/attendance'),
@@ -274,13 +337,16 @@ export const api = {
         restFetch<LeaveRequest[]>('/leaves'),
         restFetch<ApprovalWorkflow[]>('/approval-workflows'),
         restFetch<PayrollAdjustment[]>('/payroll/deductions'),
+        restFetch<SalaryReleaseSchedule[]>('/payroll/releases'),
         restFetch<AppSettings>('/settings'),
       ]);
       return {
         companies,
         sections,
+        labels,
         employeeModels,
         employees,
+        proAssignments,
         geofences,
         documents,
         attendance,
@@ -288,11 +354,18 @@ export const api = {
         leaves,
         workflows,
         payrollAdjustments,
+        salaryReleases,
         settings,
       };
     }
     const db = readDb();
-    return { ...db, settings: { ...db.settings, apiBaseUrl: cfg.apiBaseUrl } };
+    return {
+      ...db,
+      labels: db.labels ?? [],
+      proAssignments: db.proAssignments ?? [],
+      salaryReleases: db.salaryReleases ?? [],
+      settings: { ...db.settings, apiBaseUrl: cfg.apiBaseUrl },
+    };
   },
 
   async resetDemoData(): Promise<HRDatabase> {
@@ -385,14 +458,106 @@ export const api = {
     },
   },
 
+  labels: {
+    async create(input: Omit<EmployeeLabel, 'id'>): Promise<EmployeeLabel> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        return restFetch<EmployeeLabel>('/labels', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+      }
+      const db = readDb();
+      const created: EmployeeLabel = { ...input, id: makeId('lbl') };
+      db.labels = [...(db.labels ?? []), created];
+      writeDb(db);
+      return created;
+    },
+    async update(id: string, patch: Partial<EmployeeLabel>): Promise<EmployeeLabel> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        return restFetch<EmployeeLabel>(`/labels/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(patch),
+        });
+      }
+      const db = readDb();
+      let updated: EmployeeLabel | null = null;
+      db.labels = (db.labels ?? []).map((l) => {
+        if (l.id === id) {
+          updated = { ...l, ...patch };
+          return updated;
+        }
+        return l;
+      });
+      if (!updated) throw new Error('Label not found.');
+      writeDb(db);
+      return updated;
+    },
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/labels/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.labels = (db.labels ?? []).filter((l) => l.id !== id);
+      db.employees = db.employees.map((e) => ({
+        ...e,
+        labelIds: (e.labelIds ?? []).filter((lid) => lid !== id),
+      }));
+      writeDb(db);
+    },
+  },
+
+  proAssignments: {
+    async create(input: Omit<ProAssignment, 'id' | 'createdAt'>): Promise<ProAssignment> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        return restFetch<ProAssignment>('/pro-assignments', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+      }
+      const db = readDb();
+      const created: ProAssignment = {
+        ...input,
+        id: makeId('pro-asg'),
+        createdAt: new Date().toISOString(),
+      };
+      db.proAssignments = [created, ...(db.proAssignments ?? [])];
+      writeDb(db);
+      return created;
+    },
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/pro-assignments/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.proAssignments = (db.proAssignments ?? []).filter((a) => a.id !== id);
+      writeDb(db);
+    },
+  },
+
   employees: {
-    async create(input: Omit<Employee, 'id'>): Promise<Employee> {
+    async create(input: CreateEmployeePayload): Promise<Employee> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
         return restFetch<Employee>('/users', { method: 'POST', body: JSON.stringify(input) });
       }
       const db = readDb();
-      const created: Employee = { ...input, id: makeId('emp') };
+      const { initialPassword, ...rest } = input;
+      if (!initialPassword || initialPassword.trim().length < 6) {
+        throw new Error('Initial temporary password must be at least 6 characters.');
+      }
+      const created: Employee = {
+        ...rest,
+        id: makeId('emp'),
+        passwordHash: initialPassword.trim(),
+        mustChangePassword: true,
+      };
       db.employees = [...db.employees, created];
       writeDb(db);
       return created;
@@ -414,6 +579,43 @@ export const api = {
       if (!updated) throw new Error('Employee not found.');
       writeDb(db);
       return updated;
+    },
+    async bulkAssignZones(params: {
+      companyId: string | 'all';
+      sectionId: string | 'all';
+      zoneIds: string[];
+      replaceExisting: boolean;
+    }): Promise<number> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<{ updatedCount: number }>('/users/bulk-assign-zones', {
+          method: 'POST',
+          body: JSON.stringify(params),
+        });
+        return res.updatedCount;
+      }
+      const db = readDb();
+      let count = 0;
+      db.employees = db.employees.map((e) => {
+        if (!isAttendanceTracked(e)) return e;
+        if (
+          params.companyId !== 'all' &&
+          e.primaryCompanyId !== params.companyId &&
+          !e.sharedCompanyIds.includes(params.companyId)
+        ) {
+          return e;
+        }
+        if (params.sectionId !== 'all' && e.sectionId !== params.sectionId) {
+          return e;
+        }
+        count += 1;
+        const nextZones = params.replaceExisting
+          ? [...params.zoneIds]
+          : Array.from(new Set([...e.assignedZoneIds, ...params.zoneIds]));
+        return { ...e, assignedZoneIds: nextZones };
+      });
+      writeDb(db);
+      return count;
     },
     async proposeShift(
       employeeId: string,
@@ -993,6 +1195,49 @@ export const api = {
       const db = readDb();
       db.payrollAdjustments = db.payrollAdjustments.filter((a) => a.id !== id);
       writeDb(db);
+    },
+    async upsertReleaseSchedule(input: {
+      month: string;
+      payPeriod: string;
+      scopeType: 'section' | 'employee';
+      scopeId: string;
+      companyId: string | 'all';
+      releaseDate: string;
+      status: SalaryReleaseStatus;
+      delayedUntilDate?: string | null;
+      delayReason?: string | null;
+      updatedBy: string;
+    }): Promise<SalaryReleaseSchedule> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        return restFetch<SalaryReleaseSchedule>('/payroll/releases', {
+          method: 'PUT',
+          body: JSON.stringify(input),
+        });
+      }
+      const db = readDb();
+      const list = db.salaryReleases ?? [];
+      const existingIdx = list.findIndex(
+        (s) =>
+          s.month === input.month &&
+          s.scopeType === input.scopeType &&
+          s.scopeId === input.scopeId &&
+          s.companyId === input.companyId
+      );
+      const record: SalaryReleaseSchedule = {
+        id: existingIdx >= 0 ? list[existingIdx].id : makeId('rel'),
+        ...input,
+        delayedUntilDate: input.status === 'Delayed' ? input.delayedUntilDate ?? null : null,
+        delayReason: input.status === 'Delayed' ? input.delayReason ?? null : null,
+        updatedAt: new Date().toISOString(),
+      };
+      if (existingIdx >= 0) {
+        db.salaryReleases = list.map((s, i) => (i === existingIdx ? record : s));
+      } else {
+        db.salaryReleases = [record, ...list];
+      }
+      writeDb(db);
+      return record;
     },
   },
 

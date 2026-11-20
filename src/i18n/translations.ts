@@ -1,4 +1,10 @@
-import { Language, LeaveStatus, UserRole, ApprovalStepRole } from '../types/hr';
+import {
+  ApprovalStepRole,
+  Language,
+  LeaveStatus,
+  SalaryReleaseStatus,
+  UserRole,
+} from '../types/hr';
 
 export const LANGUAGE_META: Record<
   Language,
@@ -103,8 +109,39 @@ const EN: Dict = {
   approved: 'Approved',
   rejected: 'Rejected',
   addCompany: 'Add Company',
-  settingsSubtitle: 'Configure group companies, employee models, workflows, and geofences.',
+  settingsSubtitle: 'Configure group companies, employee models, labels, PRO access, workflows, and geofences.',
   mainManagerOnly: 'Main Manager Only',
+  navProDocs: 'Assigned Docs',
+  navMySalary: 'My Salary',
+  createNewPasswordTitle: 'Create New Password',
+  createNewPasswordSubtitle:
+    'Your account was provisioned with a temporary password. Create a personal password before accessing Yaldi HR.',
+  initialPassword: 'Initial Temporary Password',
+  currentPassword: 'Current Password',
+  newPassword: 'New Password',
+  confirmPassword: 'Confirm New Password',
+  updatePassword: 'Update Password',
+  changePassword: 'Change Password',
+  profilePicture: 'Profile Picture',
+  viewDocument: 'View',
+  downloadDocument: 'Download',
+  accessExpires: 'Access Expires',
+  labelsManager: 'Employee Status Labels',
+  proAccessManager: 'PRO Document Access',
+  bulkAssignZones: 'Bulk Assign Geofence Zones',
+  managedSections: 'Managed Sections',
+  geofenceExempt: 'Geofence Exempt (No Zone)',
+  bankDetails: 'Bank Account Details',
+  releaseDate: 'Release Date',
+  scheduleRelease: 'Schedule Release',
+  delaySalary: 'Delay Salary',
+  exportExcel: 'Export Excel (.xlsx)',
+  allLabels: 'All Status Labels',
+  allStatuses: 'All Statuses',
+  salaryScheduled: 'Scheduled',
+  salaryProcessing: 'Processing',
+  salaryDelayed: 'Delayed',
+  salaryReleased: 'Released',
 };
 
 const AR: Dict = {
@@ -195,8 +232,39 @@ const AR: Dict = {
   approved: 'موافق عليه',
   rejected: 'مرفوض',
   addCompany: 'إضافة شركة',
-  settingsSubtitle: 'إدارة شركات المجموعة، نماذج الموظفين، سلاسل الموافقة، والمواقع الجغرافية.',
+  settingsSubtitle: 'إدارة شركات المجموعة، نماذج الموظفين، التصنيفات، صلاحيات المندوب، وسلاسل الموافقة.',
   mainManagerOnly: 'المدير العام فقط',
+  navProDocs: 'المستندات المخصصة',
+  navMySalary: 'راتبي',
+  createNewPasswordTitle: 'إنشاء كلمة مرور جديدة',
+  createNewPasswordSubtitle:
+    'تم إنشاء حسابك بكلمة مرور مؤقتة. يرجى تعيين كلمة مرور شخصية جديدة قبل الدخول إلى يالدي HR.',
+  initialPassword: 'كلمة المرور المؤقتة الأولية',
+  currentPassword: 'كلمة المرور الحالية',
+  newPassword: 'كلمة المرور الجديدة',
+  confirmPassword: 'تأكيد كلمة المرور الجديدة',
+  updatePassword: 'تحديث كلمة المرور',
+  changePassword: 'تغيير كلمة المرور',
+  profilePicture: 'الصورة الشخصية',
+  viewDocument: 'عرض',
+  downloadDocument: 'تنزيل',
+  accessExpires: 'ينتهي الوصول في',
+  labelsManager: 'تصنيفات حالة الموظفين',
+  proAccessManager: 'صلاحيات مستندات المندوب (PRO)',
+  bulkAssignZones: 'تعيين النطاقات الجغرافية جماعياً',
+  managedSections: 'الأقسام المُدارة',
+  geofenceExempt: 'معفى من النطاق الجغرافي',
+  bankDetails: 'تفاصيل الحساب البنكي',
+  releaseDate: 'تاريخ صرف الراتب',
+  scheduleRelease: 'جدولة الصرف',
+  delaySalary: 'تأجيل الراتب',
+  exportExcel: 'تصدير Excel (.xlsx)',
+  allLabels: 'جميع التصنيفات',
+  allStatuses: 'جميع الحالات',
+  salaryScheduled: 'مجدول',
+  salaryProcessing: 'قيد المعالجة',
+  salaryDelayed: 'مؤجل',
+  salaryReleased: 'تم الصرف',
 };
 
 const UR: Dict = {
@@ -287,8 +355,39 @@ const UR: Dict = {
   approved: 'منظور شدہ',
   rejected: 'مسترد',
   addCompany: 'کمپنی شامل کریں',
-  settingsSubtitle: 'گروپ کمپنیاں، ملازم ماڈلز، منظوری کے مراحل اور جیو فینس ترتیب دیں۔',
+  settingsSubtitle: 'گروپ کمپنیاں، ملازم ماڈلز، لیبلز، PRO رسائی، منظوری کے مراحل اور جیو فینس ترتیب دیں۔',
   mainManagerOnly: 'صرف مین منیجر',
+  navProDocs: 'تفویض کردہ دستاویزات',
+  navMySalary: 'میری تنخواہ',
+  createNewPasswordTitle: 'نیا پاس ورڈ بنائیں',
+  createNewPasswordSubtitle:
+    'آپ کا اکاؤنٹ عارضی پاس ورڈ کے ساتھ بنایا گیا ہے۔ یالدی HR استعمال کرنے سے پہلے نیا ذاتی پاس ورڈ سیٹ کریں۔',
+  initialPassword: 'ابتدائی عارضی پاس ورڈ',
+  currentPassword: 'موجودہ پاس ورڈ',
+  newPassword: 'نیا پاس ورڈ',
+  confirmPassword: 'نئے پاس ورڈ کی تصدیق',
+  updatePassword: 'پاس ورڈ اپ ڈیٹ کریں',
+  changePassword: 'پاس ورڈ تبدیل کریں',
+  profilePicture: 'پروفائل تصویر',
+  viewDocument: 'دیکھیں',
+  downloadDocument: 'ڈاؤن لوڈ',
+  accessExpires: 'رسائی ختم ہونے کی تاریخ',
+  labelsManager: 'ملازم اسٹیٹس لیبلز',
+  proAccessManager: 'PRO دستاویزات رسائی',
+  bulkAssignZones: 'بلک جیو فینس زونز تفویض کریں',
+  managedSections: 'زیر انتظام شعبے',
+  geofenceExempt: 'جیو فینس سے مستثنیٰ (بغیر زون)',
+  bankDetails: 'بینک اکاؤنٹ کی تفصیلات',
+  releaseDate: 'تنخواہ جاری ہونے کی تاریخ',
+  scheduleRelease: 'اجراء کا شیڈول',
+  delaySalary: 'تنخواہ مؤخر کریں',
+  exportExcel: 'Excel ایکسپورٹ (.xlsx)',
+  allLabels: 'تمام لیبلز',
+  allStatuses: 'تمام اسٹیٹس',
+  salaryScheduled: 'شیڈول شدہ',
+  salaryProcessing: 'پروسیسنگ میں',
+  salaryDelayed: 'مؤخر',
+  salaryReleased: 'جاری کر دی گئی',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };
@@ -304,6 +403,8 @@ export function getRoleLabel(lang: Language, role: UserRole): string {
       [UserRole.HRAdmin]: 'HR Admin',
       [UserRole.SectionManager]: 'Section Manager',
       [UserRole.SectionCoManager]: 'Section Co-Manager',
+      [UserRole.PRO]: 'PRO',
+      [UserRole.Accounting]: 'Accounting',
       [UserRole.Employee]: 'Employee',
     },
     ar: {
@@ -311,6 +412,8 @@ export function getRoleLabel(lang: Language, role: UserRole): string {
       [UserRole.HRAdmin]: 'مسؤول الموارد البشرية',
       [UserRole.SectionManager]: 'مدير القسم',
       [UserRole.SectionCoManager]: 'نائب مدير القسم',
+      [UserRole.PRO]: 'مندوب علاقات عامة (PRO)',
+      [UserRole.Accounting]: 'المحاسبة',
       [UserRole.Employee]: 'موظف',
     },
     ur: {
@@ -318,6 +421,8 @@ export function getRoleLabel(lang: Language, role: UserRole): string {
       [UserRole.HRAdmin]: 'HR ایڈمن',
       [UserRole.SectionManager]: 'سیکشن منیجر',
       [UserRole.SectionCoManager]: 'سیکشن کو منیجر',
+      [UserRole.PRO]: 'PRO آفیسر',
+      [UserRole.Accounting]: 'اکاؤنٹنگ',
       [UserRole.Employee]: 'ملازم',
     },
   };
@@ -334,4 +439,11 @@ export function getLeaveStatusLabel(lang: Language, status: LeaveStatus): string
   if (status === LeaveStatus.Pending) return t(lang, 'pending');
   if (status === LeaveStatus.Approved) return t(lang, 'approved');
   return t(lang, 'rejected');
+}
+
+export function getSalaryStatusLabel(lang: Language, status: SalaryReleaseStatus): string {
+  if (status === 'Scheduled') return t(lang, 'salaryScheduled');
+  if (status === 'Processing') return t(lang, 'salaryProcessing');
+  if (status === 'Delayed') return t(lang, 'salaryDelayed');
+  return t(lang, 'salaryReleased');
 }

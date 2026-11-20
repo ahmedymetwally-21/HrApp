@@ -1,32 +1,44 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Building2,
+  Camera,
   CheckCircle2,
   ChevronRight,
   Clock,
+  Download,
   Edit3,
   Eye,
   FileText,
+  KeyRound,
+  Landmark,
+  MapPinOff,
   Plus,
   Search,
+  ShieldCheck,
+  Tag,
   Trash2,
   UploadCloud,
   X,
 } from 'lucide-react';
-import { getRoleLabel, t } from '../i18n/translations';
+import { getRoleLabel, getSalaryStatusLabel, t } from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
 import {
   AttendanceLog,
   BuiltInDocumentType,
   ClockInPolicyMode,
   Company,
+  CreateEmployeePayload,
   DocumentTypeValue,
   Employee,
   EmployeeDocument,
+  EmployeeLabel,
   EmployeeModel,
   GeofenceZone,
   Language,
   PayrollAdjustment,
+  ProAssignment,
+  SalaryReleaseSchedule,
   Section,
   ShiftSchedule,
   UserRole,
@@ -38,9 +50,13 @@ import {
   formatShortDate,
   formatTime,
   getDocumentExpiryStatus,
+  getDocumentPreviewSource,
   getEffectiveShiftEnd,
   getEffectiveShiftStart,
   getMissingModelDocuments,
+  isAttendanceTracked,
+  isPayrollEligible,
+  isProAssignmentActive,
   isSharedEmployeeInCompany,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
@@ -53,14 +69,17 @@ interface EmployeesViewProps {
   selectedCompanyId: string;
   companies: Company[];
   sections: Section[];
+  labels: EmployeeLabel[];
+  proAssignments: ProAssignment[];
   models: EmployeeModel[];
   scopedEmployees: Employee[];
   geofences: GeofenceZone[];
   documents: EmployeeDocument[];
   attendance: AttendanceLog[];
   payrollAdjustments: PayrollAdjustment[];
+  salaryReleases: SalaryReleaseSchedule[];
   customDocumentTypes: string[];
-  onCreateEmployee: (emp: Omit<Employee, 'id'>) => Promise<void>;
+  onCreateEmployee: (emp: CreateEmployeePayload) => Promise<void>;
   onUpdateEmployee: (id: string, patch: Partial<Employee>) => Promise<void>;
   onProposeShift: (employeeId: string, schedule: ShiftSchedule) => Promise<void>;
   onDecideShiftProposal: (employeeId: string, approve: boolean) => Promise<void>;
@@ -79,12 +98,15 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   selectedCompanyId,
   companies,
   sections,
+  labels,
+  proAssignments,
   models,
   scopedEmployees,
   geofences,
   documents,
   attendance,
   payrollAdjustments,
+  salaryReleases,
   customDocumentTypes,
   onCreateEmployee,
   onUpdateEmployee,
@@ -97,16 +119,18 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   const canApproveShift =
     activeRole === UserRole.MainManager || activeRole === UserRole.SectionManager;
   const isEmployeeOnly = activeRole === UserRole.Employee;
+  const isPro = activeRole === UserRole.PRO;
 
   const [search, setSearch] = useState('');
   const [sectionFilter, setSectionFilter] = useState('all');
+  const [labelFilter, setLabelFilter] = useState('all');
 
   // Slide-over drawer state
   const [selectedEmpId, setSelectedEmpId] = useState<string | null>(
     isEmployeeOnly ? currentUser.id : null
   );
   const [drawerTab, setDrawerTab] = useState<'overview' | 'documents' | 'attendance' | 'salary'>(
-    isEmployeeOnly ? 'documents' : 'overview'
+    isEmployeeOnly || isPro ? 'documents' : 'overview'
   );
 
   // Shift proposal form (HR proposes -> requires Manager approval)
@@ -146,10 +170,14 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     fullName: '',
     email: '',
     phone: '',
+    avatarUrl: '',
+    initialPassword: '',
     role: UserRole.Employee,
     primaryCompanyId: companies[0]?.id ?? '',
     sharedCompanyIds: [] as string[],
     sectionId: sections[0]?.id ?? '',
+    managedSectionIds: [] as string[],
+    labelIds: [] as string[],
     modelId: models[0]?.id ?? '',
     jobTitle: '',
     joinDate: new Date().toISOString().slice(0, 10),
@@ -159,11 +187,27 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     housingAllowance: 1800,
     transportAllowance: 600,
     otherAllowance: 300,
+    bankName: '',
+    accountNumber: '',
+    iban: '',
   });
 
   const companyMap = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const modelMap = useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
+  const labelMap = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels]);
+
+  // Active PRO assignments indexed by employeeId for PRO expiry display
+  const activeProAssignmentByEmp = useMemo(() => {
+    const map = new Map<string, ProAssignment>();
+    if (!isPro) return map;
+    proAssignments.forEach((a) => {
+      if (a.proUserId === currentUser.id && isProAssignmentActive(a)) {
+        map.set(a.employeeId, a);
+      }
+    });
+    return map;
+  }, [proAssignments, isPro, currentUser.id]);
 
   const allDocTypes: DocumentTypeValue[] = useMemo(
     () => [
@@ -181,6 +225,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   const visibleEmployees = useMemo(() => {
     return scopedEmployees.filter((emp) => {
       if (sectionFilter !== 'all' && emp.sectionId !== sectionFilter) return false;
+      if (labelFilter !== 'all' && !emp.labelIds.includes(labelFilter)) return false;
       const q = search.trim().toLowerCase();
       if (q) {
         const hay = `${emp.fullName} ${emp.employeeCode} ${emp.jobTitle} ${emp.email}`.toLowerCase();
@@ -188,7 +233,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       }
       return true;
     });
-  }, [scopedEmployees, sectionFilter, search]);
+  }, [scopedEmployees, sectionFilter, labelFilter, search]);
 
   const selectedEmp = scopedEmployees.find((e) => e.id === selectedEmpId) ?? null;
   const selectedModel = selectedEmp ? modelMap.get(selectedEmp.modelId) ?? models[0] : undefined;
@@ -201,17 +246,46 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     [selectedDocs, selectedModel]
   );
   const selectedAttendance = useMemo(
-    () => (selectedEmp ? attendance.filter((a) => a.employeeId === selectedEmp.id).slice(0, 10) : []),
+    () =>
+      selectedEmp && isAttendanceTracked(selectedEmp)
+        ? attendance.filter((a) => a.employeeId === selectedEmp.id).slice(0, 10)
+        : [],
     [attendance, selectedEmp]
   );
   const currentMonth = new Date().toISOString().slice(0, 7);
   const selectedPayroll = useMemo(
     () =>
-      selectedEmp
-        ? calculateEmployeePayroll(selectedEmp, currentMonth, payrollAdjustments, attendance)
+      selectedEmp && !isPro && isPayrollEligible(selectedEmp)
+        ? calculateEmployeePayroll(
+            selectedEmp,
+            currentMonth,
+            payrollAdjustments,
+            attendance,
+            salaryReleases
+          )
         : null,
-    [selectedEmp, currentMonth, payrollAdjustments, attendance]
+    [selectedEmp, isPro, currentMonth, payrollAdjustments, attendance, salaryReleases]
   );
+
+  const availableDrawerTabs = useMemo(() => {
+    if (!selectedEmp) return [];
+    const tabs: { id: 'overview' | 'documents' | 'attendance' | 'salary'; label: string }[] = [
+      { id: 'overview', label: t(lang, 'overview') },
+      { id: 'documents', label: t(lang, 'documents') },
+    ];
+    // PRO NEVER sees Attendance, Salary, or Bank details; Main Manager profiles have NO Attendance/Salary
+    if (!isPro && isAttendanceTracked(selectedEmp)) {
+      tabs.push({ id: 'attendance', label: t(lang, 'attendance') });
+    }
+    if (!isPro && isPayrollEligible(selectedEmp)) {
+      tabs.push({ id: 'salary', label: t(lang, 'salary') });
+    }
+    return tabs;
+  }, [selectedEmp, isPro, lang]);
+
+  const effectiveDrawerTab = availableDrawerTabs.some((tb) => tb.id === drawerTab)
+    ? drawerTab
+    : availableDrawerTabs[0]?.id ?? 'overview';
 
   const openAddEmployee = () => {
     setEditingEmp(null);
@@ -223,19 +297,29 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       fullName: '',
       email: '',
       phone: '+971 50 ',
+      avatarUrl: '',
+      initialPassword: '',
       role: UserRole.Employee,
       primaryCompanyId: defaultComp,
       sharedCompanyIds: [],
       sectionId: sections[1]?.id ?? sections[0]?.id ?? '',
+      managedSectionIds: [],
+      labelIds: ['lbl-active'],
       modelId: models[0]?.id ?? '',
       jobTitle: '',
       joinDate: new Date().toISOString().slice(0, 10),
-      assignedZoneIds: geofences.filter((z) => z.companyId === defaultComp).slice(0, 1).map((z) => z.id),
+      assignedZoneIds: geofences
+        .filter((z) => z.companyId === defaultComp)
+        .slice(0, 1)
+        .map((z) => z.id),
       clockInPolicyOverride: 'inherit',
       baseSalary: 6000,
       housingAllowance: 1800,
       transportAllowance: 600,
       otherAllowance: 300,
+      bankName: '',
+      accountNumber: '',
+      iban: '',
     });
     setShowEmpModal(true);
   };
@@ -248,10 +332,14 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       fullName: emp.fullName,
       email: emp.email,
       phone: emp.phone,
+      avatarUrl: emp.avatarUrl ?? '',
+      initialPassword: '',
       role: emp.role,
       primaryCompanyId: emp.primaryCompanyId,
       sharedCompanyIds: [...emp.sharedCompanyIds],
       sectionId: emp.sectionId,
+      managedSectionIds: [...emp.managedSectionIds],
+      labelIds: [...emp.labelIds],
       modelId: emp.modelId,
       jobTitle: emp.jobTitle,
       joinDate: emp.joinDate,
@@ -261,8 +349,26 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       housingAllowance: emp.salary.housingAllowance,
       transportAllowance: emp.salary.transportAllowance,
       otherAllowance: emp.salary.otherAllowance,
+      bankName: emp.bankDetails?.bankName ?? '',
+      accountNumber: emp.bankDetails?.accountNumber ?? '',
+      iban: emp.bankDetails?.iban ?? '',
     });
     setShowEmpModal(true);
+  };
+
+  const handleAvatarPicked = async (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setEmpError('Please select a JPG, PNG, or WebP image for the profile picture.');
+      return;
+    }
+    try {
+      const res = await nativeBridge.readFileAsDocument(file);
+      setEmpForm((p) => ({ ...p, avatarUrl: res.dataUrl }));
+      setEmpError(null);
+    } catch (err) {
+      setEmpError(err instanceof Error ? err.message : 'Unable to read profile image.');
+    }
   };
 
   const handleSaveEmployee = async (e: React.FormEvent) => {
@@ -271,14 +377,39 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       setEmpError('Full name, email, and job title are required.');
       return;
     }
+    if (!editingEmp && empForm.initialPassword.trim().length < 6) {
+      setEmpError('Initial temporary password is required (minimum 6 characters).');
+      return;
+    }
+
     const chosenModel = modelMap.get(empForm.modelId) ?? models[0];
     const sharedClean = empForm.sharedCompanyIds.filter((id) => id !== empForm.primaryCompanyId);
-    const salary = {
-      baseSalary: Number(empForm.baseSalary) || 0,
-      housingAllowance: Number(empForm.housingAllowance) || 0,
-      transportAllowance: Number(empForm.transportAllowance) || 0,
-      otherAllowance: Number(empForm.otherAllowance) || 0,
-    };
+    const isMainMgr = empForm.role === UserRole.MainManager;
+    const isSecMgrRole =
+      empForm.role === UserRole.SectionManager || empForm.role === UserRole.SectionCoManager;
+    const managedSections = isSecMgrRole
+      ? empForm.managedSectionIds.length > 0
+        ? empForm.managedSectionIds
+        : [empForm.sectionId]
+      : [];
+
+    const salary = isMainMgr
+      ? { baseSalary: 0, housingAllowance: 0, transportAllowance: 0, otherAllowance: 0 }
+      : {
+          baseSalary: Number(empForm.baseSalary) || 0,
+          housingAllowance: Number(empForm.housingAllowance) || 0,
+          transportAllowance: Number(empForm.transportAllowance) || 0,
+          otherAllowance: Number(empForm.otherAllowance) || 0,
+        };
+
+    const bankDetails =
+      !isMainMgr && (empForm.bankName.trim() || empForm.accountNumber.trim() || empForm.iban.trim())
+        ? {
+            bankName: empForm.bankName.trim(),
+            accountNumber: empForm.accountNumber.trim(),
+            iban: empForm.iban.trim(),
+          }
+        : undefined;
 
     if (editingEmp) {
       await onUpdateEmployee(editingEmp.id, {
@@ -286,20 +417,20 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         fullName: empForm.fullName.trim(),
         email: empForm.email.trim(),
         phone: empForm.phone.trim(),
+        avatarUrl: empForm.avatarUrl || undefined,
         role: empForm.role,
         primaryCompanyId: empForm.primaryCompanyId,
         sharedCompanyIds: sharedClean,
         sectionId: empForm.sectionId,
-        managedSectionIds:
-          empForm.role === UserRole.SectionManager || empForm.role === UserRole.SectionCoManager
-            ? [empForm.sectionId]
-            : [],
+        managedSectionIds: managedSections,
+        labelIds: empForm.labelIds,
         modelId: empForm.modelId,
         jobTitle: empForm.jobTitle.trim(),
         joinDate: empForm.joinDate,
-        assignedZoneIds: empForm.assignedZoneIds,
+        assignedZoneIds: isMainMgr ? [] : empForm.assignedZoneIds,
         clockInPolicyOverride: empForm.clockInPolicyOverride,
         salary,
+        bankDetails,
       });
     } else {
       await onCreateEmployee({
@@ -307,21 +438,22 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         fullName: empForm.fullName.trim(),
         email: empForm.email.trim(),
         phone: empForm.phone.trim(),
+        avatarUrl: empForm.avatarUrl || undefined,
+        initialPassword: empForm.initialPassword.trim(),
         role: empForm.role,
         primaryCompanyId: empForm.primaryCompanyId,
         sharedCompanyIds: sharedClean,
         sectionId: empForm.sectionId,
-        managedSectionIds:
-          empForm.role === UserRole.SectionManager || empForm.role === UserRole.SectionCoManager
-            ? [empForm.sectionId]
-            : [],
+        managedSectionIds: managedSections,
+        labelIds: empForm.labelIds,
         modelId: empForm.modelId,
         jobTitle: empForm.jobTitle.trim(),
         joinDate: empForm.joinDate,
         active: true,
-        assignedZoneIds: empForm.assignedZoneIds,
+        assignedZoneIds: isMainMgr ? [] : empForm.assignedZoneIds,
         clockInPolicyOverride: empForm.clockInPolicyOverride,
         salary,
+        bankDetails,
         leaveBalance: {
           annualTotal: chosenModel?.leaveQuotas.annualTotal ?? 30,
           annualUsed: 0,
@@ -394,16 +526,23 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     setShowShiftForm(false);
   };
 
+  const previewSource = previewDoc ? getDocumentPreviewSource(previewDoc) : null;
+
   return (
     <div className="space-y-5">
       {/* Header Row */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
-            {isEmployeeOnly ? t(lang, 'navMyDocs') : t(lang, 'navEmployees')}
+            {isPro
+              ? t(lang, 'navProDocs')
+              : isEmployeeOnly
+                ? t(lang, 'navMyDocs')
+                : t(lang, 'navEmployees')}
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             {visibleEmployees.length} profile{visibleEmployees.length === 1 ? '' : 's'}
+            {isPro ? ' · Active time-limited assignments only' : ''}
           </p>
         </div>
 
@@ -419,7 +558,18 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         )}
       </div>
 
-      {/* Minimalist Filter Bar */}
+      {/* PRO Role Compliance Banner */}
+      {isPro && (
+        <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/40 px-4 py-3 text-xs text-indigo-900 dark:text-indigo-200 flex items-center gap-2.5">
+          <ShieldCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+          <span>
+            Showing only employees with active HR-assigned document access. Expired assignments are
+            automatically hidden. Salary and bank details are restricted.
+          </span>
+        </div>
+      )}
+
+      {/* Filter Bar (Search + Section + Status Label) */}
       {!isEmployeeOnly && (
         <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
           <div className="relative flex-1 max-w-sm">
@@ -446,14 +596,29 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               </option>
             ))}
           </select>
+          <select
+            value={labelFilter}
+            onChange={(e) => setLabelFilter(e.target.value)}
+            aria-label="Filter by status label"
+            className="px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+          >
+            <option value="all">{t(lang, 'allLabels')}</option>
+            {labels.map((lbl) => (
+              <option key={lbl.id} value={lbl.id}>
+                {lbl.name}
+              </option>
+            ))}
+          </select>
         </div>
       )}
 
-      {/* Minimalist Employee List (Max 3–4 Visible Fields per Row) */}
+      {/* Employee List */}
       <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
         {visibleEmployees.length === 0 ? (
           <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
-            {t(lang, 'noRecords')}
+            {isPro
+              ? 'No active employee document assignments. Ask HR to assign access.'
+              : t(lang, 'noRecords')}
           </div>
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -465,21 +630,26 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               const hasAlert = empDocs.some(
                 (d) => getDocumentExpiryStatus(d.expiryDate).status !== 'valid'
               );
+              const empLabels = emp.labelIds
+                .map((id) => labelMap.get(id))
+                .filter((l): l is EmployeeLabel => Boolean(l));
+              const proAssignment = activeProAssignmentByEmp.get(emp.id);
+
               return (
                 <button
                   key={emp.id}
                   type="button"
                   onClick={() => {
                     setSelectedEmpId(emp.id);
-                    setDrawerTab(isEmployeeOnly ? 'documents' : 'overview');
+                    setDrawerTab(isEmployeeOnly || isPro ? 'documents' : 'overview');
                     setShowShiftForm(false);
                   }}
                   className="w-full px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4 text-start hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
                 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     <Avatar src={emp.avatarUrl} name={emp.fullName} size="md" />
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                           {emp.fullName}
                         </span>
@@ -488,14 +658,37 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                             {t(lang, 'sharedEmployee')} · {primaryComp?.code}
                           </span>
                         )}
-                        {emp.pendingShiftProposal && (
+                        {emp.pendingShiftProposal && !isPro && (
                           <span className="text-[11px] font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 rounded-md whitespace-nowrap">
                             Shift Pending
+                          </span>
+                        )}
+                        {empLabels.slice(0, 3).map((lbl) => (
+                          <span
+                            key={lbl.id}
+                            style={{
+                              backgroundColor: `${lbl.color}18`,
+                              color: lbl.color,
+                              borderColor: `${lbl.color}44`,
+                            }}
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded-md border whitespace-nowrap"
+                          >
+                            {lbl.name}
+                          </span>
+                        ))}
+                        {empLabels.length > 3 && (
+                          <span className="text-[10px] text-slate-400">
+                            +{empLabels.length - 3}
                           </span>
                         )}
                       </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
                         {getRoleLabel(lang, emp.role)} · {sec?.name} · {primaryComp?.name}
+                        {proAssignment && (
+                          <span className="text-indigo-600 dark:text-indigo-400 ms-1.5">
+                            · {t(lang, 'accessExpires')}: {formatShortDate(proAssignment.accessExpiresAt)}
+                          </span>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -511,7 +704,13 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                               : 'bg-emerald-500'
                         }`}
                       />
-                      {!emp.active ? 'Inactive' : hasAlert ? 'Doc Alert' : 'Active'}
+                      {!emp.active
+                        ? 'Inactive'
+                        : isPro
+                          ? `${empDocs.length} docs`
+                          : hasAlert
+                            ? 'Doc Alert'
+                            : 'Active'}
                     </span>
                     <ChevronRight className="w-4 h-4 text-slate-400 rtl:rotate-180" />
                   </div>
@@ -522,7 +721,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         )}
       </section>
 
-      {/* Tabbed Slide-Over Drawer: Overview | Documents | Attendance | Salary */}
+      {/* Tabbed Slide-Over Drawer */}
       <SlideOverDrawer
         open={Boolean(selectedEmp)}
         onClose={() => setSelectedEmpId(null)}
@@ -548,22 +747,49 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       >
         {selectedEmp && (
           <div className="space-y-5">
-            {/* Drawer Tabs */}
-            <div className="grid grid-cols-4 rounded-xl bg-slate-100 dark:bg-slate-800 p-1">
-              {(
-                [
-                  { id: 'overview', label: t(lang, 'overview') },
-                  { id: 'documents', label: t(lang, 'documents') },
-                  { id: 'attendance', label: t(lang, 'attendance') },
-                  { id: 'salary', label: t(lang, 'salary') },
-                ] as const
-              ).map((tab) => (
+            {/* Profile Header Banner with Avatar & Labels */}
+            <div className="flex items-center gap-3.5">
+              <Avatar src={selectedEmp.avatarUrl} name={selectedEmp.fullName} size="lg" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {selectedEmp.labelIds
+                    .map((id) => labelMap.get(id))
+                    .filter((l): l is EmployeeLabel => Boolean(l))
+                    .map((lbl) => (
+                      <span
+                        key={lbl.id}
+                        style={{
+                          backgroundColor: `${lbl.color}1A`,
+                          color: lbl.color,
+                          borderColor: `${lbl.color}4D`,
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-md border"
+                      >
+                        <Tag className="w-3 h-3" />
+                        {lbl.name}
+                      </span>
+                    ))}
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {selectedEmp.email} · {selectedEmp.phone}
+                </p>
+              </div>
+            </div>
+
+            {/* Dynamic Drawer Tabs (Strictly scoped by role & Main Manager exemptions) */}
+            <div
+              className="grid rounded-xl bg-slate-100 dark:bg-slate-800 p-1"
+              style={{
+                gridTemplateColumns: `repeat(${Math.max(1, availableDrawerTabs.length)}, minmax(0, 1fr))`,
+              }}
+            >
+              {availableDrawerTabs.map((tab) => (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => setDrawerTab(tab.id)}
                   className={`py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                    drawerTab === tab.id
+                    effectiveDrawerTab === tab.id
                       ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
@@ -574,7 +800,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
             </div>
 
             {/* TAB 1: OVERVIEW */}
-            {drawerTab === 'overview' && (
+            {effectiveDrawerTab === 'overview' && (
               <div className="space-y-4 text-xs">
                 <dl className="grid grid-cols-2 gap-3">
                   <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3">
@@ -609,163 +835,256 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                   </div>
                 </dl>
 
-                {/* Fixed Shift & Pending Shift Approval Workflow */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                        Fixed Shift Schedule (No Overtime)
-                      </p>
-                      <p className="text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
-                        {selectedModel ? getEffectiveShiftStart(selectedEmp, selectedModel) : '08:00'} –{' '}
-                        {selectedModel ? getEffectiveShiftEnd(selectedEmp, selectedModel) : '17:00'} ·{' '}
-                        {(selectedEmp.customShift?.workingDays ?? selectedModel?.workingDays ?? []).join(', ')}
-                      </p>
-                    </div>
-                    {canManageStaff && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShiftStartDraft(
-                            selectedModel ? getEffectiveShiftStart(selectedEmp, selectedModel) : '08:00'
-                          );
-                          setShiftEndDraft(
-                            selectedModel ? getEffectiveShiftEnd(selectedEmp, selectedModel) : '17:00'
-                          );
-                          setShiftDaysDraft(
-                            selectedEmp.customShift?.workingDays ??
-                              selectedModel?.workingDays ?? ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu']
-                          );
-                          setShowShiftForm((s) => !s);
-                        }}
-                        className="text-xs font-medium text-indigo-700 dark:text-indigo-400 hover:underline cursor-pointer"
-                      >
-                        Propose Shift
-                      </button>
-                    )}
+                {/* Managed Sections for Section Manager / Co-Manager */}
+                {(selectedEmp.role === UserRole.SectionManager ||
+                  selectedEmp.role === UserRole.SectionCoManager) && (
+                  <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/40 dark:bg-indigo-950/30 p-3.5">
+                    <p className="font-semibold text-indigo-900 dark:text-indigo-200">
+                      {t(lang, 'managedSections')}
+                    </p>
+                    <p className="mt-1 text-slate-700 dark:text-slate-300">
+                      {selectedEmp.managedSectionIds
+                        .map((id) => sectionMap.get(id)?.name)
+                        .filter(Boolean)
+                        .join(' · ') || sectionMap.get(selectedEmp.sectionId)?.name}
+                    </p>
                   </div>
+                )}
 
-                  {selectedEmp.pendingShiftProposal && (
-                    <div className="rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                {/* PRO Active Assignment Window */}
+                {isPro && activeProAssignmentByEmp.get(selectedEmp.id) && (
+                  <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/30 p-3.5">
+                    <p className="font-semibold text-indigo-900 dark:text-indigo-200">
+                      PRO Document Access Window
+                    </p>
+                    <p className="mt-1 text-slate-600 dark:text-slate-300">
+                      Expires{' '}
+                      <strong>
+                        {formatShortDate(activeProAssignmentByEmp.get(selectedEmp.id)!.accessExpiresAt)}
+                      </strong>
+                      {activeProAssignmentByEmp.get(selectedEmp.id)?.notes
+                        ? ` — ${activeProAssignmentByEmp.get(selectedEmp.id)?.notes}`
+                        : ''}
+                    </p>
+                  </div>
+                )}
+
+                {/* Main Manager Exemption Notice */}
+                {selectedEmp.role === UserRole.MainManager && (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3.5 text-slate-600 dark:text-slate-400">
+                    Executive account: exempt from attendance tracking, geofence restrictions, and
+                    monthly payroll calculations.
+                  </div>
+                )}
+
+                {/* Fixed Shift & Pending Shift Approval Workflow (Hidden for PRO and Main Manager) */}
+                {!isPro && isAttendanceTracked(selectedEmp) && (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
                       <div>
-                        <p className="font-semibold text-amber-900 dark:text-amber-200">
-                          {t(lang, 'pendingManagerApproval')}:{' '}
-                          <span className="font-mono">
-                            {selectedEmp.pendingShiftProposal.shiftStart}–
-                            {selectedEmp.pendingShiftProposal.shiftEnd}
-                          </span>
+                        <p className="font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                          Fixed Shift Schedule (No Overtime)
                         </p>
-                        <p className="text-[11px] text-amber-800/80 dark:text-amber-300/80">
-                          Proposed by {selectedEmp.pendingShiftProposal.proposedBy} ·{' '}
-                          {selectedEmp.pendingShiftProposal.workingDays.join(', ')}
+                        <p className="text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
+                          {selectedModel ? getEffectiveShiftStart(selectedEmp, selectedModel) : '08:00'}{' '}
+                          –{' '}
+                          {selectedModel ? getEffectiveShiftEnd(selectedEmp, selectedModel) : '17:00'}{' '}
+                          ·{' '}
+                          {(
+                            selectedEmp.customShift?.workingDays ??
+                            selectedModel?.workingDays ??
+                            []
+                          ).join(', ')}
                         </p>
                       </div>
-                      {canApproveShift && (
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => void onDecideShiftProposal(selectedEmp.id, true)}
-                            className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-semibold cursor-pointer"
-                          >
-                            {t(lang, 'approve')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void onDecideShiftProposal(selectedEmp.id, false)}
-                            className="px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-semibold cursor-pointer"
-                          >
-                            {t(lang, 'reject')}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {showShiftForm && (
-                    <form
-                      onSubmit={handleSubmitShiftProposal}
-                      className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3"
-                    >
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] text-slate-500 mb-1">Start</label>
-                          <input
-                            type="time"
-                            value={shiftStartDraft}
-                            onChange={(e) => setShiftStartDraft(e.target.value)}
-                            className={INPUT_CLASS}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] text-slate-500 mb-1">End</label>
-                          <input
-                            type="time"
-                            value={shiftEndDraft}
-                            onChange={(e) => setShiftEndDraft(e.target.value)}
-                            className={INPUT_CLASS}
-                          />
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {ALL_WEEKDAYS.map((day) => {
-                          const active = shiftDaysDraft.includes(day);
-                          return (
-                            <button
-                              key={day}
-                              type="button"
-                              onClick={() =>
-                                setShiftDaysDraft((prev) =>
-                                  prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]
-                                )
-                              }
-                              className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border cursor-pointer ${
-                                active
-                                  ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
-                                  : 'border-slate-200 dark:border-slate-700 text-slate-500'
-                              }`}
-                            >
-                              {day}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className="flex justify-end gap-2">
+                      {canManageStaff && (
                         <button
                           type="button"
-                          onClick={() => setShowShiftForm(false)}
-                          className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs cursor-pointer"
+                          onClick={() => {
+                            setShiftStartDraft(
+                              selectedModel
+                                ? getEffectiveShiftStart(selectedEmp, selectedModel)
+                                : '08:00'
+                            );
+                            setShiftEndDraft(
+                              selectedModel
+                                ? getEffectiveShiftEnd(selectedEmp, selectedModel)
+                                : '17:00'
+                            );
+                            setShiftDaysDraft(
+                              selectedEmp.customShift?.workingDays ??
+                                selectedModel?.workingDays ?? [
+                                  'Sat',
+                                  'Sun',
+                                  'Mon',
+                                  'Tue',
+                                  'Wed',
+                                  'Thu',
+                                ]
+                            );
+                            setShowShiftForm((s) => !s);
+                          }}
+                          className="text-xs font-medium text-indigo-700 dark:text-indigo-400 hover:underline cursor-pointer"
                         >
-                          {t(lang, 'cancel')}
+                          Propose Shift
                         </button>
-                        <button
-                          type="submit"
-                          className="px-3 py-1.5 rounded-lg bg-indigo-700 text-white text-xs font-semibold cursor-pointer"
-                        >
-                          Submit for Manager Approval
-                        </button>
-                      </div>
-                    </form>
-                  )}
-                </div>
+                      )}
+                    </div>
 
-                {/* Assigned Geofences */}
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
-                  <p className="font-semibold text-slate-900 dark:text-white">Assigned Map Zones</p>
-                  <p className="mt-1 text-slate-600 dark:text-slate-400">
-                    {selectedEmp.assignedZoneIds
-                      .map((id) => geofences.find((z) => z.id === id)?.name)
-                      .filter(Boolean)
-                      .join(' · ') || 'No assigned zones'}
-                  </p>
-                </div>
+                    {selectedEmp.pendingShiftProposal && (
+                      <div className="rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-amber-900 dark:text-amber-200">
+                            {t(lang, 'pendingManagerApproval')}:{' '}
+                            <span className="font-mono">
+                              {selectedEmp.pendingShiftProposal.shiftStart}–
+                              {selectedEmp.pendingShiftProposal.shiftEnd}
+                            </span>
+                          </p>
+                          <p className="text-[11px] text-amber-800/80 dark:text-amber-300/80">
+                            Proposed by {selectedEmp.pendingShiftProposal.proposedBy} ·{' '}
+                            {selectedEmp.pendingShiftProposal.workingDays.join(', ')}
+                          </p>
+                        </div>
+                        {canApproveShift && (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => void onDecideShiftProposal(selectedEmp.id, true)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-semibold cursor-pointer"
+                            >
+                              {t(lang, 'approve')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void onDecideShiftProposal(selectedEmp.id, false)}
+                              className="px-2.5 py-1 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-semibold cursor-pointer"
+                            >
+                              {t(lang, 'reject')}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {showShiftForm && (
+                      <form
+                        onSubmit={handleSubmitShiftProposal}
+                        className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3"
+                      >
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-[11px] text-slate-500 mb-1">Start</label>
+                            <input
+                              type="time"
+                              value={shiftStartDraft}
+                              onChange={(e) => setShiftStartDraft(e.target.value)}
+                              className={INPUT_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] text-slate-500 mb-1">End</label>
+                            <input
+                              type="time"
+                              value={shiftEndDraft}
+                              onChange={(e) => setShiftEndDraft(e.target.value)}
+                              className={INPUT_CLASS}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ALL_WEEKDAYS.map((day) => {
+                            const active = shiftDaysDraft.includes(day);
+                            return (
+                              <button
+                                key={day}
+                                type="button"
+                                onClick={() =>
+                                  setShiftDaysDraft((prev) =>
+                                    prev.includes(day)
+                                      ? prev.filter((d) => d !== day)
+                                      : [...prev, day]
+                                  )
+                                }
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border cursor-pointer ${
+                                  active
+                                    ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
+                                    : 'border-slate-200 dark:border-slate-700 text-slate-500'
+                                }`}
+                              >
+                                {day}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowShiftForm(false)}
+                            className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs cursor-pointer"
+                          >
+                            {t(lang, 'cancel')}
+                          </button>
+                          <button
+                            type="submit"
+                            className="px-3 py-1.5 rounded-lg bg-indigo-700 text-white text-xs font-semibold cursor-pointer"
+                          >
+                            Submit for Manager Approval
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                )}
+
+                {/* Assigned Geofences (or Geofence Exempt) */}
+                {!isPro && isAttendanceTracked(selectedEmp) && (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+                    <p className="font-semibold text-slate-900 dark:text-white">
+                      Assigned Map Zones
+                    </p>
+                    {selectedEmp.assignedZoneIds.length === 0 ? (
+                      <p className="mt-1 inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-medium">
+                        <MapPinOff className="w-3.5 h-3.5" />
+                        {t(lang, 'geofenceExempt')}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-slate-600 dark:text-slate-400">
+                        {selectedEmp.assignedZoneIds
+                          .map((id) => geofences.find((z) => z.id === id)?.name)
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Bank Details (STRICTLY HIDDEN FOR PRO & MAIN MANAGER) */}
+                {!isPro &&
+                  isPayrollEligible(selectedEmp) &&
+                  (canManageStaff || selectedEmp.id === currentUser.id) &&
+                  selectedEmp.bankDetails && (
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-1.5">
+                      <p className="font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                        <Landmark className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                        {t(lang, 'bankDetails')}
+                      </p>
+                      <p className="text-slate-700 dark:text-slate-300">
+                        {selectedEmp.bankDetails.bankName} · Acct{' '}
+                        <span className="font-mono">{selectedEmp.bankDetails.accountNumber}</span>
+                      </p>
+                      <p className="font-mono text-[11px] text-slate-500">
+                        IBAN: {selectedEmp.bankDetails.iban}
+                      </p>
+                    </div>
+                  )}
               </div>
             )}
 
-            {/* TAB 2: DOCUMENTS */}
-            {drawerTab === 'documents' && (
+            {/* TAB 2: DOCUMENTS (Real View Modal + Direct Download Button) */}
+            {effectiveDrawerTab === 'documents' && (
               <div className="space-y-4">
-                {/* Model-specific Required Documents Compliance */}
                 {selectedModel && (
                   <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3.5 text-xs space-y-2">
                     <p className="font-semibold text-slate-800 dark:text-slate-200">
@@ -805,20 +1124,21 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                   ) : (
                     selectedDocs.map((doc) => {
                       const exp = getDocumentExpiryStatus(doc.expiryDate);
+                      const docSrc = getDocumentPreviewSource(doc);
                       return (
                         <div
                           key={doc.id}
-                          className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 flex items-center justify-between gap-3"
+                          className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                         >
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                               {doc.type}
                             </p>
-                            <p className="text-xs text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+                            <p className="text-xs text-slate-500 dark:text-slate-400 font-mono mt-0.5 truncate">
                               {doc.documentNumber} · Exp {formatShortDate(doc.expiryDate)}
                             </p>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex items-center gap-2 shrink-0 flex-wrap">
                             <span
                               className={`text-xs font-semibold ${
                                 exp.status === 'expired'
@@ -837,11 +1157,21 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                             <button
                               type="button"
                               onClick={() => setPreviewDoc(doc)}
-                              aria-label={`Preview ${doc.type}`}
-                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-indigo-700 cursor-pointer"
+                              aria-label={`${t(lang, 'viewDocument')} ${doc.type}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-indigo-700 hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
                             >
                               <Eye className="w-3.5 h-3.5" />
+                              {t(lang, 'viewDocument')}
                             </button>
+                            <a
+                              href={docSrc.url}
+                              download={doc.fileName}
+                              aria-label={`${t(lang, 'downloadDocument')} ${doc.type}`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-xs font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              {t(lang, 'downloadDocument')}
+                            </a>
                             {canManageStaff && (
                               <button
                                 type="button"
@@ -955,7 +1285,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
             )}
 
             {/* TAB 3: ATTENDANCE */}
-            {drawerTab === 'attendance' && (
+            {effectiveDrawerTab === 'attendance' && !isPro && (
               <div className="space-y-2.5">
                 {selectedAttendance.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-6">No recent logs.</p>
@@ -994,9 +1324,29 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               </div>
             )}
 
-            {/* TAB 4: SALARY */}
-            {drawerTab === 'salary' && selectedPayroll && (
+            {/* TAB 4: SALARY (Strictly blocked for PRO and Main Manager) */}
+            {effectiveDrawerTab === 'salary' && !isPro && selectedPayroll && (
               <div className="space-y-4 text-xs">
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3.5 flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-slate-500">{t(lang, 'releaseDate')}</p>
+                    <p className="font-semibold text-slate-900 dark:text-white mt-0.5">
+                      {selectedPayroll.release.status === 'Delayed' &&
+                      selectedPayroll.release.delayedUntilDate
+                        ? `Delayed until ${formatShortDate(selectedPayroll.release.delayedUntilDate)}`
+                        : formatShortDate(selectedPayroll.release.releaseDate)}
+                    </p>
+                    {selectedPayroll.release.delayReason && (
+                      <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">
+                        {selectedPayroll.release.delayReason}
+                      </p>
+                    )}
+                  </div>
+                  <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold">
+                    {getSalaryStatusLabel(lang, selectedPayroll.release.status)}
+                  </span>
+                </div>
+
                 <dl className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2">
                   <div className="flex justify-between">
                     <dt className="text-slate-500">Base Salary</dt>
@@ -1031,54 +1381,74 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         )}
       </SlideOverDrawer>
 
-      {/* Document Preview Modal */}
-      {previewDoc && (
+      {/* Real Document Preview & Download Modal */}
+      {previewDoc && previewSource && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-xs p-4"
           role="dialog"
           aria-modal="true"
+          aria-label={`Preview ${previewDoc.type}`}
         >
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl">
-            <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div>
-                <h4 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  {previewDoc.type}
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="min-w-0">
+                <h4 className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                  {previewDoc.type} — {previewDoc.fileName}
                 </h4>
-                <p className="text-xs text-slate-500 font-mono">{previewDoc.documentNumber}</p>
+                <p className="text-xs text-slate-500 font-mono">
+                  {previewDoc.documentNumber} · Expires {formatShortDate(previewDoc.expiryDate)}
+                </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setPreviewDoc(null)}
-                aria-label="Close preview"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={previewSource.url}
+                  download={previewDoc.fileName}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {t(lang, 'downloadDocument')}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewDoc(null)}
+                  aria-label="Close preview"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-            <div className="mt-4 rounded-xl bg-slate-50 dark:bg-slate-950 p-6 text-center space-y-2">
-              {previewDoc.fileDataUrl && previewDoc.fileType.startsWith('image/') ? (
+
+            <div className="rounded-xl bg-slate-100 dark:bg-slate-950 p-3 flex items-center justify-center min-h-[260px] max-h-[70vh] overflow-auto">
+              {previewSource.isImage ? (
                 <img
-                  src={previewDoc.fileDataUrl}
+                  src={previewSource.url}
                   alt={previewDoc.fileName}
-                  className="max-h-64 mx-auto rounded object-contain"
+                  className="max-h-[64vh] max-w-full rounded-lg object-contain shadow-xs"
+                />
+              ) : previewSource.isPdf ? (
+                <iframe
+                  src={previewSource.url}
+                  title={previewDoc.fileName}
+                  className="w-full h-[64vh] rounded-lg border border-slate-200 dark:border-slate-800 bg-white"
                 />
               ) : (
-                <>
-                  <FileText className="w-8 h-8 text-indigo-600 mx-auto" />
+                <div className="text-center space-y-2 py-8">
+                  <FileText className="w-10 h-10 text-indigo-600 mx-auto" />
                   <p className="text-sm font-medium text-slate-900 dark:text-white">
                     {previewDoc.fileName}
                   </p>
                   <p className="text-xs text-slate-500">
-                    Expires {formatShortDate(previewDoc.expiryDate)}
+                    Use the Download button above to open this document locally.
                   </p>
-                </>
+                </div>
               )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Add / Edit Employee Modal */}
+      {/* Add / Edit Employee Modal (Profile Picture, Initial Password, Labels, Managed Sections, Flexible Zones, Bank Details) */}
       {showEmpModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto"
@@ -1086,7 +1456,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
           aria-modal="true"
           aria-label={editingEmp ? 'Edit Employee' : 'Add Employee'}
         >
-          <div className="w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl my-8">
+          <div className="w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl my-8 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <h3 className="text-base font-semibold text-slate-900 dark:text-white">
                 {editingEmp ? `Edit ${editingEmp.fullName}` : t(lang, 'addEmployee')}
@@ -1107,6 +1477,44 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                   {empError}
                 </p>
               )}
+
+              {/* Profile Picture Upload */}
+              <div className="flex items-center gap-4 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <Avatar
+                  src={empForm.avatarUrl || undefined}
+                  name={empForm.fullName || 'New Employee'}
+                  size="lg"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                    {t(lang, 'profilePicture')}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Displayed across employee directory, top header, and profile cards.
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 cursor-pointer">
+                      <Camera className="w-3.5 h-3.5 text-indigo-600" />
+                      Upload Photo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="sr-only"
+                        onChange={(e) => void handleAvatarPicked(e.target.files?.[0] ?? null)}
+                      />
+                    </label>
+                    {empForm.avatarUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setEmpForm((p) => ({ ...p, avatarUrl: '' }))}
+                        className="text-xs text-rose-600 hover:underline cursor-pointer"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -1157,6 +1565,35 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     className={INPUT_CLASS}
                   />
                 </div>
+
+                {/* Initial Temporary Password (Required when onboarding a new employee) */}
+                {!editingEmp && (
+                  <div className="sm:col-span-2 rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50/50 dark:bg-amber-950/30 p-3.5">
+                    <label
+                      htmlFor="emp-initial-password"
+                      className="flex items-center gap-1.5 text-xs font-semibold text-amber-900 dark:text-amber-200 mb-1"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      {t(lang, 'initialPassword')} *
+                    </label>
+                    <input
+                      id="emp-initial-password"
+                      type="text"
+                      required
+                      minLength={6}
+                      placeholder="e.g., Welcome2026!"
+                      value={empForm.initialPassword}
+                      onChange={(e) =>
+                        setEmpForm((p) => ({ ...p, initialPassword: e.target.value }))
+                      }
+                      className={`${INPUT_CLASS} font-mono`}
+                    />
+                    <p className="text-[11px] text-amber-800/80 dark:text-amber-300/80 mt-1">
+                      Employee will be required to create a personal password on their first login.
+                    </p>
+                  </div>
+                )}
+
                 <div>
                   <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                     Primary Company
@@ -1193,7 +1630,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
-                    Role
+                    Role / Position
                   </label>
                   <select
                     value={empForm.role}
@@ -1227,10 +1664,49 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 </div>
               </div>
 
+              {/* Managed Sections (Multi-select for Section Managers & Co-Managers) */}
+              {(empForm.role === UserRole.SectionManager ||
+                empForm.role === UserRole.SectionCoManager) && (
+                <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/40 dark:bg-indigo-950/30 p-3.5 space-y-2">
+                  <p className="text-xs font-semibold text-indigo-900 dark:text-indigo-200">
+                    {t(lang, 'managedSections')} (Select 1 or more)
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {sections.map((s) => {
+                      const checked = empForm.managedSectionIds.includes(s.id);
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() =>
+                            setEmpForm((p) => ({
+                              ...p,
+                              managedSectionIds: checked
+                                ? p.managedSectionIds.filter((id) => id !== s.id)
+                                : [...p.managedSectionIds, s.id],
+                            }))
+                          }
+                          className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
+                            checked
+                              ? 'border-indigo-600 bg-indigo-600 text-white'
+                              : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200'
+                          }`}
+                        >
+                          {s.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Shared / Secondary Companies */}
               <div>
-                <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
-                  Shared / Secondary Companies (Optional)
+                <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <Building2 className="w-3.5 h-3.5" />
+                  {empForm.role === UserRole.Accounting
+                    ? 'Attached Companies for Accounting Scope (Primary + Selected)'
+                    : 'Shared / Secondary Companies (Optional)'}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {companies
@@ -1262,57 +1738,190 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                 </div>
               </div>
 
-              {/* Salary AED */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                <div>
-                  <label className="block text-[11px] text-slate-500 mb-1">Base (AED)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={empForm.baseSalary}
-                    onChange={(e) =>
-                      setEmpForm((p) => ({ ...p, baseSalary: Number(e.target.value) }))
-                    }
-                    className={`${INPUT_CLASS} font-mono`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 mb-1">Housing</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={empForm.housingAllowance}
-                    onChange={(e) =>
-                      setEmpForm((p) => ({ ...p, housingAllowance: Number(e.target.value) }))
-                    }
-                    className={`${INPUT_CLASS} font-mono`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 mb-1">Transport</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={empForm.transportAllowance}
-                    onChange={(e) =>
-                      setEmpForm((p) => ({ ...p, transportAllowance: Number(e.target.value) }))
-                    }
-                    className={`${INPUT_CLASS} font-mono`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-slate-500 mb-1">Other</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={empForm.otherAllowance}
-                    onChange={(e) =>
-                      setEmpForm((p) => ({ ...p, otherAllowance: Number(e.target.value) }))
-                    }
-                    className={`${INPUT_CLASS} font-mono`}
-                  />
+              {/* Custom Employee Status Labels (Multi-select) */}
+              <div>
+                <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <Tag className="w-3.5 h-3.5" />
+                  {t(lang, 'labelsManager')}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {labels.map((lbl) => {
+                    const active = empForm.labelIds.includes(lbl.id);
+                    return (
+                      <button
+                        key={lbl.id}
+                        type="button"
+                        onClick={() =>
+                          setEmpForm((p) => ({
+                            ...p,
+                            labelIds: active
+                              ? p.labelIds.filter((id) => id !== lbl.id)
+                              : [...p.labelIds, lbl.id],
+                          }))
+                        }
+                        style={
+                          active
+                            ? {
+                                backgroundColor: lbl.color,
+                                color: '#ffffff',
+                                borderColor: lbl.color,
+                              }
+                            : {
+                                backgroundColor: `${lbl.color}12`,
+                                color: lbl.color,
+                                borderColor: `${lbl.color}44`,
+                              }
+                        }
+                        className="px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer transition-all"
+                      >
+                        {lbl.name}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+
+              {/* Flexible Geofence Zones + No-Zone Exempt Option (Hidden for Main Manager) */}
+              {empForm.role !== UserRole.MainManager && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                      Assigned Geofence Zones (Multiple allowed)
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setEmpForm((p) => ({ ...p, assignedZoneIds: [] }))}
+                      className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border cursor-pointer ${
+                        empForm.assignedZoneIds.length === 0
+                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      No Zone (Geofence Exempt)
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {geofences.map((z) => {
+                      const active = empForm.assignedZoneIds.includes(z.id);
+                      return (
+                        <button
+                          key={z.id}
+                          type="button"
+                          onClick={() =>
+                            setEmpForm((p) => ({
+                              ...p,
+                              assignedZoneIds: active
+                                ? p.assignedZoneIds.filter((id) => id !== z.id)
+                                : [...p.assignedZoneIds, z.id],
+                            }))
+                          }
+                          className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
+                            active
+                              ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
+                              : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          {z.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Salary AED & Bank Account Details (Hidden for Main Manager) */}
+              {empForm.role !== UserRole.MainManager && (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">Base (AED)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={empForm.baseSalary}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, baseSalary: Number(e.target.value) }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">Housing</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={empForm.housingAllowance}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, housingAllowance: Number(e.target.value) }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">Transport</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={empForm.transportAllowance}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, transportAllowance: Number(e.target.value) }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">Other</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={empForm.otherAllowance}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, otherAllowance: Number(e.target.value) }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Bank Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">Bank Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g., Emirates NBD"
+                        value={empForm.bankName}
+                        onChange={(e) => setEmpForm((p) => ({ ...p, bankName: e.target.value }))}
+                        className={INPUT_CLASS}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        Account Number
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="101-XXXX-01"
+                        value={empForm.accountNumber}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, accountNumber: e.target.value }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">IBAN</label>
+                      <input
+                        type="text"
+                        placeholder="AE..."
+                        value={empForm.iban}
+                        onChange={(e) => setEmpForm((p) => ({ ...p, iban: e.target.value }))}
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
                 <button

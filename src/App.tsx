@@ -18,8 +18,10 @@ import {
 } from 'lucide-react';
 import { AttendanceView } from './components/AttendanceView';
 import { Avatar } from './components/Avatar';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { DashboardView, NavSection } from './components/DashboardView';
 import { EmployeesView } from './components/EmployeesView';
+import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScreen';
 import { LeavesView } from './components/LeavesView';
 import { LoginView } from './components/LoginView';
 import { OfflineScreen } from './components/OfflineScreen';
@@ -34,8 +36,10 @@ import {
   ApprovalWorkflow,
   AuthSession,
   Company,
+  CreateEmployeePayload,
   Employee,
   EmployeeDocument,
+  EmployeeLabel,
   EmployeeModel,
   GeofenceZone,
   GPSReading,
@@ -44,6 +48,8 @@ import {
   LeaveStatus,
   LeaveType,
   PayrollAdjustment,
+  ProAssignment,
+  SalaryReleaseStatus,
   Section,
   ShiftSchedule,
   UserRole,
@@ -53,6 +59,7 @@ import {
   evaluateClockInEligibility,
   getDocumentExpiryStatus,
   getScopedEmployees,
+  getUserAttachedCompanyIds,
   resolveClockInPolicy,
 } from './utils/hrLogic';
 
@@ -92,6 +99,7 @@ export function App() {
   const [activeNav, setActiveNav] = useState<NavSection>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
@@ -184,22 +192,35 @@ export function App() {
   const accessibleCompanies = useMemo<Company[]>(() => {
     if (!db || !currentUser) return [];
     const activeOnes = db.companies.filter((c) => c.active);
-    if (activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin) {
+    if (
+      activeRole === UserRole.MainManager ||
+      activeRole === UserRole.HRAdmin ||
+      activeRole === UserRole.PRO
+    ) {
       return activeOnes;
     }
-    const allowedIds = new Set([currentUser.primaryCompanyId, ...currentUser.sharedCompanyIds]);
+    // Accounting & other roles strictly limited to explicitly attached companies
+    const allowedIds = new Set(getUserAttachedCompanyIds(currentUser));
     return activeOnes.filter((c) => allowedIds.has(c.id));
   }, [db, currentUser, activeRole]);
 
   // Keep selectedCompanyId valid when switching roles
   useEffect(() => {
     if (!currentUser) return;
-    if (activeRole === UserRole.MainManager) {
+    if (activeRole === UserRole.MainManager || activeRole === UserRole.PRO) {
       if (
         selectedCompanyId !== 'all' &&
         !accessibleCompanies.some((c) => c.id === selectedCompanyId)
       ) {
         setSelectedCompanyId('all');
+      }
+    } else if (activeRole === UserRole.Accounting) {
+      // Accounting strictly scoped to attached companies (allows 'all' across attached or single attached company)
+      if (
+        selectedCompanyId !== 'all' &&
+        !accessibleCompanies.some((c) => c.id === selectedCompanyId)
+      ) {
+        setSelectedCompanyId(currentUser.primaryCompanyId);
       }
     } else {
       if (
@@ -211,18 +232,24 @@ export function App() {
     }
   }, [activeRole, currentUser, accessibleCompanies, selectedCompanyId]);
 
-  // Redirect away from settings if switching to non-admin role
-  useEffect(() => {
-    if (
-      activeNav === 'settings' &&
-      activeRole !== UserRole.MainManager &&
-      activeRole !== UserRole.HRAdmin
-    ) {
-      setActiveNav('dashboard');
+  const allowedNavIds = useMemo<NavSection[]>(() => {
+    if (activeRole === UserRole.Accounting) return ['payroll'];
+    if (activeRole === UserRole.PRO) return ['dashboard', 'employees'];
+    const base: NavSection[] = ['dashboard', 'attendance', 'employees', 'leaves', 'payroll'];
+    if (activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin) {
+      base.push('settings');
     }
-  }, [activeNav, activeRole]);
+    return base;
+  }, [activeRole]);
 
-  // Strictly scoped employees (Company + RBAC Section/Self)
+  // Redirect away from unauthorized views when switching roles
+  useEffect(() => {
+    if (!allowedNavIds.includes(activeNav)) {
+      setActiveNav(allowedNavIds[0]);
+    }
+  }, [activeNav, allowedNavIds]);
+
+  // Strictly scoped employees (Company + RBAC Section/PRO Time-Limited/Accounting Attached Companies/Self)
   const scopedEmployees = useMemo<Employee[]>(() => {
     if (!db || !currentUser) return [];
     return getScopedEmployees({
@@ -230,6 +257,7 @@ export function App() {
       viewer: currentUser,
       activeRole,
       selectedCompanyId,
+      proAssignments: db.proAssignments,
     });
   }, [db, currentUser, activeRole, selectedCompanyId]);
 
@@ -300,34 +328,37 @@ export function App() {
   // Notifications for the minimalist header bell
   const notifications = useMemo(() => {
     if (!db || !currentUser) return [];
+    if (activeRole === UserRole.Accounting) return [];
     const items: { id: string; title: string; detail: string; target: NavSection }[] = [];
 
-    scopedLeaves.forEach((lv) => {
-      if (
-        lv.status === LeaveStatus.Pending &&
-        canRoleActOnLeaveStep({ leave: lv, actorRole: activeRole, actorEmployee: currentUser })
-      ) {
-        const emp = db.employees.find((e) => e.id === lv.employeeId);
-        items.push({
-          id: `lv-${lv.id}`,
-          title: `Leave Approval: ${emp?.fullName ?? 'Employee'}`,
-          detail: `${lv.type} · ${lv.days} day${lv.days === 1 ? '' : 's'}`,
-          target: 'leaves',
-        });
-      }
-    });
-
-    if (activeRole === UserRole.MainManager || activeRole === UserRole.SectionManager) {
-      scopedEmployees
-        .filter((e) => e.pendingShiftProposal)
-        .forEach((emp) => {
+    if (activeRole !== UserRole.PRO) {
+      scopedLeaves.forEach((lv) => {
+        if (
+          lv.status === LeaveStatus.Pending &&
+          canRoleActOnLeaveStep({ leave: lv, actorRole: activeRole, actorEmployee: currentUser })
+        ) {
+          const emp = db.employees.find((e) => e.id === lv.employeeId);
           items.push({
-            id: `shift-${emp.id}`,
-            title: `Shift Proposal: ${emp.fullName}`,
-            detail: `${emp.pendingShiftProposal?.shiftStart}–${emp.pendingShiftProposal?.shiftEnd}`,
-            target: 'employees',
+            id: `lv-${lv.id}`,
+            title: `Leave Approval: ${emp?.fullName ?? 'Employee'}`,
+            detail: `${lv.type} · ${lv.days} day${lv.days === 1 ? '' : 's'}`,
+            target: 'leaves',
           });
-        });
+        }
+      });
+
+      if (activeRole === UserRole.MainManager || activeRole === UserRole.SectionManager) {
+        scopedEmployees
+          .filter((e) => e.pendingShiftProposal)
+          .forEach((emp) => {
+            items.push({
+              id: `shift-${emp.id}`,
+              title: `Shift Proposal: ${emp.fullName}`,
+              detail: `${emp.pendingShiftProposal?.shiftStart}–${emp.pendingShiftProposal?.shiftEnd}`,
+              target: 'employees',
+            });
+          });
+      }
     }
 
     scopedDocuments.forEach((doc) => {
@@ -367,7 +398,14 @@ export function App() {
   const handleDemoRoleLogin = async (role: UserRole) => {
     const nextSession = await api.auth.demoLogin(role);
     setSession(nextSession);
-    setActiveNav('dashboard');
+    if (role === UserRole.Accounting) {
+      setActiveNav('payroll');
+    } else if (role === UserRole.PRO) {
+      setSelectedCompanyId('all');
+      setActiveNav('employees');
+    } else {
+      setActiveNav('dashboard');
+    }
     await loadDatabase();
   };
 
@@ -397,6 +435,10 @@ export function App() {
 
   const handleClockIn = async () => {
     if (!db || !currentUser) return;
+    if (activeRole === UserRole.MainManager) {
+      showToast('Main Manager accounts are exempt from attendance tracking.', 'error');
+      return;
+    }
     const assignedZones = db.geofences.filter((z) => currentUser.assignedZoneIds.includes(z.id));
     const evaluation = evaluateClockInEligibility({
       reading: gpsReading,
@@ -404,38 +446,44 @@ export function App() {
       effectivePolicy: resolveClockInPolicy(currentUser, db.settings.globalClockInPolicy),
       isDesktopDevice: simulatedDevice === 'desktop',
       maxAccuracyMeters: db.settings.maxMobileAccuracyMeters,
+      hasNoAssignedZones: currentUser.assignedZoneIds.length === 0,
     });
-    if (!evaluation.allowed || !evaluation.nearestZone || !gpsReading) {
+    if (!evaluation.allowed) {
+      showToast(evaluation.reason, 'error');
+      return;
+    }
+    if (!evaluation.isGeofenceExempt && (!evaluation.nearestZone || !gpsReading)) {
       showToast(evaluation.reason, 'error');
       return;
     }
 
     const activeCompanyId =
       selectedCompanyId !== 'all' ? selectedCompanyId : currentUser.primaryCompanyId;
+    const zoneId = evaluation.isGeofenceExempt ? 'exempt' : evaluation.nearestZone!.id;
+    const zoneName = evaluation.isGeofenceExempt
+      ? 'Geofence Exempt'
+      : evaluation.nearestZone!.name;
+
     await api.attendance.clockIn({
       employeeId: currentUser.id,
       companyId: activeCompanyId,
-      zoneId: evaluation.nearestZone.id,
-      zoneName: evaluation.nearestZone.name,
-      latitude: gpsReading.latitude,
-      longitude: gpsReading.longitude,
-      accuracyMeters: gpsReading.accuracyMeters,
+      zoneId,
+      zoneName,
+      latitude: gpsReading?.latitude ?? 0,
+      longitude: gpsReading?.longitude ?? 0,
+      accuracyMeters: gpsReading?.accuracyMeters ?? 0,
       punchSource: evaluation.punchSource,
       simulateLateMinutes: simPreset === 'late_25m' ? 25 : undefined,
     });
     await loadDatabase();
-    showToast(`Clocked in at ${evaluation.nearestZone.name}.`);
+    showToast(`Clocked in (${zoneName}).`);
   };
 
   const handleClockOut = async (logId: string) => {
-    if (!gpsReading) {
-      showToast('Waiting for GPS location.', 'error');
-      return;
-    }
     await api.attendance.clockOut({
       logId,
-      latitude: gpsReading.latitude,
-      longitude: gpsReading.longitude,
+      latitude: gpsReading?.latitude ?? 0,
+      longitude: gpsReading?.longitude ?? 0,
     });
     await loadDatabase();
     showToast('Clocked out successfully.');
@@ -492,10 +540,32 @@ export function App() {
     );
   }
 
+  // --- MANDATORY FIRST-LOGIN PASSWORD CHANGE BLOCKER ---
+  if (session.mustChangePassword || currentUser.mustChangePassword) {
+    return (
+      <ForcePasswordChangeScreen
+        lang={lang}
+        currentUser={currentUser}
+        activeRole={activeRole}
+        onChangePassword={async (newPassword: string) => {
+          const updatedSession = await api.auth.changePassword({
+            userId: currentUser.id,
+            newPassword,
+            isForcedFirstLogin: true,
+          });
+          if (updatedSession) setSession(updatedSession);
+          await loadDatabase();
+          showToast('Password updated. Welcome to Yaldi HR!');
+        }}
+        onSignOut={() => handleSignOut()}
+      />
+    );
+  }
+
   const canAccessSettings =
     activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
 
-  const navItems: {
+  const allNavItems: {
     id: NavSection;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
@@ -504,15 +574,25 @@ export function App() {
     { id: 'attendance', label: t(lang, 'navAttendance'), icon: Clock },
     {
       id: 'employees',
-      label: activeRole === UserRole.Employee ? t(lang, 'navMyDocs') : t(lang, 'navEmployees'),
-      icon: activeRole === UserRole.Employee ? FolderOpen : Users,
+      label:
+        activeRole === UserRole.PRO
+          ? t(lang, 'navProDocs')
+          : activeRole === UserRole.Employee
+            ? t(lang, 'navMyDocs')
+            : t(lang, 'navEmployees'),
+      icon:
+        activeRole === UserRole.Employee || activeRole === UserRole.PRO ? FolderOpen : Users,
     },
     { id: 'leaves', label: t(lang, 'navLeaves'), icon: CalendarClock },
-    { id: 'payroll', label: t(lang, 'navPayroll'), icon: Wallet },
-    ...(canAccessSettings
-      ? [{ id: 'settings' as NavSection, label: t(lang, 'navSettings'), icon: Settings }]
-      : []),
+    {
+      id: 'payroll',
+      label: activeRole === UserRole.Employee ? t(lang, 'navMySalary') : t(lang, 'navPayroll'),
+      icon: Wallet,
+    },
+    { id: 'settings', label: t(lang, 'navSettings'), icon: Settings },
   ];
+
+  const navItems = allNavItems.filter((item) => allowedNavIds.includes(item.id));
 
   // Mobile bottom nav keeps max 5 clean thumb targets
   const mobileNavItems = navItems.slice(0, 5);
@@ -551,8 +631,14 @@ export function App() {
               onChange={(e) => setSelectedCompanyId(e.target.value)}
               className="w-full ps-8 pe-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 truncate cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
             >
-              {activeRole === UserRole.MainManager && (
-                <option value="all">{t(lang, 'allCompanies')}</option>
+              {(activeRole === UserRole.MainManager ||
+                activeRole === UserRole.PRO ||
+                (activeRole === UserRole.Accounting && accessibleCompanies.length > 1)) && (
+                <option value="all">
+                  {activeRole === UserRole.Accounting
+                    ? 'All Attached Companies'
+                    : t(lang, 'allCompanies')}
+                </option>
               )}
               {accessibleCompanies.map((comp) => (
                 <option key={comp.id} value={comp.id}>
@@ -721,6 +807,8 @@ export function App() {
               attendance={scopedAttendance}
               leaves={scopedLeaves}
               payrollAdjustments={scopedAdjustments}
+              salaryReleases={db.salaryReleases}
+              proAssignments={db.proAssignments}
               settings={db.settings}
               gpsReading={gpsReading}
               simulatedDevice={simulatedDevice}
@@ -778,7 +866,7 @@ export function App() {
             />
           )}
 
-          {activeNav === 'employees' && (
+          {activeNav === 'employees' && activeRole !== UserRole.Accounting && (
             <EmployeesView
               lang={lang}
               currentUser={currentUser}
@@ -786,17 +874,20 @@ export function App() {
               selectedCompanyId={selectedCompanyId}
               companies={db.companies}
               sections={db.sections}
+              labels={db.labels}
+              proAssignments={db.proAssignments}
               models={db.employeeModels}
               scopedEmployees={scopedEmployees}
               geofences={db.geofences}
               documents={scopedDocuments}
               attendance={scopedAttendance}
               payrollAdjustments={scopedAdjustments}
+              salaryReleases={db.salaryReleases}
               customDocumentTypes={db.settings.customDocumentTypes}
-              onCreateEmployee={async (emp) => {
+              onCreateEmployee={async (emp: CreateEmployeePayload) => {
                 await api.employees.create(emp);
                 await loadDatabase();
-                showToast(`${emp.fullName} added to team.`);
+                showToast(`${emp.fullName} added (password change required on first login).`);
               }}
               onUpdateEmployee={async (id, patch) => {
                 await api.employees.update(id, patch);
@@ -876,7 +967,7 @@ export function App() {
             />
           )}
 
-          {activeNav === 'payroll' && (
+          {activeNav === 'payroll' && activeRole !== UserRole.PRO && (
             <PayrollView
               lang={lang}
               currentUser={currentUser}
@@ -884,9 +975,11 @@ export function App() {
               selectedCompanyId={selectedCompanyId}
               companies={db.companies}
               sections={db.sections}
+              labels={db.labels}
               scopedEmployees={scopedEmployees}
               attendance={scopedAttendance}
               adjustments={scopedAdjustments}
+              salaryReleases={db.salaryReleases}
               settings={db.settings}
               onAddAdjustment={async (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => {
                 await api.payroll.addAdjustment(input);
@@ -898,15 +991,38 @@ export function App() {
                 await loadDatabase();
                 showToast('Adjustment removed.');
               }}
+              onUpsertReleaseSchedule={async (input: {
+                month: string;
+                payPeriod: string;
+                scopeType: 'section' | 'employee';
+                scopeId: string;
+                companyId: string | 'all';
+                releaseDate: string;
+                status: SalaryReleaseStatus;
+                delayedUntilDate?: string | null;
+                delayReason?: string | null;
+                updatedBy: string;
+              }) => {
+                await api.payroll.upsertReleaseSchedule(input);
+                await loadDatabase();
+                showToast(
+                  input.status === 'Delayed'
+                    ? 'Salary release delayed and employees notified.'
+                    : 'Salary release schedule saved.'
+                );
+              }}
             />
           )}
 
           {activeNav === 'settings' && canAccessSettings && (
             <SettingsHubView
               lang={lang}
+              currentUser={currentUser}
               activeRole={activeRole}
               companies={db.companies}
               sections={db.sections}
+              labels={db.labels}
+              proAssignments={db.proAssignments}
               models={db.employeeModels}
               employees={db.employees}
               geofences={db.geofences}
@@ -925,6 +1041,42 @@ export function App() {
                 await api.sections.create(input);
                 await loadDatabase();
                 showToast(`Section "${input.name}" added.`);
+              }}
+              onCreateLabel={async (input: Omit<EmployeeLabel, 'id'>) => {
+                await api.labels.create(input);
+                await loadDatabase();
+                showToast(`Status label "${input.name}" created.`);
+              }}
+              onUpdateLabel={async (id, patch) => {
+                await api.labels.update(id, patch);
+                await loadDatabase();
+                showToast('Status label updated.');
+              }}
+              onDeleteLabel={async (id) => {
+                await api.labels.remove(id);
+                await loadDatabase();
+                showToast('Status label deleted.');
+              }}
+              onCreateProAssignment={async (input: Omit<ProAssignment, 'id' | 'createdAt'>) => {
+                await api.proAssignments.create(input);
+                await loadDatabase();
+                showToast('PRO time-limited document access granted.');
+              }}
+              onDeleteProAssignment={async (id) => {
+                await api.proAssignments.remove(id);
+                await loadDatabase();
+                showToast('PRO document access revoked.');
+              }}
+              onBulkAssignZones={async (params) => {
+                const count = await api.employees.bulkAssignZones(params);
+                await loadDatabase();
+                showToast(`Updated geofence zones for ${count} employee${count === 1 ? '' : 's'}.`);
+                return count;
+              }}
+              onUpdateEmployee={async (id, patch) => {
+                await api.employees.update(id, patch);
+                await loadDatabase();
+                showToast('Manager section assignments updated.');
               }}
               onCreateModel={async (input: Omit<EmployeeModel, 'id'>) => {
                 await api.models.create(input);
@@ -980,10 +1132,13 @@ export function App() {
         </main>
       </div>
 
-      {/* Mobile Fixed Bottom Navigation Bar (<1024px) — 60px + 52px header = 13.3% <= 15% */}
+      {/* Mobile Fixed Bottom Navigation Bar (<1024px) */}
       <nav
         aria-label="Mobile Navigation"
-        className="lg:hidden fixed bottom-0 inset-x-0 z-30 h-[60px] pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 grid grid-cols-5 px-1 print:hidden"
+        style={{
+          gridTemplateColumns: `repeat(${Math.max(1, mobileNavItems.length)}, minmax(0, 1fr))`,
+        }}
+        className="lg:hidden fixed bottom-0 inset-x-0 z-30 h-[60px] pb-safe bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 grid px-1 print:hidden"
       >
         {mobileNavItems.map((item) => {
           const Icon = item.icon;
@@ -1006,7 +1161,7 @@ export function App() {
         })}
       </nav>
 
-      {/* User Profile & Quick Settings Menu (Language EN/AR/UR, Theme, Demo Roles, GPS, Server) */}
+      {/* User Profile & Quick Settings Menu */}
       <ProfileSettingsMenu
         open={profileMenuOpen}
         onClose={() => setProfileMenuOpen(false)}
@@ -1024,7 +1179,25 @@ export function App() {
         onChangeSimulatedDevice={setSimulatedDevice}
         onRequestLiveGPS={() => void handleRequestLiveGPS()}
         onUpdateServerConfig={handleUpdateServerConfig}
+        onOpenChangePassword={() => setChangePasswordOpen(true)}
         onSignOut={() => void handleSignOut()}
+      />
+
+      {/* Self-Service Change Password Modal */}
+      <ChangePasswordModal
+        open={changePasswordOpen}
+        lang={lang}
+        onClose={() => setChangePasswordOpen(false)}
+        onSubmit={async (currentPassword, newPassword) => {
+          await api.auth.changePassword({
+            userId: currentUser.id,
+            currentPassword,
+            newPassword,
+            isForcedFirstLogin: false,
+          });
+          await loadDatabase();
+          showToast('Password updated successfully.');
+        }}
       />
 
       {/* Toast Notification */}

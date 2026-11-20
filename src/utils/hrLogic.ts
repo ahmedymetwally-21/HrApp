@@ -18,9 +18,24 @@ import {
   LeaveType,
   MonthlyPayrollRow,
   PayrollAdjustment,
+  ProAssignment,
   PunchSource,
+  ResolvedSalaryRelease,
+  SalaryReleaseSchedule,
   UserRole,
 } from '../types/hr';
+
+/**
+ * Main Manager Executive Exemptions:
+ * Main Managers are strictly exempt from attendance tracking and monthly payroll.
+ */
+export function isAttendanceTracked(employee: Pick<Employee, 'role'>): boolean {
+  return employee.role !== UserRole.MainManager;
+}
+
+export function isPayrollEligible(employee: Pick<Employee, 'role'>): boolean {
+  return employee.role !== UserRole.MainManager;
+}
 
 const EARTH_RADIUS_METERS = 6_371_000;
 
@@ -66,8 +81,16 @@ export function evaluateClockInEligibility(params: {
   effectivePolicy: ClockInPolicyMode;
   isDesktopDevice: boolean;
   maxAccuracyMeters: number;
+  hasNoAssignedZones?: boolean;
 }): ClockInEvaluation {
-  const { reading, assignedZones, effectivePolicy, isDesktopDevice, maxAccuracyMeters } = params;
+  const {
+    reading,
+    assignedZones,
+    effectivePolicy,
+    isDesktopDevice,
+    maxAccuracyMeters,
+    hasNoAssignedZones = false,
+  } = params;
   const activeZones = assignedZones.filter((z) => z.active);
   const punchSource: PunchSource = isDesktopDevice ? 'PC Web' : 'Mobile App';
 
@@ -80,6 +103,21 @@ export function evaluateClockInEligibility(params: {
       outsideByMeters: null,
       effectivePolicy,
       punchSource,
+      isGeofenceExempt: hasNoAssignedZones,
+    };
+  }
+
+  // No-Zone Option: employees intentionally assigned [] zones are Geofence Exempt
+  if (hasNoAssignedZones) {
+    return {
+      allowed: true,
+      reason: 'Geofence Exempt — clock in allowed from any location.',
+      nearestZone: null,
+      distanceMeters: 0,
+      outsideByMeters: 0,
+      effectivePolicy,
+      punchSource,
+      isGeofenceExempt: true,
     };
   }
 
@@ -92,6 +130,7 @@ export function evaluateClockInEligibility(params: {
       outsideByMeters: null,
       effectivePolicy,
       punchSource,
+      isGeofenceExempt: false,
     };
   }
 
@@ -238,9 +277,47 @@ export function isSharedEmployeeInCompany(employee: Employee, selectedCompanyId:
 }
 
 /**
+ * PRO Time-Limited Document Access helpers
+ */
+export function isProAssignmentActive(
+  assignment: ProAssignment,
+  now: Date = new Date()
+): boolean {
+  const nowMs = now.getTime();
+  const startMs = new Date(assignment.accessStart).getTime();
+  const endMs = new Date(assignment.accessExpiresAt).getTime();
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return false;
+  return nowMs >= startMs && nowMs <= endMs;
+}
+
+export function getActiveProAssignedEmployeeIds(
+  proAssignments: ProAssignment[],
+  proUserId: string,
+  now: Date = new Date()
+): Set<string> {
+  const ids = new Set<string>();
+  proAssignments.forEach((a) => {
+    if (a.proUserId === proUserId && isProAssignmentActive(a, now)) {
+      ids.add(a.employeeId);
+    }
+  });
+  return ids;
+}
+
+/**
+ * Attached company list for strict Accounting / non-group company scoping.
+ */
+export function getUserAttachedCompanyIds(user: Pick<Employee, 'primaryCompanyId' | 'sharedCompanyIds'>): string[] {
+  const set = new Set<string>([user.primaryCompanyId, ...user.sharedCompanyIds]);
+  return Array.from(set).filter(Boolean);
+}
+
+/**
  * Strict RBAC Scoping:
  * - Main Manager & HR Admin: all employees in selected company (or all companies for Main Manager)
  * - Section Manager & Section Co-Manager: strictly scoped to their managedSectionIds
+ * - PRO: ONLY employees with an active (non-expired) HR-assigned PRO grant
+ * - Accounting: ONLY payroll-eligible employees whose primary/shared company is explicitly attached to the Accounting user
  * - Employee: strictly self only
  */
 export function getScopedEmployees(params: {
@@ -248,8 +325,39 @@ export function getScopedEmployees(params: {
   viewer: Employee;
   activeRole: UserRole;
   selectedCompanyId: string;
+  proAssignments?: ProAssignment[];
+  now?: Date;
 }): Employee[] {
-  const { employees, viewer, activeRole, selectedCompanyId } = params;
+  const {
+    employees,
+    viewer,
+    activeRole,
+    selectedCompanyId,
+    proAssignments = [],
+    now = new Date(),
+  } = params;
+
+  if (activeRole === UserRole.PRO) {
+    const activeIds = getActiveProAssignedEmployeeIds(proAssignments, viewer.id, now);
+    return employees.filter(
+      (emp) => activeIds.has(emp.id) && isEmployeeInCompany(emp, selectedCompanyId)
+    );
+  }
+
+  if (activeRole === UserRole.Accounting) {
+    const attachedCompanyIds = new Set(getUserAttachedCompanyIds(viewer));
+    return employees.filter((emp) => {
+      if (!isPayrollEligible(emp)) return false;
+      // Strict company scoping: zero data for unattached companies
+      if (!attachedCompanyIds.has(emp.primaryCompanyId)) return false;
+      if (selectedCompanyId !== 'all') {
+        if (!attachedCompanyIds.has(selectedCompanyId)) return false;
+        return emp.primaryCompanyId === selectedCompanyId;
+      }
+      return true;
+    });
+  }
+
   return employees.filter((emp) => {
     if (!isEmployeeInCompany(emp, selectedCompanyId)) return false;
 
@@ -374,8 +482,15 @@ export function canRoleActOnLeaveStep(params: {
   if (leave.status !== LeaveStatus.Pending || leave.currentStepIndex < 0) return false;
   if (leave.employeeId === actorEmployee.id && actorRole !== UserRole.MainManager) return false;
 
-  // Section Co-Manager can NEVER formally approve/reject leaves
-  if (actorRole === UserRole.SectionCoManager || actorRole === UserRole.Employee) return false;
+  // Section Co-Manager, Employee, PRO, and Accounting can NEVER formally approve/reject leaves
+  if (
+    actorRole === UserRole.SectionCoManager ||
+    actorRole === UserRole.Employee ||
+    actorRole === UserRole.PRO ||
+    actorRole === UserRole.Accounting
+  ) {
+    return false;
+  }
 
   const activeStep = leave.approvalSteps[leave.currentStepIndex];
   if (!activeStep || activeStep.status !== 'pending') return false;
@@ -476,6 +591,76 @@ export function getMissingModelDocuments(
   return model.requiredDocuments.filter((reqType) => !uploaded.has(reqType));
 }
 
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Returns a real renderable & downloadable URL/dataURI for any employee document.
+ * Uses the real uploaded `fileDataUrl` when present, or synthesizes a high-clarity SVG
+ * document scan for pre-seeded demo documents so View & Download always work with real content.
+ */
+export function getDocumentPreviewSource(doc: EmployeeDocument): {
+  url: string;
+  isImage: boolean;
+  isPdf: boolean;
+  mimeType: string;
+} {
+  if (doc.fileDataUrl && doc.fileDataUrl.trim().length > 0) {
+    const isPdf =
+      doc.fileType === 'application/pdf' ||
+      doc.fileDataUrl.startsWith('data:application/pdf') ||
+      doc.fileName.toLowerCase().endsWith('.pdf');
+    const isImage =
+      doc.fileType.startsWith('image/') ||
+      doc.fileDataUrl.startsWith('data:image/') ||
+      /\.(png|jpe?g|webp|gif|svg)$/i.test(doc.fileName);
+    return {
+      url: doc.fileDataUrl,
+      isImage,
+      isPdf,
+      mimeType: doc.fileType || (isPdf ? 'application/pdf' : 'image/png'),
+    };
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="840" height="540" viewBox="0 0 840 540">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f8fafc"/>
+        <stop offset="100%" stop-color="#eef2ff"/>
+      </linearGradient>
+    </defs>
+    <rect width="840" height="540" rx="20" fill="url(#bg)" stroke="#cbd5e1" stroke-width="2"/>
+    <rect x="0" y="0" width="840" height="84" rx="20" fill="#1e1b4b"/>
+    <rect x="0" y="64" width="840" height="20" fill="#1e1b4b"/>
+    <text x="40" y="44" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#ffffff">YALDI HR — VERIFIED DOCUMENT COPY</text>
+    <text x="40" y="68" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="#c7d2fe">UNITED ARAB EMIRATES · EMPLOYEE COMPLIANCE ARCHIVE</text>
+    <rect x="40" y="114" width="760" height="310" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+    <text x="72" y="160" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="#64748b">DOCUMENT TYPE</text>
+    <text x="72" y="192" font-family="system-ui, sans-serif" font-size="26" font-weight="700" fill="#0f172a">${escapeXml(String(doc.type))}</text>
+    <text x="72" y="246" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="#64748b">DOCUMENT NUMBER</text>
+    <text x="72" y="276" font-family="ui-monospace, monospace" font-size="22" font-weight="700" fill="#312e81">${escapeXml(doc.documentNumber)}</text>
+    <text x="72" y="330" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="#64748b">ISSUE DATE</text>
+    <text x="72" y="358" font-family="ui-monospace, monospace" font-size="18" fill="#0f172a">${escapeXml(doc.issueDate)}</text>
+    <text x="340" y="330" font-family="system-ui, sans-serif" font-size="13" font-weight="600" fill="#64748b">EXPIRY DATE</text>
+    <text x="340" y="358" font-family="ui-monospace, monospace" font-size="18" font-weight="700" fill="#b45309">${escapeXml(doc.expiryDate)}</text>
+    <text x="72" y="398" font-family="ui-monospace, monospace" font-size="13" fill="#475569">File: ${escapeXml(doc.fileName)}</text>
+    <text x="40" y="470" font-family="system-ui, sans-serif" font-size="12" fill="#64748b">Uploaded: ${escapeXml(doc.uploadedAt.slice(0, 10))} · Authorized Viewing &amp; Download via Yaldi HR</text>
+  </svg>`;
+
+  const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  return {
+    url,
+    isImage: true,
+    isPdf: false,
+    mimeType: 'image/svg+xml',
+  };
+}
+
 export function calculateInclusiveDays(startDate: string, endDate: string): number {
   const [sy, sm, sd] = startDate.split('-').map(Number);
   const [ey, em, ed] = endDate.split('-').map(Number);
@@ -549,16 +734,96 @@ export function adjustLeaveBalance(
 }
 
 /**
+ * Salary Release Control RBAC:
+ * Schedule/Delay/Status controls are shown ONLY to HR, Main Manager, Section Managers, and Co-Managers.
+ * Accounting & Employees NEVER see release/delay controls.
+ */
+export function canControlSalaryRelease(role: UserRole): boolean {
+  return (
+    role === UserRole.HRAdmin ||
+    role === UserRole.MainManager ||
+    role === UserRole.SectionManager ||
+    role === UserRole.SectionCoManager
+  );
+}
+
+/**
+ * Resolves effective salary release date & status for an employee for a given month:
+ * 1) Employee-level override (highest priority)
+ * 2) Section-level schedule for that company (or 'all' companies)
+ * 3) Default 28th of the month (`Scheduled`)
+ */
+export function resolveSalaryRelease(
+  employee: Employee,
+  month: string,
+  schedules: SalaryReleaseSchedule[] = []
+): ResolvedSalaryRelease {
+  const empMatch = schedules.find(
+    (s) => s.month === month && s.scopeType === 'employee' && s.scopeId === employee.id
+  );
+  if (empMatch) {
+    return {
+      month,
+      payPeriod: empMatch.payPeriod,
+      releaseDate: empMatch.releaseDate,
+      status: empMatch.status,
+      delayedUntilDate: empMatch.delayedUntilDate ?? null,
+      delayReason: empMatch.delayReason ?? null,
+      source: 'employee',
+    };
+  }
+
+  const secCompanyMatch = schedules.find(
+    (s) =>
+      s.month === month &&
+      s.scopeType === 'section' &&
+      s.scopeId === employee.sectionId &&
+      s.companyId === employee.primaryCompanyId
+  );
+  const secGlobalMatch = schedules.find(
+    (s) =>
+      s.month === month &&
+      s.scopeType === 'section' &&
+      s.scopeId === employee.sectionId &&
+      s.companyId === 'all'
+  );
+  const secMatch = secCompanyMatch ?? secGlobalMatch;
+  if (secMatch) {
+    return {
+      month,
+      payPeriod: secMatch.payPeriod,
+      releaseDate: secMatch.releaseDate,
+      status: secMatch.status,
+      delayedUntilDate: secMatch.delayedUntilDate ?? null,
+      delayReason: secMatch.delayReason ?? null,
+      source: 'section',
+    };
+  }
+
+  return {
+    month,
+    payPeriod: month,
+    releaseDate: `${month}-28`,
+    status: 'Scheduled',
+    delayedUntilDate: null,
+    delayReason: null,
+    source: 'default',
+  };
+}
+
+/**
  * Monthly AED payroll computation combining:
  * - Gross Salary (Base + Housing + Transport + Other)
  * - Automatic unexcused lateness deductions from attendance logs for that month
  * - Manual deductions & bonuses from payroll_deductions
+ * - Resolved section/employee salary release schedule & delay status
  */
 export function calculateEmployeePayroll(
   employee: Employee,
   month: string,
   adjustments: PayrollAdjustment[],
-  attendanceLogs: AttendanceLog[] = []
+  attendanceLogs: AttendanceLog[] = [],
+  salaryReleases: SalaryReleaseSchedule[] = []
 ): MonthlyPayrollRow {
   const { baseSalary, housingAllowance, transportAllowance, otherAllowance } = employee.salary;
   const totalAllowances = housingAllowance + transportAllowance + otherAllowance;
@@ -608,6 +873,7 @@ export function calculateEmployeePayroll(
   const totalDeductions = autoLatenessDeductions + manualDeductions;
   const totalBonuses = bonuses.reduce((sum, b) => sum + b.amountAED, 0);
   const netSalary = Math.max(0, grossSalary + totalBonuses - totalDeductions);
+  const release = resolveSalaryRelease(employee, month, salaryReleases);
 
   return {
     employee,
@@ -625,6 +891,7 @@ export function calculateEmployeePayroll(
     netSalary,
     deductions,
     bonuses,
+    release,
   };
 }
 
@@ -703,46 +970,55 @@ export function buildAttendanceCSV(
   return [header.join(','), ...rows].join('\n');
 }
 
+export function buildPayrollExportRecords(
+  rows: MonthlyPayrollRow[],
+  companiesById: Map<string, string>,
+  sectionsById: Map<string, string>,
+  labelNamesById: Map<string, string> = new Map()
+): Record<string, string | number>[] {
+  return rows.map((r) => ({
+    'Employee ID': r.employee.employeeCode,
+    'Employee Name': r.employee.fullName,
+    Company: companiesById.get(r.employee.primaryCompanyId) ?? r.employee.primaryCompanyId,
+    Section: sectionsById.get(r.employee.sectionId) ?? r.employee.sectionId,
+    Labels: r.employee.labelIds
+      .map((id) => labelNamesById.get(id))
+      .filter(Boolean)
+      .join(', '),
+    Month: r.month,
+    'Release Status': r.release.status,
+    'Release Date':
+      r.release.status === 'Delayed' && r.release.delayedUntilDate
+        ? r.release.delayedUntilDate
+        : r.release.releaseDate,
+    'Delay Reason': r.release.delayReason ?? '',
+    'Bank Name': r.employee.bankDetails?.bankName ?? '',
+    'Account Number': r.employee.bankDetails?.accountNumber ?? '',
+    IBAN: r.employee.bankDetails?.iban ?? '',
+    'Base Salary (AED)': Number(r.baseSalary.toFixed(2)),
+    'Allowances (AED)': Number(r.totalAllowances.toFixed(2)),
+    'Gross (AED)': Number(r.grossSalary.toFixed(2)),
+    'Bonuses (AED)': Number(r.totalBonuses.toFixed(2)),
+    'Auto Lateness Deductions (AED)': Number(r.autoLatenessDeductions.toFixed(2)),
+    'Manual Deductions (AED)': Number(r.manualDeductions.toFixed(2)),
+    'Total Deductions (AED)': Number(r.totalDeductions.toFixed(2)),
+    'Net Salary (AED)': Number(r.netSalary.toFixed(2)),
+  }));
+}
+
 export function buildPayrollCSV(
   rows: MonthlyPayrollRow[],
   companiesById: Map<string, string>,
-  sectionsById: Map<string, string>
+  sectionsById: Map<string, string>,
+  labelNamesById: Map<string, string> = new Map()
 ): string {
-  const header = [
-    'Employee ID',
-    'Employee Name',
-    'Primary Company',
-    'Section',
-    'Month',
-    'Base Salary (AED)',
-    'Allowances (AED)',
-    'Gross (AED)',
-    'Bonuses (AED)',
-    'Auto Lateness Deductions (AED)',
-    'Manual Deductions (AED)',
-    'Total Deductions (AED)',
-    'Net Salary (AED)',
-  ];
-  const lines = rows.map((r) =>
-    [
-      r.employee.employeeCode,
-      r.employee.fullName,
-      companiesById.get(r.employee.primaryCompanyId) ?? r.employee.primaryCompanyId,
-      sectionsById.get(r.employee.sectionId) ?? r.employee.sectionId,
-      r.month,
-      r.baseSalary.toFixed(2),
-      r.totalAllowances.toFixed(2),
-      r.grossSalary.toFixed(2),
-      r.totalBonuses.toFixed(2),
-      r.autoLatenessDeductions.toFixed(2),
-      r.manualDeductions.toFixed(2),
-      r.totalDeductions.toFixed(2),
-      r.netSalary.toFixed(2),
-    ]
-      .map(csvEscape)
-      .join(',')
-  );
-  return [header.join(','), ...lines].join('\n');
+  const records = buildPayrollExportRecords(rows, companiesById, sectionsById, labelNamesById);
+  if (records.length === 0) {
+    return 'Employee ID,Employee Name,Company,Section,Month,Net Salary (AED)';
+  }
+  const headers = Object.keys(records[0]);
+  const lines = records.map((rec) => headers.map((h) => csvEscape(rec[h])).join(','));
+  return [headers.join(','), ...lines].join('\n');
 }
 
 export function validateApiBaseUrl(url: string): { valid: boolean; error?: string } {

@@ -23,6 +23,8 @@ export enum UserRole {
   HRAdmin = 'hr_admin',
   SectionManager = 'section_manager',
   SectionCoManager = 'section_co_manager',
+  PRO = 'pro',
+  Accounting = 'accounting',
   Employee = 'employee',
 }
 
@@ -145,6 +147,56 @@ export interface PendingShiftProposal {
   status: 'pending_manager_approval';
 }
 
+export interface EmployeeLabel {
+  id: string;
+  name: string;
+  color: string; // Hex color code
+}
+
+export interface BankDetails {
+  bankName: string;
+  accountNumber: string;
+  iban: string;
+}
+
+export interface ProAssignment {
+  id: string;
+  proUserId: string;
+  employeeId: string;
+  accessStart: string; // ISO date-time
+  accessExpiresAt: string; // ISO date-time
+  assignedBy: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export type SalaryReleaseStatus = 'Scheduled' | 'Processing' | 'Delayed' | 'Released';
+
+export interface SalaryReleaseSchedule {
+  id: string;
+  month: string; // YYYY-MM
+  payPeriod: string; // YYYY-MM or custom period label
+  scopeType: 'section' | 'employee';
+  scopeId: string; // sectionId or employeeId
+  companyId: string | 'all';
+  releaseDate: string; // YYYY-MM-DD
+  status: SalaryReleaseStatus;
+  delayedUntilDate?: string | null; // YYYY-MM-DD
+  delayReason?: string | null;
+  updatedBy: string;
+  updatedAt: string;
+}
+
+export interface ResolvedSalaryRelease {
+  month: string;
+  payPeriod: string;
+  releaseDate: string;
+  status: SalaryReleaseStatus;
+  delayedUntilDate?: string | null;
+  delayReason?: string | null;
+  source: 'employee' | 'section' | 'default';
+}
+
 export interface Employee {
   id: string;
   employeeCode: string;
@@ -152,22 +204,33 @@ export interface Employee {
   email: string;
   phone: string;
   avatarUrl?: string;
+  passwordHash?: string; // Demo/local password store (hashed on real backend)
+  mustChangePassword: boolean;
   role: UserRole;
   primaryCompanyId: string;
-  sharedCompanyIds: string[]; // Secondary companies where this employee also operates
+  sharedCompanyIds: string[]; // Secondary/attached companies (also strict Accounting scope)
   sectionId: string;
-  managedSectionIds: string[]; // For Section Manager / Section Co-Manager scoping
+  managedSectionIds: string[]; // Multi-section scoping for Section Manager / Co-Manager
+  labelIds: string[]; // Multi-select custom HR status labels
   modelId: string;
   jobTitle: string;
   joinDate: string; // YYYY-MM-DD
   active: boolean;
-  assignedZoneIds: string[];
+  assignedZoneIds: string[]; // Empty array [] = Geofence Exempt (No-Zone Option)
   clockInPolicyOverride?: ClockInPolicyMode | 'inherit';
   salary: SalaryStructure;
+  bankDetails?: BankDetails;
   leaveBalance: LeaveBalance;
   customShift?: ShiftSchedule; // Overrides model fixed shift once approved
   pendingShiftProposal?: PendingShiftProposal | null;
 }
+
+export type CreateEmployeePayload = Omit<
+  Employee,
+  'id' | 'mustChangePassword' | 'passwordHash'
+> & {
+  initialPassword: string;
+};
 
 export interface GeofenceZone {
   id: string;
@@ -305,8 +368,10 @@ export interface AppSettings {
 export interface HRDatabase {
   companies: Company[];
   sections: Section[];
+  labels: EmployeeLabel[];
   employeeModels: EmployeeModel[];
   employees: Employee[];
+  proAssignments: ProAssignment[];
   geofences: GeofenceZone[];
   documents: EmployeeDocument[];
   attendance: AttendanceLog[];
@@ -314,6 +379,7 @@ export interface HRDatabase {
   leaves: LeaveRequest[];
   workflows: ApprovalWorkflow[];
   payrollAdjustments: PayrollAdjustment[];
+  salaryReleases: SalaryReleaseSchedule[];
   settings: AppSettings;
 }
 
@@ -322,6 +388,7 @@ export interface AuthSession {
   userId: string;
   role: UserRole;
   mode: 'demo' | 'live';
+  mustChangePassword?: boolean;
 }
 
 export interface GPSReading {
@@ -340,6 +407,7 @@ export interface ClockInEvaluation {
   outsideByMeters: number | null;
   effectivePolicy: ClockInPolicyMode;
   punchSource: PunchSource;
+  isGeofenceExempt?: boolean;
 }
 
 export interface MonthlyPayrollRow {
@@ -358,6 +426,7 @@ export interface MonthlyPayrollRow {
   netSalary: number;
   deductions: PayrollAdjustment[];
   bonuses: PayrollAdjustment[];
+  release: ResolvedSalaryRelease;
 }
 
 /* ============================================================================
@@ -397,14 +466,54 @@ export interface UserRow {
   full_name: string;
   email: string;
   phone: string;
+  avatar_url?: string | null;
+  password_hash?: string;
+  must_change_password: boolean;
   role: UserRole;
   primary_company_id: string;
   section_id: string;
+  managed_section_ids_json: string;
+  assigned_zone_ids_json: string;
   model_id: string;
   job_title: string;
   base_salary_aed: number;
   allowances_aed: number;
+  bank_name?: string | null;
+  account_number?: string | null;
+  iban?: string | null;
   active: boolean;
+}
+
+export interface EmployeeLabelRow {
+  id: string;
+  name: string;
+  color: string;
+}
+
+export interface ProAssignmentRow {
+  id: string;
+  pro_user_id: string;
+  employee_id: string;
+  access_start: string;
+  access_expires_at: string;
+  assigned_by: string;
+  notes?: string | null;
+  created_at: string;
+}
+
+export interface SalaryReleaseScheduleRow {
+  id: string;
+  payroll_month: string;
+  pay_period: string;
+  scope_type: 'section' | 'employee';
+  scope_id: string;
+  company_id: string;
+  release_date: string;
+  status: SalaryReleaseStatus;
+  delayed_until_date?: string | null;
+  delay_reason?: string | null;
+  updated_by: string;
+  updated_at: string;
 }
 
 export interface UserCompanyRow {

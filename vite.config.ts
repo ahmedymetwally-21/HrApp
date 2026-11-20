@@ -15,9 +15,9 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
           id: '/',
-          name: 'Masar HR Workforce Platform',
-          short_name: 'Masar HR',
-          description: 'Geofenced attendance, employee document vault, leave approvals, and AED payroll.',
+          name: 'Yaldi HR — Enterprise Workforce Platform',
+          short_name: 'Yaldi HR',
+          description: 'Multi-company enterprise HRMS with geofenced attendance, approvals, document vault, and AED payroll.',
           theme_color: '#3730A3',
           background_color: '#F8FAFC',
           display: 'standalone',

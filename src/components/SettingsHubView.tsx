@@ -1,0 +1,1554 @@
+import React, { useMemo, useState } from 'react';
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  Building2,
+  ChevronRight,
+  FolderKanban,
+  GitBranch,
+  Laptop,
+  Layers,
+  Lock,
+  MapPin,
+  Plus,
+  RotateCcw,
+  ShieldCheck,
+  Smartphone,
+  Trash2,
+  WifiOff,
+  X,
+} from 'lucide-react';
+import { getStepRoleLabel, t } from '../i18n/translations';
+import {
+  AppSettings,
+  ApprovalStepRole,
+  ApprovalWorkflow,
+  BuiltInDocumentType,
+  ClockInPolicyMode,
+  Company,
+  DocumentTypeValue,
+  Employee,
+  EmployeeModel,
+  GeofenceZone,
+  Language,
+  LatenessPenaltyTier,
+  Section,
+  UserRole,
+  Weekday,
+} from '../types/hr';
+import { GeofenceMap } from './GeofenceMap';
+
+type SettingsSection =
+  | 'hub'
+  | 'companies'
+  | 'models'
+  | 'workflows'
+  | 'geofences'
+  | 'sections';
+
+interface SettingsHubViewProps {
+  lang: Language;
+  activeRole: UserRole;
+  companies: Company[];
+  sections: Section[];
+  models: EmployeeModel[];
+  employees: Employee[];
+  geofences: GeofenceZone[];
+  workflows: ApprovalWorkflow[];
+  settings: AppSettings;
+  onCreateCompany: (input: Omit<Company, 'id'>) => Promise<void>;
+  onToggleCompanyActive: (id: string) => Promise<void>;
+  onCreateSection: (input: Omit<Section, 'id'>) => Promise<void>;
+  onCreateModel: (input: Omit<EmployeeModel, 'id'>) => Promise<void>;
+  onUpdateModel: (id: string, patch: Partial<EmployeeModel>) => Promise<void>;
+  onSaveWorkflow: (wf: Omit<ApprovalWorkflow, 'id'> & { id?: string }) => Promise<void>;
+  onDeleteWorkflow: (id: string) => Promise<void>;
+  onCreateGeofence: (zone: Omit<GeofenceZone, 'id'>) => Promise<void>;
+  onUpdateGeofence: (id: string, patch: Partial<GeofenceZone>) => Promise<void>;
+  onDeleteGeofence: (id: string) => Promise<void>;
+  onUpdateSettings: (patch: Partial<AppSettings>) => Promise<void>;
+  onPreviewOfflineScreen: () => void;
+  onResetDemoData: () => Promise<void>;
+}
+
+const ALL_WEEKDAYS: Weekday[] = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+const BUILT_IN_DOCS: DocumentTypeValue[] = Object.values(BuiltInDocumentType);
+const STEP_ROLES: ApprovalStepRole[] = ['section_manager', 'hr_admin', 'main_manager'];
+
+const INPUT_CLASS =
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
+
+export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
+  lang,
+  activeRole,
+  companies,
+  sections,
+  models,
+  employees,
+  geofences,
+  workflows,
+  settings,
+  onCreateCompany,
+  onToggleCompanyActive,
+  onCreateSection,
+  onCreateModel,
+  onUpdateModel,
+  onSaveWorkflow,
+  onDeleteWorkflow,
+  onCreateGeofence,
+  onUpdateGeofence,
+  onDeleteGeofence,
+  onUpdateSettings,
+  onPreviewOfflineScreen,
+  onResetDemoData,
+}) => {
+  const isMainManager = activeRole === UserRole.MainManager;
+  const [subView, setSubView] = useState<SettingsSection>('hub');
+  const [saving, setSaving] = useState(false);
+
+  // --- Companies form state ---
+  const [compName, setCompName] = useState('');
+  const [compCode, setCompCode] = useState('');
+  const [compIndustry, setCompIndustry] = useState('Car Rental & Mobility');
+  const [compCity, setCompCity] = useState('Dubai, UAE');
+
+  // --- Employee Models editor state ---
+  const [editingModelId, setEditingModelId] = useState<string | 'new' | null>(null);
+  const [modelForm, setModelForm] = useState<Omit<EmployeeModel, 'id'>>({
+    name: '',
+    description: '',
+    shiftStart: '08:00',
+    shiftEnd: '17:00',
+    workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    graceMinutes: 15,
+    latenessTiers: [
+      { id: 't1', minLateMinutes: 16, maxLateMinutes: 30, penaltyAED: 50 },
+      { id: 't2', minLateMinutes: 31, maxLateMinutes: 60, penaltyAED: 100 },
+      { id: 't3', minLateMinutes: 61, maxLateMinutes: null, penaltyAED: 150 },
+    ],
+    leaveQuotas: { annualTotal: 30, sickTotal: 15, emergencyTotal: 5, unpaidLimit: 30 },
+    requiredDocuments: [
+      BuiltInDocumentType.Passport,
+      BuiltInDocumentType.EmiratesID,
+      BuiltInDocumentType.Visa,
+      BuiltInDocumentType.LaborCard,
+    ],
+  });
+
+  // --- Approval Workflow Builder state (Main Manager Only) ---
+  const [editingWfId, setEditingWfId] = useState<string | 'new' | null>(null);
+  const [wfName, setWfName] = useState('');
+  const [wfCompanyId, setWfCompanyId] = useState<string>('all');
+  const [wfSectionId, setWfSectionId] = useState<string>('all');
+  const [wfSteps, setWfSteps] = useState<ApprovalStepRole[]>([
+    'section_manager',
+    'hr_admin',
+    'main_manager',
+  ]);
+  const [wfAutoDays, setWfAutoDays] = useState(0);
+
+  // --- Geofences editor state ---
+  const [zoneName, setZoneName] = useState('');
+  const [zoneAddress, setZoneAddress] = useState('');
+  const [zoneCompanyId, setZoneCompanyId] = useState(companies[0]?.id ?? '');
+  const [zoneLat, setZoneLat] = useState(25.2048);
+  const [zoneLng, setZoneLng] = useState(55.2708);
+  const [zoneRadius, setZoneRadius] = useState(150);
+
+  // --- Sections & Custom Doc Types state ---
+  const [secName, setSecName] = useState('');
+  const [secCode, setSecCode] = useState('');
+  const [customDocDraft, setCustomDocDraft] = useState('');
+
+  const allDocTypes = useMemo(
+    () => [...BUILT_IN_DOCS, ...settings.customDocumentTypes],
+    [settings.customDocumentTypes]
+  );
+
+  const openEditModel = (model: EmployeeModel | null) => {
+    if (!model) {
+      setEditingModelId('new');
+      setModelForm({
+        name: '',
+        description: '',
+        shiftStart: '08:00',
+        shiftEnd: '17:00',
+        workingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        graceMinutes: 15,
+        latenessTiers: [
+          { id: 't1', minLateMinutes: 16, maxLateMinutes: 30, penaltyAED: 50 },
+          { id: 't2', minLateMinutes: 31, maxLateMinutes: 60, penaltyAED: 100 },
+          { id: 't3', minLateMinutes: 61, maxLateMinutes: null, penaltyAED: 150 },
+        ],
+        leaveQuotas: { annualTotal: 30, sickTotal: 15, emergencyTotal: 5, unpaidLimit: 30 },
+        requiredDocuments: [
+          BuiltInDocumentType.Passport,
+          BuiltInDocumentType.EmiratesID,
+          BuiltInDocumentType.Visa,
+          BuiltInDocumentType.LaborCard,
+        ],
+      });
+    } else {
+      setEditingModelId(model.id);
+      setModelForm({
+        name: model.name,
+        description: model.description,
+        shiftStart: model.shiftStart,
+        shiftEnd: model.shiftEnd,
+        workingDays: [...model.workingDays],
+        graceMinutes: model.graceMinutes,
+        latenessTiers: model.latenessTiers.map((tier) => ({ ...tier })),
+        leaveQuotas: { ...model.leaveQuotas },
+        requiredDocuments: [...model.requiredDocuments],
+      });
+    }
+  };
+
+  const handleSaveModel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!modelForm.name.trim()) return;
+    setSaving(true);
+    try {
+      if (editingModelId === 'new') {
+        await onCreateModel(modelForm);
+      } else if (editingModelId) {
+        await onUpdateModel(editingModelId, modelForm);
+      }
+      setEditingModelId(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openEditWorkflow = (wf: ApprovalWorkflow | null) => {
+    if (!wf) {
+      setEditingWfId('new');
+      setWfName('');
+      setWfCompanyId('all');
+      setWfSectionId('all');
+      setWfSteps(['section_manager', 'hr_admin', 'main_manager']);
+      setWfAutoDays(0);
+    } else {
+      setEditingWfId(wf.id);
+      setWfName(wf.name);
+      setWfCompanyId(wf.companyId);
+      setWfSectionId(wf.sectionId);
+      setWfSteps([...wf.steps]);
+      setWfAutoDays(wf.autoApproveMaxDays);
+    }
+  };
+
+  const moveStep = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= wfSteps.length) return;
+    setWfSteps((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    });
+  };
+
+  const handleSaveWorkflow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isMainManager || !wfName.trim() || wfSteps.length === 0) return;
+    setSaving(true);
+    try {
+      await onSaveWorkflow({
+        id: editingWfId && editingWfId !== 'new' ? editingWfId : undefined,
+        name: wfName.trim(),
+        companyId: wfCompanyId,
+        sectionId: wfSectionId,
+        steps: wfSteps,
+        autoApproveMaxDays: Math.max(0, Number(wfAutoDays) || 0),
+      });
+      setEditingWfId(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateCompany = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!compName.trim()) return;
+    setSaving(true);
+    try {
+      await onCreateCompany({
+        name: compName.trim(),
+        code: (compCode.trim() || compName.trim().slice(0, 3)).toUpperCase(),
+        industry: compIndustry.trim() || 'Operations',
+        city: compCity.trim() || 'Dubai, UAE',
+        active: true,
+      });
+      setCompName('');
+      setCompCode('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateGeofence = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!zoneName.trim()) return;
+    setSaving(true);
+    try {
+      await onCreateGeofence({
+        companyId: zoneCompanyId || companies[0]?.id || 'comp-yaldi',
+        name: zoneName.trim(),
+        address: zoneAddress.trim() || 'Dubai, UAE',
+        latitude: zoneLat,
+        longitude: zoneLng,
+        radiusMeters: zoneRadius,
+        active: true,
+      });
+      setZoneName('');
+      setZoneAddress('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCreateSection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!secName.trim()) return;
+    setSaving(true);
+    try {
+      await onCreateSection({
+        name: secName.trim(),
+        code: (secCode.trim() || secName.trim().slice(0, 3)).toUpperCase(),
+      });
+      setSecName('');
+      setSecCode('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddCustomDocType = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = customDocDraft.trim();
+    if (!cleaned || settings.customDocumentTypes.includes(cleaned)) return;
+    setSaving(true);
+    try {
+      await onUpdateSettings({
+        customDocumentTypes: [...settings.customDocumentTypes, cleaned],
+      });
+      setCustomDocDraft('');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemoveCustomDocType = async (docType: string) => {
+    await onUpdateSettings({
+      customDocumentTypes: settings.customDocumentTypes.filter((d) => d !== docType),
+    });
+  };
+
+  const hubCards: {
+    id: SettingsSection;
+    title: string;
+    description: string;
+    metric: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: string;
+  }[] = [
+    {
+      id: 'companies',
+      title: t(lang, 'companies'),
+      description: 'Add and manage group companies (supports 12+ entities and shared staff).',
+      metric: `${companies.length} active entities`,
+      icon: Building2,
+    },
+    {
+      id: 'models',
+      title: t(lang, 'employeeModels'),
+      description: 'Fixed shifts, grace period, tiered AED lateness penalties, and required docs.',
+      metric: `${models.length} policy templates`,
+      icon: Layers,
+    },
+    {
+      id: 'workflows',
+      title: t(lang, 'workflowBuilder'),
+      description: 'Customize multi-step leave chains per company or section with auto-approve rules.',
+      metric: `${workflows.length} chains`,
+      icon: GitBranch,
+      badge: isMainManager ? t(lang, 'mainManagerOnly') : 'View Only',
+    },
+    {
+      id: 'geofences',
+      title: t(lang, 'geofencesPolicy'),
+      description: 'Interactive OpenStreetMap geofence pins, radii, and PC vs. Mobile GPS policy.',
+      metric: `${geofences.filter((z) => z.active).length} active zones`,
+      icon: MapPin,
+    },
+    {
+      id: 'sections',
+      title: t(lang, 'sectionsDocs'),
+      description: 'Manage organizational sections, custom document types, and offline preview.',
+      metric: `${sections.length} sections · ${settings.customDocumentTypes.length} custom docs`,
+      icon: FolderKanban,
+    },
+  ];
+
+  // --- HUB MENU VIEW ---
+  if (subView === 'hub') {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">
+            {t(lang, 'navSettings')}
+          </h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+            {t(lang, 'settingsSubtitle')}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {hubCards.map((card) => {
+            const Icon = card.icon;
+            return (
+              <button
+                key={card.id}
+                type="button"
+                onClick={() => setSubView(card.id)}
+                className="group text-start rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer flex flex-col justify-between gap-4"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center justify-center">
+                      <Icon className="w-5 h-5" />
+                    </div>
+                    {card.badge && (
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 inline-flex items-center gap-1">
+                        {!isMainManager && card.id === 'workflows' && <Lock className="w-3 h-3" />}
+                        {card.badge}
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <h2 className="text-base font-semibold text-slate-900 dark:text-white group-hover:text-indigo-700 dark:group-hover:text-indigo-300 transition-colors">
+                      {card.title}
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                      {card.description}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <span>{card.metric}</span>
+                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-indigo-600 rtl:rotate-180" />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const renderSubHeader = (title: string, subtitle: string) => (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3 min-w-0">
+        <button
+          type="button"
+          onClick={() => {
+            setSubView('hub');
+            setEditingModelId(null);
+            setEditingWfId(null);
+          }}
+          className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+          aria-label="Back to Settings Hub"
+        >
+          <ArrowLeft className="w-4 h-4 rtl:rotate-180" />
+        </button>
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white truncate">
+            {title}
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{subtitle}</p>
+        </div>
+      </div>
+    </div>
+  );
+
+  // --- 1. COMPANIES SUB-VIEW ---
+  if (subView === 'companies') {
+    return (
+      <div className="space-y-5">
+        {renderSubHeader(
+          t(lang, 'companies'),
+          'Scale cleanly to 12+ group companies with isolated data and shared employees.'
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+            {companies.map((comp) => {
+              const primaryCount = employees.filter((e) => e.primaryCompanyId === comp.id).length;
+              const sharedCount = employees.filter((e) => e.sharedCompanyIds.includes(comp.id)).length;
+              return (
+                <div key={comp.id} className="p-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+                        {comp.code}
+                      </span>
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                        {comp.name}
+                      </p>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      {comp.industry} · {comp.city} · {primaryCount} primary
+                      {sharedCount > 0 ? ` + ${sharedCount} shared` : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void onToggleCompanyActive(comp.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer shrink-0 ${
+                      comp.active
+                        ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                        : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500'
+                    }`}
+                  >
+                    {comp.active ? 'Active' : 'Paused'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <form
+            onSubmit={handleCreateCompany}
+            className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
+          >
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <Plus className="w-4 h-4 text-indigo-600" />
+              {t(lang, 'addCompany')}
+            </h2>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Company Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g., Horizon Fleet Leasing"
+                value={compName}
+                onChange={(e) => setCompName(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Code
+                </label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  placeholder="HFL"
+                  value={compCode}
+                  onChange={(e) => setCompCode(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  City
+                </label>
+                <input
+                  type="text"
+                  value={compCity}
+                  onChange={(e) => setCompCity(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Industry
+              </label>
+              <input
+                type="text"
+                value={compIndustry}
+                onChange={(e) => setCompIndustry(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+            >
+              {t(lang, 'addCompany')}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- 2. EMPLOYEE MODELS SUB-VIEW ---
+  if (subView === 'models') {
+    const updateTier = (idx: number, patch: Partial<LatenessPenaltyTier>) => {
+      setModelForm((prev) => ({
+        ...prev,
+        latenessTiers: prev.latenessTiers.map((tier, i) => (i === idx ? { ...tier, ...patch } : tier)),
+      }));
+    };
+
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          {renderSubHeader(
+            t(lang, 'employeeModels'),
+            'Fixed-shift policies (no overtime), tiered AED lateness rules, and required docs.'
+          )}
+          <button
+            type="button"
+            onClick={() => openEditModel(null)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            New Model
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {models.map((m) => {
+            const assignedCount = employees.filter((e) => e.modelId === m.id).length;
+            return (
+              <div
+                key={m.id}
+                className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-col justify-between gap-4"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900 dark:text-white">{m.name}</h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {m.description}
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 shrink-0">
+                      {assignedCount} staff
+                    </span>
+                  </div>
+
+                  <div className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500 dark:text-slate-400">Fixed Shift</span>
+                      <span className="font-mono font-medium">
+                        {m.shiftStart} – {m.shiftEnd}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500 dark:text-slate-400">Grace Period</span>
+                      <span className="font-medium">{m.graceMinutes} mins</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500 dark:text-slate-400">Lateness Tiers</span>
+                      <span className="font-medium">
+                        {m.latenessTiers.map((tier) => `AED ${tier.penaltyAED}`).join(' / ')}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500 dark:text-slate-400">Annual / Sick</span>
+                      <span className="font-medium">
+                        {m.leaveQuotas.annualTotal}d / {m.leaveQuotas.sickTotal}d
+                      </span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1.5">
+                      Required Documents ({m.requiredDocuments.length})
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {m.requiredDocuments.map((doc) => (
+                        <span
+                          key={doc}
+                          className="text-[11px] px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300"
+                        >
+                          {doc}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => openEditModel(m)}
+                  className="w-full py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  {t(lang, 'edit')} Model
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Model Editor Form */}
+        {editingModelId && (
+          <form
+            onSubmit={handleSaveModel}
+            className="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                {editingModelId === 'new' ? 'Create Employee Model' : `Edit ${modelForm.name}`}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingModelId(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Model Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={modelForm.name}
+                  onChange={(e) => setModelForm({ ...modelForm, name: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={modelForm.description}
+                  onChange={(e) => setModelForm({ ...modelForm, description: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Shift Start
+                </label>
+                <input
+                  type="time"
+                  value={modelForm.shiftStart}
+                  onChange={(e) => setModelForm({ ...modelForm, shiftStart: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Shift End (No Overtime)
+                </label>
+                <input
+                  type="time"
+                  value={modelForm.shiftEnd}
+                  onChange={(e) => setModelForm({ ...modelForm, shiftEnd: e.target.value })}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Grace Period (mins)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={60}
+                  value={modelForm.graceMinutes}
+                  onChange={(e) =>
+                    setModelForm({ ...modelForm, graceMinutes: Number(e.target.value) || 0 })
+                  }
+                  className={INPUT_CLASS}
+                />
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                Working Days
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {ALL_WEEKDAYS.map((day) => {
+                  const active = modelForm.workingDays.includes(day);
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() =>
+                        setModelForm((prev) => ({
+                          ...prev,
+                          workingDays: active
+                            ? prev.workingDays.filter((d) => d !== day)
+                            : [...prev.workingDays, day],
+                        }))
+                      }
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
+                        active
+                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-500'
+                      }`}
+                    >
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Tiered Fixed AED Lateness Penalties */}
+            <div>
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-2">
+                Tiered Fixed Lateness Deductions (AED)
+              </p>
+              <div className="space-y-2">
+                {modelForm.latenessTiers.map((tier, idx) => (
+                  <div key={tier.id} className="grid grid-cols-3 gap-2 items-center">
+                    <input
+                      type="number"
+                      min={1}
+                      value={tier.minLateMinutes}
+                      onChange={(e) =>
+                        updateTier(idx, { minLateMinutes: Number(e.target.value) || 1 })
+                      }
+                      placeholder="Min mins"
+                      className={INPUT_CLASS}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      value={tier.maxLateMinutes ?? ''}
+                      onChange={(e) =>
+                        updateTier(idx, {
+                          maxLateMinutes: e.target.value === '' ? null : Number(e.target.value),
+                        })
+                      }
+                      placeholder="Max (blank = +)"
+                      className={INPUT_CLASS}
+                    />
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={0}
+                        value={tier.penaltyAED}
+                        onChange={(e) =>
+                          updateTier(idx, { penaltyAED: Number(e.target.value) || 0 })
+                        }
+                        className={INPUT_CLASS}
+                      />
+                      <span className="absolute end-3 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400">
+                        AED
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Required Document Checklist */}
+            <div>
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                Required Documents for this Model
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {allDocTypes.map((doc) => {
+                  const checked = modelForm.requiredDocuments.includes(doc);
+                  return (
+                    <label
+                      key={doc}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs cursor-pointer ${
+                        checked
+                          ? 'border-indigo-400 bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setModelForm((prev) => ({
+                            ...prev,
+                            requiredDocuments: checked
+                              ? prev.requiredDocuments.filter((d) => d !== doc)
+                              : [...prev.requiredDocuments, doc],
+                          }))
+                        }
+                        className="accent-indigo-600"
+                      />
+                      <span className="truncate">{doc}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingModelId(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-300 cursor-pointer"
+              >
+                {t(lang, 'cancel')}
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              >
+                {t(lang, 'save')}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    );
+  }
+
+  // --- 3. APPROVAL WORKFLOW BUILDER SUB-VIEW (MAIN MANAGER ONLY) ---
+  if (subView === 'workflows') {
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          {renderSubHeader(
+            t(lang, 'workflowBuilder'),
+            'Configure leave approval steps per company/section. Smart Auto-Skip applies automatically.'
+          )}
+          {isMainManager && (
+            <button
+              type="button"
+              onClick={() => openEditWorkflow(null)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              New Workflow
+            </button>
+          )}
+        </div>
+
+        {!isMainManager && (
+          <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2">
+            <Lock className="w-4 h-4 shrink-0" />
+            <span>
+              Only the <strong>Main Manager</strong> can add, reorder, or modify approval workflow
+              steps. You have read-only visibility.
+            </span>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {workflows.map((wf) => {
+            const compLabel =
+              wf.companyId === 'all'
+                ? t(lang, 'allCompanies')
+                : companies.find((c) => c.id === wf.companyId)?.name ?? wf.companyId;
+            const secLabel =
+              wf.sectionId === 'all'
+                ? 'All Sections'
+                : sections.find((s) => s.id === wf.sectionId)?.name ?? wf.sectionId;
+
+            return (
+              <div
+                key={wf.id}
+                className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+              >
+                <div className="space-y-2 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-sm font-bold text-slate-900 dark:text-white">{wf.name}</h2>
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                      {compLabel} · {secLabel}
+                    </span>
+                    {wf.autoApproveMaxDays > 0 && (
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
+                        Auto-approve ≤ {wf.autoApproveMaxDays}d
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center flex-wrap gap-1.5">
+                    {wf.steps.map((step, i) => (
+                      <React.Fragment key={`${wf.id}-${step}-${i}`}>
+                        <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+                          {i + 1}. {getStepRoleLabel(lang, step)}
+                        </span>
+                        {i < wf.steps.length - 1 && (
+                          <ChevronRight className="w-3.5 h-3.5 text-slate-400 rtl:rotate-180" />
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+
+                {isMainManager && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openEditWorkflow(wf)}
+                      className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      {t(lang, 'edit')}
+                    </button>
+                    {wf.id !== 'wf-default' && (
+                      <button
+                        type="button"
+                        onClick={() => void onDeleteWorkflow(wf.id)}
+                        aria-label={`Delete ${wf.name}`}
+                        className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Workflow Builder Editor (Main Manager Only) */}
+        {isMainManager && editingWfId && (
+          <form
+            onSubmit={handleSaveWorkflow}
+            className="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                {editingWfId === 'new' ? 'Create Approval Workflow' : 'Edit Approval Workflow'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingWfId(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Workflow Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g., Drivers Express Chain"
+                  value={wfName}
+                  onChange={(e) => setWfName(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Company Scope
+                </label>
+                <select
+                  value={wfCompanyId}
+                  onChange={(e) => setWfCompanyId(e.target.value)}
+                  className={INPUT_CLASS}
+                >
+                  <option value="all">{t(lang, 'allCompanies')}</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Section Scope
+                </label>
+                <select
+                  value={wfSectionId}
+                  onChange={(e) => setWfSectionId(e.target.value)}
+                  className={INPUT_CLASS}
+                >
+                  <option value="all">All Sections</option>
+                  {sections.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                  Approval Steps (in execution order)
+                </p>
+                <div className="flex items-center gap-1.5">
+                  {STEP_ROLES.filter((r) => !wfSteps.includes(r)).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setWfSteps((prev) => [...prev, r])}
+                      className="text-[11px] font-medium px-2 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 cursor-pointer"
+                    >
+                      + {getStepRoleLabel(lang, r)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                {wfSteps.map((step, idx) => (
+                  <div
+                    key={step}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950"
+                  >
+                    <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                      Step {idx + 1}: {getStepRoleLabel(lang, step)}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => moveStep(idx, -1)}
+                        className="p-1 rounded text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
+                        aria-label="Move step up"
+                      >
+                        <ArrowUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === wfSteps.length - 1}
+                        onClick={() => moveStep(idx, 1)}
+                        className="p-1 rounded text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
+                        aria-label="Move step down"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5" />
+                      </button>
+                      {wfSteps.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setWfSteps((prev) => prev.filter((s) => s !== step))}
+                          className="p-1 rounded text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                          aria-label="Remove step"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="max-w-xs">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Auto-Approve Leave Requests ≤ N Days (0 = disabled)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={14}
+                value={wfAutoDays}
+                onChange={(e) => setWfAutoDays(Number(e.target.value) || 0)}
+                className={INPUT_CLASS}
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditingWfId(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-300 cursor-pointer"
+              >
+                {t(lang, 'cancel')}
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              >
+                {t(lang, 'save')}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    );
+  }
+
+  // --- 4. GEOFENCES & PC CLOCK-IN POLICY SUB-VIEW ---
+  if (subView === 'geofences') {
+    return (
+      <div className="space-y-5">
+        {renderSubHeader(
+          t(lang, 'geofencesPolicy'),
+          'Drop OpenStreetMap geofence pins for every company branch and set Mobile vs. PC policy.'
+        )}
+
+        {/* Global PC vs Mobile Policy */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              Global Clock-In Device Policy
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Enforce mobile GPS hardware accuracy (≤ {settings.maxMobileAccuracyMeters}m) or allow
+              verified office PC punches.
+            </p>
+          </div>
+          <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 shrink-0">
+            <button
+              type="button"
+              onClick={() =>
+                void onUpdateSettings({ globalClockInPolicy: ClockInPolicyMode.StrictMobileGPS })
+              }
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
+                settings.globalClockInPolicy === ClockInPolicyMode.StrictMobileGPS
+                  ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              Strict Mobile GPS
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void onUpdateSettings({ globalClockInPolicy: ClockInPolicyMode.AllowOfficePC })
+              }
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
+                settings.globalClockInPolicy === ClockInPolicyMode.AllowOfficePC
+                  ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              <Laptop className="w-3.5 h-3.5" />
+              Allow Office PC
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          {/* Interactive Pin-Drop OpenStreetMap */}
+          <div className="lg:col-span-7 space-y-4">
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-3">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Click anywhere on the map to position a new geofence pin.
+              </p>
+              <GeofenceMap
+                zones={geofences}
+                draftPin={{
+                  latitude: zoneLat,
+                  longitude: zoneLng,
+                  radiusMeters: zoneRadius,
+                  name: zoneName || 'New Zone',
+                }}
+                interactivePinDrop
+                onMapClick={(lat, lng) => {
+                  setZoneLat(Number(lat.toFixed(6)));
+                  setZoneLng(Number(lng.toFixed(6)));
+                }}
+                heightClass="h-80"
+              />
+            </div>
+
+            {/* Existing Zones */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+              {geofences.map((zone) => {
+                const comp = companies.find((c) => c.id === zone.companyId);
+                return (
+                  <div key={zone.id} className="p-4 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                        {zone.name}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                        {comp?.name ?? 'Group'} · {zone.radiusMeters}m radius · {zone.address}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => void onUpdateGeofence(zone.id, { active: !zone.active })}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold border cursor-pointer ${
+                          zone.active
+                            ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                            : 'border-slate-200 dark:border-slate-700 text-slate-500'
+                        }`}
+                      >
+                        {zone.active ? 'Active' : 'Off'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onDeleteGeofence(zone.id)}
+                        aria-label={`Delete ${zone.name}`}
+                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Add Zone Form */}
+          <form
+            onSubmit={handleCreateGeofence}
+            className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
+          >
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-indigo-600" />
+              Add Geofence Location
+            </h2>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Company
+              </label>
+              <select
+                value={zoneCompanyId}
+                onChange={(e) => setZoneCompanyId(e.target.value)}
+                className={INPUT_CLASS}
+              >
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Location Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g., Sharjah Service Hub"
+                value={zoneName}
+                onChange={(e) => setZoneName(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Address
+              </label>
+              <input
+                type="text"
+                placeholder="Industrial Area 10, Sharjah"
+                value={zoneAddress}
+                onChange={(e) => setZoneAddress(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Latitude
+                </label>
+                <input
+                  type="number"
+                  step="0.000001"
+                  value={zoneLat}
+                  onChange={(e) => setZoneLat(Number(e.target.value))}
+                  className={`${INPUT_CLASS} font-mono`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Longitude
+                </label>
+                <input
+                  type="number"
+                  step="0.000001"
+                  value={zoneLng}
+                  onChange={(e) => setZoneLng(Number(e.target.value))}
+                  className={`${INPUT_CLASS} font-mono`}
+                />
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                <span>Geofence Radius</span>
+                <span className="font-mono font-semibold text-indigo-700 dark:text-indigo-300">
+                  {zoneRadius}m
+                </span>
+              </div>
+              <input
+                type="range"
+                min={50}
+                max={500}
+                step={25}
+                value={zoneRadius}
+                onChange={(e) => setZoneRadius(Number(e.target.value))}
+                className="w-full accent-indigo-600"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+            >
+              Save Geofence Pin
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- 5. SECTIONS, CUSTOM DOC TYPES & SYSTEM TOOLS SUB-VIEW ---
+  return (
+    <div className="space-y-5">
+      {renderSubHeader(
+        t(lang, 'sectionsDocs'),
+        'Configure organizational sections, custom document vault types, and offline resilience.'
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* Organizational Sections */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+            Organizational Sections ({sections.length})
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {sections.map((sec) => (
+              <span
+                key={sec.id}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-medium text-slate-700 dark:text-slate-200"
+              >
+                {sec.name}{' '}
+                <span className="font-mono text-[10px] text-slate-400 ms-1">{sec.code}</span>
+              </span>
+            ))}
+          </div>
+          <form onSubmit={handleCreateSection} className="flex gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <input
+              type="text"
+              required
+              placeholder="New section (e.g., Fleet Maintenance)"
+              value={secName}
+              onChange={(e) => setSecName(e.target.value)}
+              className={INPUT_CLASS}
+            />
+            <input
+              type="text"
+              maxLength={4}
+              placeholder="Code"
+              value={secCode}
+              onChange={(e) => setSecCode(e.target.value)}
+              className="w-24 px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+            />
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold shrink-0 cursor-pointer"
+            >
+              {t(lang, 'add')}
+            </button>
+          </form>
+        </div>
+
+        {/* Custom Document Types */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+            Document Vault Types
+          </h2>
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Built-In</p>
+            <div className="flex flex-wrap gap-1.5">
+              {BUILT_IN_DOCS.map((d) => (
+                <span
+                  key={d}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-600 dark:text-slate-300"
+                >
+                  {d}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              Custom Types ({settings.customDocumentTypes.length})
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {settings.customDocumentTypes.map((d) => (
+                <span
+                  key={d}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-xs font-medium text-indigo-700 dark:text-indigo-300"
+                >
+                  {d}
+                  <button
+                    type="button"
+                    onClick={() => void handleRemoveCustomDocType(d)}
+                    aria-label={`Remove ${d}`}
+                    className="hover:text-rose-600 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+          <form onSubmit={handleAddCustomDocType} className="flex gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <input
+              type="text"
+              required
+              placeholder="e.g., RTA Permit or Medical Insurance"
+              value={customDocDraft}
+              onChange={(e) => setCustomDocDraft(e.target.value)}
+              className={INPUT_CLASS}
+            />
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold shrink-0 cursor-pointer"
+            >
+              {t(lang, 'add')}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* App Resilience & Demo Data */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+            App Resilience & Demo Dataset
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Preview the native Offline Mode screen or restore the initial 4-company seed dataset.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onPreviewOfflineScreen}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+          >
+            <WifiOff className="w-3.5 h-3.5" />
+            Test Offline Screen
+          </button>
+          <button
+            type="button"
+            onClick={() => void onResetDemoData()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-rose-200 dark:border-rose-900 text-xs font-semibold text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            Reset Demo Data
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

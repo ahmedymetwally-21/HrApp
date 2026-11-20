@@ -1,36 +1,55 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Calendar,
   CheckCircle2,
+  ChevronRight,
   Clock,
+  MessageSquarePlus,
   Paperclip,
   Plus,
-  ShieldCheck,
+  SkipForward,
   X,
   XCircle,
 } from 'lucide-react';
-import { Employee, LeaveRequest, LeaveStatus, LeaveType, UserRole } from '../types/hr';
+import { getLeaveStatusLabel, getStepRoleLabel, t } from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
 import {
+  Employee,
+  Language,
+  LeaveRequest,
+  LeaveStatus,
+  LeaveType,
+  UserRole,
+} from '../types/hr';
+import {
   calculateInclusiveDays,
+  canRoleActOnLeaveStep,
   formatShortDate,
   validateLeaveSubmission,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
+import { SlideOverDrawer } from './SlideOverDrawer';
 
 interface LeavesViewProps {
+  lang: Language;
   currentUser: Employee;
   activeRole: UserRole;
-  employees: Employee[];
+  scopedEmployees: Employee[];
   leaves: LeaveRequest[];
-  onSubmitLeave: (
-    input: Omit<LeaveRequest, 'id' | 'status' | 'submittedAt'>
-  ) => Promise<void>;
-  onDecideLeave: (params: {
-    leaveId: string;
-    status: LeaveStatus.Approved | LeaveStatus.Rejected;
-    comment: string;
+  onSubmitLeave: (input: {
+    type: LeaveType;
+    startDate: string;
+    endDate: string;
+    days: number;
+    reason: string;
+    attachmentName?: string;
+    attachmentDataUrl?: string;
   }) => Promise<void>;
+  onDecideLeaveStep: (params: {
+    leaveId: string;
+    decision: 'approved' | 'rejected';
+    remark: string;
+  }) => Promise<void>;
+  onAddCoManagerNote: (params: { leaveId: string; note: string }) => Promise<void>;
 }
 
 const LEAVE_TYPES: LeaveType[] = [
@@ -41,29 +60,26 @@ const LEAVE_TYPES: LeaveType[] = [
 ];
 
 const INPUT_CLASS =
-  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
 
 export const LeavesView: React.FC<LeavesViewProps> = ({
+  lang,
   currentUser,
   activeRole,
-  employees,
+  scopedEmployees,
   leaves,
   onSubmitLeave,
-  onDecideLeave,
+  onDecideLeaveStep,
+  onAddCoManagerNote,
 }) => {
-  const canReview = activeRole === UserRole.Admin || activeRole === UserRole.Management;
-  const isManagement = activeRole === UserRole.Management;
-
   const [statusFilter, setStatusFilter] = useState<'all' | LeaveStatus>('all');
-  const [showRequestModal, setShowRequestModal] = useState(false);
-  const [decisionTarget, setDecisionTarget] = useState<{
-    leave: LeaveRequest;
-    decision: LeaveStatus.Approved | LeaveStatus.Rejected;
-  } | null>(null);
-  const [decisionComment, setDecisionComment] = useState('');
+  const [selectedLeaveId, setSelectedLeaveId] = useState<string | null>(null);
+  const [remark, setRemark] = useState('');
+  const [coNote, setCoNote] = useState('');
 
-  // New leave request form
+  // Request Leave Modal
   const todayIso = new Date().toISOString().slice(0, 10);
+  const [showRequestModal, setShowRequestModal] = useState(false);
   const [formType, setFormType] = useState<LeaveType>(LeaveType.Annual);
   const [formStart, setFormStart] = useState(todayIso);
   const [formEnd, setFormEnd] = useState(todayIso);
@@ -72,26 +88,36 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
   const [formFileDataUrl, setFormFileDataUrl] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
 
-  const empMap = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
-
-  const previewDays = calculateInclusiveDays(formStart, formEnd);
+  const empMap = useMemo(() => new Map(scopedEmployees.map((e) => [e.id, e])), [scopedEmployees]);
 
   const visibleLeaves = useMemo(() => {
-    const base =
-      activeRole === UserRole.Employee
-        ? leaves.filter((l) => l.employeeId === currentUser.id)
-        : leaves;
-    if (statusFilter === 'all') return base;
-    return base.filter((l) => l.status === statusFilter);
-  }, [leaves, activeRole, currentUser.id, statusFilter]);
+    return leaves.filter((l) => {
+      if (!empMap.has(l.employeeId)) return false;
+      if (statusFilter !== 'all' && l.status !== statusFilter) return false;
+      return true;
+    });
+  }, [leaves, empMap, statusFilter]);
+
+  const selectedLeave = leaves.find((l) => l.id === selectedLeaveId) ?? null;
+  const selectedApplicant = selectedLeave ? empMap.get(selectedLeave.employeeId) ?? null : null;
+  const canActSelected = selectedLeave
+    ? canRoleActOnLeaveStep({
+        leave: selectedLeave,
+        actorRole: activeRole,
+        actorEmployee: currentUser,
+      })
+    : false;
+  const isCoManager = activeRole === UserRole.SectionCoManager;
+
+  const previewDays = calculateInclusiveDays(formStart, formEnd);
 
   const handleAttachment = async (file: File | null) => {
     if (!file) return;
     setFormError(null);
     try {
-      const captured = await nativeBridge.readFileAsDocument(file);
-      setFormFileName(captured.fileName);
-      setFormFileDataUrl(captured.dataUrl);
+      const res = await nativeBridge.readFileAsDocument(file);
+      setFormFileName(res.fileName);
+      setFormFileDataUrl(res.dataUrl);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Unable to attach file.');
     }
@@ -111,7 +137,6 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
       return;
     }
     await onSubmitLeave({
-      employeeId: currentUser.id,
       type: formType,
       startDate: formStart,
       endDate: formEnd,
@@ -127,61 +152,33 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
     setShowRequestModal(false);
   };
 
-  const handleConfirmDecision = async (e: React.FormEvent) => {
+  const handleDecision = async (decision: 'approved' | 'rejected') => {
+    if (!selectedLeave) return;
+    await onDecideLeaveStep({ leaveId: selectedLeave.id, decision, remark });
+    setRemark('');
+  };
+
+  const handleCoNoteSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!decisionTarget) return;
-    await onDecideLeave({
-      leaveId: decisionTarget.leave.id,
-      status: decisionTarget.decision,
-      comment: decisionComment,
-    });
-    setDecisionTarget(null);
-    setDecisionComment('');
+    if (!selectedLeave || !coNote.trim()) return;
+    await onAddCoManagerNote({ leaveId: selectedLeave.id, note: coNote.trim() });
+    setCoNote('');
   };
 
   const lb = currentUser.leaveBalance;
-  const balanceCards = [
-    {
-      label: 'Annual Leave',
-      remaining: Math.max(0, lb.annualTotal - lb.annualUsed),
-      total: lb.annualTotal,
-      used: lb.annualUsed,
-      accent: 'text-indigo-700 dark:text-indigo-400',
-    },
-    {
-      label: 'Sick Leave',
-      remaining: Math.max(0, lb.sickTotal - lb.sickUsed),
-      total: lb.sickTotal,
-      used: lb.sickUsed,
-      accent: 'text-emerald-700 dark:text-emerald-400',
-    },
-    {
-      label: 'Emergency Leave',
-      remaining: Math.max(0, lb.emergencyTotal - lb.emergencyUsed),
-      total: lb.emergencyTotal,
-      used: lb.emergencyUsed,
-      accent: 'text-amber-700 dark:text-amber-400',
-    },
-    {
-      label: 'Unpaid Leave Taken',
-      remaining: lb.unpaidUsed,
-      total: null,
-      used: lb.unpaidUsed,
-      accent: 'text-slate-700 dark:text-slate-300',
-    },
-  ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="space-y-5">
+      {/* Header Row */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">Leave Management</h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            {canReview
-              ? isManagement
-                ? 'Review team leave balances, approve requests, or issue executive overrides.'
-                : 'Review employee leave requests, add HR comments, and update balances automatically.'
-              : 'Track your UAE leave balances and submit new leave applications.'}
+          <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
+            {t(lang, 'navLeaves')}
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono tabular-nums">
+            Annual {Math.max(0, lb.annualTotal - lb.annualUsed)}/{lb.annualTotal}d · Sick{' '}
+            {Math.max(0, lb.sickTotal - lb.sickUsed)}/{lb.sickTotal}d · Emergency{' '}
+            {Math.max(0, lb.emergencyTotal - lb.emergencyUsed)}/{lb.emergencyTotal}d
           </p>
         </div>
 
@@ -191,67 +188,33 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
             setFormError(null);
             setShowRequestModal(true);
           }}
-          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-indigo-700 text-white text-sm font-medium hover:bg-indigo-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold transition-colors cursor-pointer"
         >
           <Plus className="w-4 h-4" />
-          Request Leave
+          {t(lang, 'requestLeave')}
         </button>
       </div>
 
-      {/* Personal Leave Balances */}
-      <section aria-label="My Leave Balances" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {balanceCards.map((card) => (
-          <div
-            key={card.label}
-            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5"
-          >
-            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{card.label}</p>
-            <div className="mt-2 flex items-baseline gap-1.5">
-              <span className={`text-2xl font-bold font-mono tabular-nums ${card.accent}`}>
-                {card.remaining}
-              </span>
-              <span className="text-xs text-slate-500 dark:text-slate-400">
-                {card.total !== null ? `/ ${card.total} days left` : 'days used'}
-              </span>
-            </div>
-            {card.total !== null && (
-              <div className="mt-3 h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-indigo-600 dark:bg-indigo-500 transition-all"
-                  style={{ width: `${Math.min(100, Math.round((card.used / card.total) * 100))}%` }}
-                />
-              </div>
-            )}
-          </div>
-        ))}
-      </section>
-
-      {/* Requests Table / Cards */}
-      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-              {canReview ? 'All Leave Requests' : 'My Leave Applications'}
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-              {visibleLeaves.length} request{visibleLeaves.length === 1 ? '' : 's'}
-            </p>
-          </div>
-
-          <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 self-start sm:self-auto">
+      {/* Minimalist Leave List with Visual Step Tracker */}
+      <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+          <span className="text-xs font-medium text-slate-500 dark:text-slate-400 tabular-nums">
+            {visibleLeaves.length} request{visibleLeaves.length === 1 ? '' : 's'}
+          </span>
+          <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5">
             {(['all', LeaveStatus.Pending, LeaveStatus.Approved, LeaveStatus.Rejected] as const).map(
               (tab) => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => setStatusFilter(tab)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
                     statusFilter === tab
                       ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
-                  {tab === 'all' ? 'All' : tab}
+                  {tab === 'all' ? 'All' : getLeaveStatusLabel(lang, tab)}
                 </button>
               )
             )}
@@ -260,170 +223,280 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
 
         {visibleLeaves.length === 0 ? (
           <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
-            No leave requests found in this view.
+            {t(lang, 'noRecords')}
           </div>
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
             {visibleLeaves.map((req) => {
               const emp = empMap.get(req.employeeId);
-              const showActions =
-                canReview && (req.status === LeaveStatus.Pending || isManagement);
+              const dotClass =
+                req.status === LeaveStatus.Approved
+                  ? 'bg-emerald-500'
+                  : req.status === LeaveStatus.Rejected
+                    ? 'bg-rose-500'
+                    : 'bg-amber-500';
               return (
-                <div
+                <button
                   key={req.id}
-                  className="p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors"
+                  type="button"
+                  onClick={() => {
+                    setSelectedLeaveId(req.id);
+                    setRemark('');
+                    setCoNote('');
+                  }}
+                  className="w-full px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4 text-start hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
                 >
-                  <div className="flex items-start gap-3 min-w-0 flex-1">
-                    <Avatar src={emp?.avatarUrl} name={emp?.fullName ?? 'Employee'} size="md" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-900 dark:text-white">
-                          {emp?.fullName ?? 'Unknown Employee'}
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <Avatar src={emp?.avatarUrl} name={emp?.fullName ?? 'Staff'} size="sm" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                        {emp?.fullName} ·{' '}
+                        <span className="font-normal text-slate-600 dark:text-slate-300">
+                          {req.type} ({req.days}d)
                         </span>
-                        <span className="text-xs text-slate-400">&middot;</span>
-                        <span className="text-xs font-medium text-indigo-700 dark:text-indigo-400">
-                          {req.type}
-                        </span>
-                        <span className="text-xs text-slate-400">&middot;</span>
-                        <span className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                          {formatShortDate(req.startDate)} &rarr; {formatShortDate(req.endDate)} (
-                          {req.days} day{req.days === 1 ? '' : 's'})
-                        </span>
-                      </div>
-
-                      <p className="mt-1.5 text-sm text-slate-700 dark:text-slate-300">{req.reason}</p>
-
-                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-                        {req.attachmentName && (
-                          <span className="inline-flex items-center gap-1 text-indigo-700 dark:text-indigo-400 font-medium">
-                            <Paperclip className="w-3.5 h-3.5" />
-                            {req.attachmentName}
-                          </span>
-                        )}
-                        {req.reviewedBy && (
-                          <span>
-                            Reviewed by{' '}
-                            <strong className="text-slate-700 dark:text-slate-200">{req.reviewedBy}</strong>
-                            {req.overriddenByManagement ? ' (Executive Override)' : ''}
-                            {req.managerComment ? ` — "${req.managerComment}"` : ''}
-                          </span>
-                        )}
+                      </p>
+                      {/* Compact Step Progress Chain */}
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                        {req.approvalSteps.map((step, i) => (
+                          <React.Fragment key={step.stepOrder}>
+                            {i > 0 && <span aria-hidden="true">→</span>}
+                            <span
+                              className={
+                                step.status === 'approved'
+                                  ? 'text-emerald-700 dark:text-emerald-400 font-medium'
+                                  : step.status === 'rejected'
+                                    ? 'text-rose-700 dark:text-rose-400 font-medium'
+                                    : step.status === 'skipped'
+                                      ? 'line-through text-slate-400'
+                                      : i === req.currentStepIndex
+                                        ? 'text-amber-700 dark:text-amber-400 font-semibold'
+                                        : ''
+                              }
+                            >
+                              {getStepRoleLabel(lang, step.role)}
+                              {step.status === 'approved'
+                                ? ' ✓'
+                                : step.status === 'skipped'
+                                  ? ' ↷'
+                                  : i === req.currentStepIndex && req.status === LeaveStatus.Pending
+                                    ? ' ⏳'
+                                    : ''}
+                            </span>
+                          </React.Fragment>
+                        ))}
                       </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between lg:justify-end gap-3 shrink-0">
-                    {req.status === LeaveStatus.Pending && (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900 px-2.5 py-1 rounded-md">
-                        <Clock className="w-3.5 h-3.5" />
-                        Pending
-                      </span>
-                    )}
-                    {req.status === LeaveStatus.Approved && (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-900 px-2.5 py-1 rounded-md">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Approved
-                      </span>
-                    )}
-                    {req.status === LeaveStatus.Rejected && (
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 px-2.5 py-1 rounded-md">
-                        <XCircle className="w-3.5 h-3.5" />
-                        Rejected
-                      </span>
-                    )}
-
-                    {showActions && (
-                      <div className="flex items-center gap-1.5">
-                        {req.status !== LeaveStatus.Approved && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDecisionComment('');
-                              setDecisionTarget({ leave: req, decision: LeaveStatus.Approved });
-                            }}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors cursor-pointer whitespace-nowrap"
-                          >
-                            {req.status !== LeaveStatus.Pending ? (
-                              <>
-                                <ShieldCheck className="w-3.5 h-3.5" />
-                                Override: Approve
-                              </>
-                            ) : (
-                              'Approve'
-                            )}
-                          </button>
-                        )}
-                        {req.status !== LeaveStatus.Rejected && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDecisionComment('');
-                              setDecisionTarget({ leave: req, decision: LeaveStatus.Rejected });
-                            }}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 bg-white dark:bg-slate-900 text-rose-700 dark:text-rose-300 text-xs font-medium hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors cursor-pointer whitespace-nowrap"
-                          >
-                            {req.status !== LeaveStatus.Pending ? 'Override: Reject' : 'Reject'}
-                          </button>
-                        )}
-                      </div>
-                    )}
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 whitespace-nowrap">
+                      <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+                      {getLeaveStatusLabel(lang, req.status)}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-400 rtl:rotate-180" />
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
         )}
       </section>
 
-      {/* New Leave Request Modal */}
+      {/* Slide-Over Leave Detail & Approval Chain Drawer */}
+      <SlideOverDrawer
+        open={Boolean(selectedLeave)}
+        onClose={() => setSelectedLeaveId(null)}
+        title={selectedApplicant?.fullName ?? 'Leave Request'}
+        subtitle={
+          selectedLeave
+            ? `${selectedLeave.type} · ${formatShortDate(selectedLeave.startDate)} → ${formatShortDate(
+                selectedLeave.endDate
+              )} (${selectedLeave.days}d)`
+            : undefined
+        }
+      >
+        {selectedLeave && (
+          <div className="space-y-5">
+            <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-4 space-y-2 text-xs">
+              <p className="font-semibold text-slate-900 dark:text-white">Reason</p>
+              <p className="text-slate-700 dark:text-slate-300">{selectedLeave.reason}</p>
+              {selectedLeave.attachmentName && (
+                <p className="inline-flex items-center gap-1.5 text-indigo-700 dark:text-indigo-400 font-medium pt-1">
+                  <Paperclip className="w-3.5 h-3.5" />
+                  {selectedLeave.attachmentName}
+                </p>
+              )}
+            </div>
+
+            {/* Visual Step-by-Step Approval Progress Tracker */}
+            <div className="space-y-2.5">
+              <p className="text-xs font-semibold text-slate-900 dark:text-white">
+                Approval Progress Chain
+              </p>
+              <div className="space-y-2">
+                {selectedLeave.approvalSteps.map((step, idx) => {
+                  const isCurrent =
+                    selectedLeave.status === LeaveStatus.Pending &&
+                    idx === selectedLeave.currentStepIndex;
+                  return (
+                    <div
+                      key={step.stepOrder}
+                      className={`rounded-xl border p-3.5 flex items-start justify-between gap-3 text-xs ${
+                        isCurrent
+                          ? 'border-amber-300 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/30'
+                          : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        {step.status === 'approved' ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" />
+                        ) : step.status === 'rejected' ? (
+                          <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 mt-0.5 shrink-0" />
+                        ) : step.status === 'skipped' ? (
+                          <SkipForward className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                        ) : (
+                          <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                        )}
+                        <div>
+                          <p className="font-semibold text-slate-900 dark:text-white">
+                            Step {step.stepOrder}: {getStepRoleLabel(lang, step.role)}
+                          </p>
+                          {step.actorName && (
+                            <p className="text-slate-500 dark:text-slate-400 mt-0.5">
+                              {step.actorName}
+                              {step.remark ? ` — "${step.remark}"` : ''}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-[11px] font-medium capitalize text-slate-500 dark:text-slate-400 shrink-0">
+                        {step.status === 'skipped' ? t(lang, 'autoSkipped') : step.status}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Co-Manager Notes & Recommendations */}
+            {(selectedLeave.coManagerNotes.length > 0 || isCoManager) && (
+              <div className="space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <p className="text-xs font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                  <MessageSquarePlus className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                  Co-Manager Notes & Recommendations
+                </p>
+                {selectedLeave.coManagerNotes.map((n) => (
+                  <div
+                    key={n.id}
+                    className="rounded-xl bg-sky-50/60 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900 p-3 text-xs"
+                  >
+                    <p className="font-semibold text-sky-900 dark:text-sky-200">{n.authorName}</p>
+                    <p className="text-sky-800 dark:text-sky-300 mt-0.5">{n.note}</p>
+                  </div>
+                ))}
+                {isCoManager && (
+                  <form onSubmit={handleCoNoteSubmit} className="space-y-2">
+                    <textarea
+                      rows={2}
+                      value={coNote}
+                      onChange={(e) => setCoNote(e.target.value)}
+                      placeholder="Add shift coverage note or recommendation for the Section Manager..."
+                      className={INPUT_CLASS}
+                    />
+                    <button
+                      type="submit"
+                      className="px-3.5 py-2 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold cursor-pointer"
+                    >
+                      {t(lang, 'addNote')}
+                    </button>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Formal leave approvals are restricted to the Section Manager, HR, and Main Manager.
+                    </p>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* Formal Step Approval Actions (Role-Gated) */}
+            {canActSelected && (
+              <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+                <textarea
+                  rows={2}
+                  value={remark}
+                  onChange={(e) => setRemark(e.target.value)}
+                  placeholder="Optional approval / rejection remark..."
+                  className={INPUT_CLASS}
+                />
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleDecision('approved')}
+                    className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
+                  >
+                    {t(lang, 'approve')} Step
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDecision('rejected')}
+                    className="py-2.5 rounded-xl border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-semibold cursor-pointer"
+                  >
+                    {t(lang, 'reject')}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </SlideOverDrawer>
+
+      {/* Request Leave Modal */}
       {showRequestModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="leave-modal-title"
+          aria-label="Submit Leave Request"
         >
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
-              <div className="flex items-center gap-2">
-                <Calendar className="w-5 h-5 text-indigo-700 dark:text-indigo-400" />
-                <h3 id="leave-modal-title" className="text-base font-semibold text-slate-900 dark:text-white">
-                  Submit Leave Request
-                </h3>
-              </div>
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                {t(lang, 'requestLeave')}
+              </h3>
               <button
                 type="button"
                 onClick={() => setShowRequestModal(false)}
-                aria-label="Close leave modal"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                aria-label="Close"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmitRequest} className="mt-4 space-y-4">
+            <form onSubmit={handleSubmitRequest} className="mt-4 space-y-3.5">
+              {activeRole === UserRole.SectionManager && (
+                <div className="rounded-xl bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-900 px-3 py-2 text-xs text-indigo-800 dark:text-indigo-200">
+                  Smart Auto-Skip active: Step 1 (Section Manager) will be skipped automatically and routed straight to HR → Main Manager.
+                </div>
+              )}
+
               {formError && (
-                <p
-                  role="alert"
-                  className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-lg px-3 py-2"
-                >
+                <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">
                   {formError}
                 </p>
               )}
 
               <div>
-                <label htmlFor="leave-type" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                   Leave Type
                 </label>
                 <select
-                  id="leave-type"
                   value={formType}
                   onChange={(e) => setFormType(e.target.value as LeaveType)}
                   className={INPUT_CLASS}
                 >
-                  {LEAVE_TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
+                  {LEAVE_TYPES.map((lt) => (
+                    <option key={lt} value={lt}>
+                      {lt}
                     </option>
                   ))}
                 </select>
@@ -431,11 +504,10 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label htmlFor="leave-start" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                     Start Date
                   </label>
                   <input
-                    id="leave-start"
                     type="date"
                     required
                     value={formStart}
@@ -444,11 +516,10 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
                   />
                 </div>
                 <div>
-                  <label htmlFor="leave-end" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                     End Date
                   </label>
                   <input
-                    id="leave-end"
                     type="date"
                     required
                     value={formEnd}
@@ -458,38 +529,33 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3.5 py-2.5 flex items-center justify-between text-xs">
-                <span className="text-slate-600 dark:text-slate-400">Calculated Leave Duration</span>
-                <span className="font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
-                  {previewDays > 0 ? `${previewDays} calendar day${previewDays === 1 ? '' : 's'}` : 'Invalid range'}
+              <div className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 flex justify-between text-xs">
+                <span className="text-slate-500">Duration</span>
+                <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                  {previewDays > 0 ? `${previewDays} days` : 'Invalid'}
                 </span>
               </div>
 
               <div>
-                <label htmlFor="leave-reason" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Reason & Handover Notes
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Reason
                 </label>
                 <textarea
-                  id="leave-reason"
                   rows={3}
                   required
                   value={formReason}
                   onChange={(e) => setFormReason(e.target.value)}
-                  placeholder="Provide reason for leave and coverage arrangements..."
+                  placeholder="Briefly describe your leave reason..."
                   className={INPUT_CLASS}
                 />
               </div>
 
               <div>
-                <label htmlFor="leave-file" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Optional Document Attachment (e.g. Medical Certificate)
-                </label>
                 <input
-                  id="leave-file"
                   type="file"
                   accept=".pdf,.jpg,.jpeg,.png"
                   onChange={(e) => void handleAttachment(e.target.files?.[0] ?? null)}
-                  className="block w-full text-xs text-slate-600 dark:text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-200 dark:file:border-slate-700 file:text-xs file:font-medium file:bg-white dark:file:bg-slate-800 file:text-slate-700 dark:file:text-slate-200 hover:file:bg-slate-50 dark:hover:file:bg-slate-700"
+                  className="block w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-200 dark:file:border-slate-700 file:bg-white dark:file:bg-slate-800 file:text-xs"
                 />
                 {formFileName && (
                   <p className="mt-1 text-xs text-indigo-700 dark:text-indigo-400">
@@ -502,77 +568,15 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowRequestModal(false)}
-                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium cursor-pointer"
                 >
-                  Cancel
+                  {t(lang, 'cancel')}
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-indigo-700 text-white text-sm font-medium hover:bg-indigo-800 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
                 >
-                  Submit Request
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Approve / Reject Confirmation Modal */}
-      {decisionTarget && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="decision-modal-title"
-        >
-          <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
-            <h3 id="decision-modal-title" className="text-base font-semibold text-slate-900 dark:text-white">
-              {decisionTarget.decision === LeaveStatus.Approved
-                ? 'Approve Leave Request'
-                : 'Reject Leave Request'}
-            </h3>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              {empMap.get(decisionTarget.leave.employeeId)?.fullName} &middot;{' '}
-              {decisionTarget.leave.type} ({decisionTarget.leave.days} days)
-            </p>
-
-            <form onSubmit={handleConfirmDecision} className="mt-4 space-y-4">
-              <div>
-                <label htmlFor="mgr-comment" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Manager Comment
-                </label>
-                <textarea
-                  id="mgr-comment"
-                  rows={3}
-                  value={decisionComment}
-                  onChange={(e) => setDecisionComment(e.target.value)}
-                  placeholder={
-                    decisionTarget.decision === LeaveStatus.Approved
-                      ? 'Optional approval note...'
-                      : 'Explain reason for rejection...'
-                  }
-                  className={INPUT_CLASS}
-                />
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDecisionTarget(null)}
-                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 rounded-lg text-white text-sm font-medium cursor-pointer ${
-                    decisionTarget.decision === LeaveStatus.Approved
-                      ? 'bg-emerald-600 hover:bg-emerald-700'
-                      : 'bg-rose-600 hover:bg-rose-700'
-                  }`}
-                >
-                  Confirm {decisionTarget.decision}
+                  {t(lang, 'submit')}
                 </button>
               </div>
             </form>

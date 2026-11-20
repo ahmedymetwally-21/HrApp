@@ -1,24 +1,28 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ChevronRight,
   Download,
   FileSpreadsheet,
-  MinusCircle,
   Plus,
   Printer,
-  Receipt,
   Trash2,
   X,
 } from 'lucide-react';
+import { t } from '../i18n/translations';
+import { nativeBridge } from '../services/nativeBridge';
 import {
   AdjustmentKind,
   AppSettings,
+  AttendanceLog,
+  Company,
   DeductionCategory,
   Employee,
+  Language,
   MonthlyPayrollRow,
   PayrollAdjustment,
+  Section,
   UserRole,
 } from '../types/hr';
-import { nativeBridge } from '../services/nativeBridge';
 import {
   buildPayrollCSV,
   calculateEmployeePayroll,
@@ -26,11 +30,17 @@ import {
   formatShortDate,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
+import { SlideOverDrawer } from './SlideOverDrawer';
 
 interface PayrollViewProps {
+  lang: Language;
   currentUser: Employee;
   activeRole: UserRole;
-  employees: Employee[];
+  selectedCompanyId: string;
+  companies: Company[];
+  sections: Section[];
+  scopedEmployees: Employee[];
+  attendance: AttendanceLog[];
   adjustments: PayrollAdjustment[];
   settings: AppSettings;
   onAddAdjustment: (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => Promise<void>;
@@ -38,7 +48,7 @@ interface PayrollViewProps {
 }
 
 const DEDUCTION_CATEGORIES: DeductionCategory[] = [
-  DeductionCategory.LateArrival,
+  DeductionCategory.Lateness,
   DeductionCategory.UnpaidLeave,
   DeductionCategory.FinePenalty,
   DeductionCategory.SalaryAdvance,
@@ -46,7 +56,7 @@ const DEDUCTION_CATEGORIES: DeductionCategory[] = [
 ];
 
 const INPUT_CLASS =
-  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
 
 function getMonthOptions(): { value: string; label: string }[] {
   const now = new Date();
@@ -61,127 +71,97 @@ function getMonthOptions(): { value: string; label: string }[] {
 }
 
 export const PayrollView: React.FC<PayrollViewProps> = ({
+  lang,
   currentUser,
   activeRole,
-  employees,
+  selectedCompanyId,
+  companies,
+  sections,
+  scopedEmployees,
+  attendance,
   adjustments,
   settings,
   onAddAdjustment,
   onRemoveAdjustment,
 }) => {
-  const canManagePayroll = activeRole === UserRole.Admin || activeRole === UserRole.Management;
+  const canManagePayroll =
+    activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+
   const monthOptions = useMemo(() => getMonthOptions(), []);
   const [selectedMonth, setSelectedMonth] = useState(monthOptions[0].value);
-  const [selectedPayslip, setSelectedPayslip] = useState<MonthlyPayrollRow | null>(null);
+  const [sectionFilter, setSectionFilter] = useState('all');
+  const [selectedPayslipEmpId, setSelectedPayslipEmpId] = useState<string | null>(null);
 
-  // Add Deduction / Bonus Modal
   const [showAdjModal, setShowAdjModal] = useState(false);
   const [adjError, setAdjError] = useState<string | null>(null);
   const [adjForm, setAdjForm] = useState({
-    employeeId: employees[0]?.id ?? '',
+    employeeId: scopedEmployees[0]?.id ?? '',
     kind: 'deduction' as AdjustmentKind,
-    category: DeductionCategory.LateArrival as
-      | DeductionCategory
-      | 'Performance Bonus'
-      | 'Overtime Allowance',
+    category: DeductionCategory.Lateness as DeductionCategory | 'Performance Bonus' | 'Incentive',
     amountAED: '',
     date: new Date().toISOString().slice(0, 10),
     reason: '',
   });
 
-  const targetEmployees = useMemo(
-    () =>
-      activeRole === UserRole.Employee
-        ? employees.filter((e) => e.id === currentUser.id)
-        : employees.filter((e) => e.active),
-    [employees, activeRole, currentUser.id]
-  );
+  const companyMap = useMemo(() => new Map(companies.map((c) => [c.id, c.name])), [companies]);
+  const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s.name])), [sections]);
+
+  const targetEmployees = useMemo(() => {
+    return scopedEmployees.filter((emp) => {
+      if (!emp.active && activeRole !== UserRole.Employee) return false;
+      if (sectionFilter !== 'all' && emp.sectionId !== sectionFilter) return false;
+      // Consolidate core payroll under employee's Primary Company when isolated to a company
+      if (
+        selectedCompanyId !== 'all' &&
+        activeRole !== UserRole.Employee &&
+        emp.primaryCompanyId !== selectedCompanyId
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [scopedEmployees, sectionFilter, selectedCompanyId, activeRole]);
 
   const payrollRows = useMemo(
-    () => targetEmployees.map((emp) => calculateEmployeePayroll(emp, selectedMonth, adjustments)),
-    [targetEmployees, selectedMonth, adjustments]
+    () =>
+      targetEmployees.map((emp) =>
+        calculateEmployeePayroll(emp, selectedMonth, adjustments, attendance)
+      ),
+    [targetEmployees, selectedMonth, adjustments, attendance]
   );
 
-  const totals = useMemo(() => {
-    return payrollRows.reduce(
-      (acc, row) => ({
-        gross: acc.gross + row.grossSalary,
-        bonuses: acc.bonuses + row.totalBonuses,
-        deductions: acc.deductions + row.totalDeductions,
-        net: acc.net + row.netSalary,
-      }),
-      { gross: 0, bonuses: 0, deductions: 0, net: 0 }
-    );
-  }, [payrollRows]);
+  const selectedPayslip: MonthlyPayrollRow | null =
+    payrollRows.find((r) => r.employee.id === selectedPayslipEmpId) ?? null;
 
-  const monthAdjustments = useMemo(() => {
-    const base = adjustments.filter((a) => a.month === selectedMonth);
-    if (activeRole === UserRole.Employee) {
-      return base.filter((a) => a.employeeId === currentUser.id);
-    }
-    return base;
-  }, [adjustments, selectedMonth, activeRole, currentUser.id]);
-
-  const empMap = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
+  const totals = useMemo(
+    () =>
+      payrollRows.reduce(
+        (acc, r) => ({
+          gross: acc.gross + r.grossSalary,
+          deductions: acc.deductions + r.totalDeductions,
+          bonuses: acc.bonuses + r.totalBonuses,
+          net: acc.net + r.netSalary,
+        }),
+        { gross: 0, deductions: 0, bonuses: 0, net: 0 }
+      ),
+    [payrollRows]
+  );
 
   const handleExportCSV = async () => {
-    const csv = buildPayrollCSV(payrollRows);
+    const csv = buildPayrollCSV(payrollRows, companyMap, sectionMap);
     await nativeBridge.saveTextFile(
-      `masar-payroll-${selectedMonth}.csv`,
+      `yaldi-payroll-${selectedMonth}.csv`,
       csv,
       'text/csv;charset=utf-8'
     );
   };
 
-  const openAdjustmentModal = (defaultKind: AdjustmentKind, employeeId?: string) => {
-    setAdjError(null);
-    setAdjForm({
-      employeeId: employeeId ?? targetEmployees[0]?.id ?? '',
-      kind: defaultKind,
-      category:
-        defaultKind === 'deduction' ? DeductionCategory.LateArrival : 'Performance Bonus',
-      amountAED: '',
-      date: new Date().toISOString().slice(0, 10),
-      reason: '',
-    });
-    setShowAdjModal(true);
-  };
-
-  const handleSaveAdjustment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const numericAmount = Number(adjForm.amountAED);
-    if (!adjForm.employeeId) {
-      setAdjError('Select an employee.');
-      return;
-    }
-    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
-      setAdjError('Amount must be a positive number in AED.');
-      return;
-    }
-    if (!adjForm.reason.trim() || adjForm.reason.trim().length < 5) {
-      setAdjError('A mandatory reason (at least 5 characters) is required for audit compliance.');
-      return;
-    }
-
-    await onAddAdjustment({
-      employeeId: adjForm.employeeId,
-      month: selectedMonth,
-      kind: adjForm.kind,
-      category: adjForm.category,
-      amountAED: numericAmount,
-      date: adjForm.date,
-      reason: adjForm.reason.trim(),
-      createdBy: currentUser.fullName,
-      createdByRole: activeRole,
-    });
-    setShowAdjModal(false);
-  };
-
-  const handleDownloadPayslipText = async (row: MonthlyPayrollRow) => {
+  const handleDownloadPayslip = async (row: MonthlyPayrollRow) => {
     const lines = [
-      `${settings.companyName} — MONTHLY PAYSLIP (${row.month})`,
+      `${settings.groupName} — ${companyMap.get(row.employee.primaryCompanyId) ?? ''}`,
+      `MONTHLY PAYSLIP (${row.month})`,
       `Employee: ${row.employee.fullName} (${row.employee.employeeCode})`,
-      `Department: ${row.employee.department} | Title: ${row.employee.jobTitle}`,
+      `Section: ${sectionMap.get(row.employee.sectionId) ?? ''} | ${row.employee.jobTitle}`,
       '------------------------------------------------------------',
       `Base Salary:          ${formatAED(row.baseSalary)}`,
       `Housing Allowance:    ${formatAED(row.housingAllowance)}`,
@@ -191,17 +171,9 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       `Bonuses:              +${formatAED(row.totalBonuses)}`,
       `Total Deductions:     -${formatAED(row.totalDeductions)}`,
       '',
-      'ITEMIZED DEDUCTIONS & BONUSES:',
-      ...(row.bonuses.length === 0 && row.deductions.length === 0
-        ? ['None for this pay period.']
-        : [
-            ...row.bonuses.map(
-              (b) => `+ ${b.category} (${b.date}): ${formatAED(b.amountAED)} — ${b.reason}`
-            ),
-            ...row.deductions.map(
-              (d) => `- ${d.category} (${d.date}): ${formatAED(d.amountAED)} — ${d.reason}`
-            ),
-          ]),
+      'ITEMIZED ADJUSTMENTS:',
+      ...row.bonuses.map((b) => `+ ${b.category} (${b.date}): ${formatAED(b.amountAED)} — ${b.reason}`),
+      ...row.deductions.map((d) => `- ${d.category} (${d.date}): ${formatAED(d.amountAED)} — ${d.reason}`),
       '------------------------------------------------------------',
       `NET PAYABLE:          ${formatAED(row.netSalary)}`,
     ];
@@ -212,21 +184,50 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
     );
   };
 
-  const monthLabel =
-    monthOptions.find((m) => m.value === selectedMonth)?.label ?? selectedMonth;
+  const handleSaveAdj = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amt = Number(adjForm.amountAED);
+    const emp = scopedEmployees.find((x) => x.id === adjForm.employeeId);
+    if (!emp) {
+      setAdjError('Select an employee.');
+      return;
+    }
+    if (Number.isNaN(amt) || amt <= 0) {
+      setAdjError('Enter a valid positive amount in AED.');
+      return;
+    }
+    if (adjForm.reason.trim().length < 4) {
+      setAdjError('Provide a clear reason (visible on the payslip).');
+      return;
+    }
+    await onAddAdjustment({
+      employeeId: emp.id,
+      companyId: emp.primaryCompanyId,
+      month: selectedMonth,
+      kind: adjForm.kind,
+      category: adjForm.category,
+      amountAED: amt,
+      date: adjForm.date,
+      reason: adjForm.reason.trim(),
+      createdBy: currentUser.fullName,
+      createdByRole: activeRole,
+    });
+    setShowAdjModal(false);
+  };
+
+  const monthLabel = monthOptions.find((m) => m.value === selectedMonth)?.label ?? selectedMonth;
 
   return (
-    <div className="space-y-6">
-      {/* Header & Controls */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-5">
+      {/* Compact Header & Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
-            {canManagePayroll ? 'Monthly Payroll & Deductions' : 'My Payslips & Deductions'}
+            {t(lang, 'navPayroll')}
           </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            {canManagePayroll
-              ? 'UAE AED payroll register, itemized deductions engine, and WPS-ready CSV export.'
-              : 'Review your monthly earnings breakdown, allowances, deductions, and printable payslips.'}
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono tabular-nums">
+            Net {formatAED(totals.net)} · Deductions -{formatAED(totals.deductions)} · Gross{' '}
+            {formatAED(totals.gross)}
           </p>
         </div>
 
@@ -234,8 +235,8 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
           <select
             value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
-            aria-label="Select payroll month"
-            className="px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+            aria-label="Payroll month"
+            className="px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
           >
             {monthOptions.map((m) => (
               <option key={m.value} value={m.value}>
@@ -244,289 +245,247 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
             ))}
           </select>
 
+          {activeRole !== UserRole.Employee && (
+            <select
+              value={sectionFilter}
+              onChange={(e) => setSectionFilter(e.target.value)}
+              aria-label="Filter payroll by section"
+              className="px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+            >
+              <option value="all">All Sections</option>
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          )}
+
           {canManagePayroll && (
             <>
               <button
                 type="button"
-                onClick={() => openAdjustmentModal('deduction')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-700 text-white text-xs font-medium hover:bg-indigo-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                onClick={() => {
+                  setAdjError(null);
+                  setAdjForm({
+                    employeeId: targetEmployees[0]?.id ?? scopedEmployees[0]?.id ?? '',
+                    kind: 'deduction',
+                    category: DeductionCategory.Lateness,
+                    amountAED: '',
+                    date: new Date().toISOString().slice(0, 10),
+                    reason: '',
+                  });
+                  setShowAdjModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                Log Deduction / Bonus
+                {t(lang, 'logAdjustment')}
               </button>
               <button
                 type="button"
                 onClick={() => void handleExportCSV()}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
               >
-                <FileSpreadsheet className="w-4 h-4" />
-                Export CSV
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                {t(lang, 'exportCsv')}
               </button>
             </>
           )}
         </div>
       </div>
 
-      {/* Summary KPI Row */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Gross Salaries</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-            {formatAED(totals.gross)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Bonuses & Additions</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
-            +{formatAED(totals.bonuses)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Deductions</p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-rose-700 dark:text-rose-400">
-            -{formatAED(totals.deductions)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 sm:p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Net Payable ({monthLabel})
-          </p>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-800 dark:text-indigo-300">
-            {formatAED(totals.net)}
-          </p>
-        </div>
-      </section>
-
-      {/* Monthly Payroll Register Table (Desktop) & Cards (Mobile) */}
-      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-              Payroll Register — {monthLabel}
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Gross Salary + Bonuses &minus; Total Deductions = Net Payable (AED)
-            </p>
+      {/* Minimalist Payroll List (3–4 Visible Fields per Row) */}
+      <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        {payrollRows.length === 0 ? (
+          <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
+            {t(lang, 'noRecords')}
           </div>
-        </div>
-
-        {/* Desktop Table */}
-        <div className="hidden lg:block overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/60 text-xs font-medium text-slate-500 dark:text-slate-400">
-                <th className="py-3 px-4">Employee</th>
-                <th className="py-3 px-4 text-right">Base Salary</th>
-                <th className="py-3 px-4 text-right">Allowances</th>
-                <th className="py-3 px-4 text-right">Gross</th>
-                <th className="py-3 px-4 text-right">Bonuses</th>
-                <th className="py-3 px-4 text-right">Deductions</th>
-                <th className="py-3 px-4 text-right">Net Pay</th>
-                <th className="py-3 px-4 text-right">Payslip</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
-              {payrollRows.map((row) => (
-                <tr
-                  key={row.employee.id}
-                  className="hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors"
-                >
-                  <td className="py-3.5 px-4">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar src={row.employee.avatarUrl} name={row.employee.fullName} size="sm" />
-                      <div>
-                        <div className="font-medium text-slate-900 dark:text-white">
-                          {row.employee.fullName}
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                          {row.employee.employeeCode} &middot; {row.employee.department}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-slate-700 dark:text-slate-300">
-                    {formatAED(row.baseSalary)}
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-slate-600 dark:text-slate-400">
-                    {formatAED(row.totalAllowances)}
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs font-medium tabular-nums text-slate-900 dark:text-white">
-                    {formatAED(row.grossSalary)}
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-emerald-700 dark:text-emerald-400">
-                    {row.totalBonuses > 0 ? `+${formatAED(row.totalBonuses)}` : '—'}
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-xs tabular-nums text-rose-700 dark:text-rose-400">
-                    {row.totalDeductions > 0 ? `-${formatAED(row.totalDeductions)}` : '—'}
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-mono text-sm font-semibold tabular-nums text-indigo-900 dark:text-indigo-300">
-                    {formatAED(row.netSalary)}
-                  </td>
-                  <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedPayslip(row)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer"
-                      >
-                        <Receipt className="w-3.5 h-3.5" />
-                        Payslip
-                      </button>
-                      {canManagePayroll && (
-                        <button
-                          type="button"
-                          onClick={() => openAdjustmentModal('deduction', row.employee.id)}
-                          aria-label={`Add deduction for ${row.employee.fullName}`}
-                          className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
-                        >
-                          <MinusCircle className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Mobile Cards */}
-        <div className="lg:hidden divide-y divide-slate-100 dark:divide-slate-800">
-          {payrollRows.map((row) => (
-            <div key={row.employee.id} className="p-4 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <Avatar src={row.employee.avatarUrl} name={row.employee.fullName} size="md" />
+        ) : (
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            {payrollRows.map((row) => (
+              <button
+                key={row.employee.id}
+                type="button"
+                onClick={() => setSelectedPayslipEmpId(row.employee.id)}
+                className="w-full px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4 text-start hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <Avatar src={row.employee.avatarUrl} name={row.employee.fullName} size="sm" />
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                       {row.employee.fullName}
                     </p>
                     <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                      {row.employee.jobTitle}
+                      {companyMap.get(row.employee.primaryCompanyId)} ·{' '}
+                      {sectionMap.get(row.employee.sectionId)}
                     </p>
                   </div>
                 </div>
-                <div className="text-right shrink-0">
-                  <p className="text-sm font-bold font-mono tabular-nums text-indigo-900 dark:text-indigo-300">
+
+                {row.totalDeductions > 0 && (
+                  <span className="hidden sm:inline text-xs font-mono tabular-nums text-rose-700 dark:text-rose-400 shrink-0">
+                    -{formatAED(row.totalDeductions)}
+                  </span>
+                )}
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm font-bold font-mono tabular-nums text-indigo-900 dark:text-indigo-300">
                     {formatAED(row.netSalary)}
-                  </p>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Net Pay</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 text-xs bg-slate-50 dark:bg-slate-950 rounded-lg p-2.5 border border-slate-200/70 dark:border-slate-800">
-                <div>
-                  <span className="text-slate-500 dark:text-slate-400 block">Gross</span>
-                  <span className="font-mono font-medium text-slate-800 dark:text-slate-200">
-                    {row.grossSalary.toLocaleString()}
                   </span>
+                  <ChevronRight className="w-4 h-4 text-slate-400 rtl:rotate-180" />
                 </div>
-                <div>
-                  <span className="text-slate-500 dark:text-slate-400 block">Bonuses</span>
-                  <span className="font-mono font-medium text-emerald-700 dark:text-emerald-400">
-                    +{row.totalBonuses.toLocaleString()}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 dark:text-slate-400 block">Deductions</span>
-                  <span className="font-mono font-medium text-rose-700 dark:text-rose-400">
-                    -{row.totalDeductions.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setSelectedPayslip(row)}
-                className="w-full min-h-[40px] inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
-              >
-                <Receipt className="w-3.5 h-3.5" />
-                View Itemized Payslip
               </button>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
 
-      {/* Itemized Deductions & Bonuses Audit Log */}
-      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800">
-          <h3 className="text-base font-semibold text-slate-900 dark:text-white">
-            Itemized Deductions & Bonuses — {monthLabel}
-          </h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Every deduction requires an explicit reason visible on the employee&apos;s payslip.
-          </p>
-        </div>
+      {/* Slide-Over Printable Payslip Drawer */}
+      <SlideOverDrawer
+        open={Boolean(selectedPayslip)}
+        onClose={() => setSelectedPayslipEmpId(null)}
+        title={selectedPayslip ? `Payslip — ${selectedPayslip.employee.fullName}` : 'Payslip'}
+        subtitle={`${monthLabel} · ${
+          selectedPayslip ? companyMap.get(selectedPayslip.employee.primaryCompanyId) ?? '' : ''
+        }`}
+        maxWidthClass="max-w-xl"
+        headerExtra={
+          selectedPayslip ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleDownloadPayslip(selectedPayslip)}
+                aria-label="Download payslip"
+                className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                aria-label="Print payslip"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-700 text-white text-xs font-medium hover:bg-indigo-800 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                PDF
+              </button>
+            </div>
+          ) : undefined
+        }
+      >
+        {selectedPayslip && (
+          <div id="printable-payslip" className="space-y-5 text-sm">
+            {/* Net Summary Banner */}
+            <div className="rounded-xl bg-indigo-50/70 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-900 p-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-medium text-indigo-800 dark:text-indigo-200">
+                  Net Payable ({monthLabel})
+                </p>
+                <p className="text-xs text-indigo-700/80 dark:text-indigo-300/80 mt-0.5">
+                  {companyMap.get(selectedPayslip.employee.primaryCompanyId)} ·{' '}
+                  {selectedPayslip.employee.employeeCode}
+                </p>
+              </div>
+              <p className="text-xl font-bold font-mono tabular-nums text-indigo-950 dark:text-white">
+                {formatAED(selectedPayslip.netSalary)}
+              </p>
+            </div>
 
-        {monthAdjustments.length === 0 ? (
-          <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-            No deductions or bonuses logged for {monthLabel}.
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {monthAdjustments.map((adj) => {
-              const emp = empMap.get(adj.employeeId);
-              const isDeduction = adj.kind === 'deduction';
-              return (
-                <div
-                  key={adj.id}
-                  className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                >
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="font-semibold text-slate-900 dark:text-white">
-                        {emp?.fullName ?? 'Employee'}
-                      </span>
-                      <span className="text-slate-300 dark:text-slate-700">&middot;</span>
-                      <span
-                        className={`text-xs font-semibold ${
-                          isDeduction
-                            ? 'text-rose-700 dark:text-rose-400'
-                            : 'text-emerald-700 dark:text-emerald-400'
-                        }`}
-                      >
-                        {adj.category}
-                      </span>
-                      <span className="text-slate-300 dark:text-slate-700">&middot;</span>
-                      <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
-                        {formatShortDate(adj.date)}
-                      </span>
-                    </div>
-                    <p className="text-sm text-slate-700 dark:text-slate-300">{adj.reason}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Logged by {adj.createdBy}
-                    </p>
+            {/* Earnings Breakdown */}
+            <div className="space-y-2 text-xs">
+              <p className="font-semibold text-slate-900 dark:text-white pb-1.5 border-b border-slate-200 dark:border-slate-800">
+                Earnings (AED)
+              </p>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Base Salary</span>
+                <span className="font-mono text-slate-900 dark:text-white">
+                  {formatAED(selectedPayslip.baseSalary)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Housing Allowance</span>
+                <span className="font-mono text-slate-900 dark:text-white">
+                  {formatAED(selectedPayslip.housingAllowance)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Transport Allowance</span>
+                <span className="font-mono text-slate-900 dark:text-white">
+                  {formatAED(selectedPayslip.transportAllowance)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Other Allowance</span>
+                <span className="font-mono text-slate-900 dark:text-white">
+                  {formatAED(selectedPayslip.otherAllowance)}
+                </span>
+              </div>
+              {selectedPayslip.bonuses.map((b) => (
+                <div key={b.id} className="flex items-start justify-between gap-2 text-emerald-700 dark:text-emerald-400">
+                  <div>
+                    <span className="font-semibold block">{b.category}</span>
+                    <span className="text-[11px] opacity-80">{b.reason}</span>
                   </div>
-
-                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
-                    <span
-                      className={`font-mono text-sm font-semibold tabular-nums ${
-                        isDeduction
-                          ? 'text-rose-700 dark:text-rose-400'
-                          : 'text-emerald-700 dark:text-emerald-400'
-                      }`}
-                    >
-                      {isDeduction ? '-' : '+'}
-                      {formatAED(adj.amountAED)}
-                    </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="font-mono">+{formatAED(b.amountAED)}</span>
                     {canManagePayroll && (
                       <button
                         type="button"
-                        onClick={() => onRemoveAdjustment(adj.id)}
-                        aria-label={`Remove ${adj.category} for ${emp?.fullName ?? 'employee'}`}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-700 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                        onClick={() => void onRemoveAdjustment(b.id)}
+                        aria-label="Remove bonus"
+                        className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </div>
                 </div>
-              );
-            })}
+              ))}
+            </div>
+
+            {/* Itemized Deductions (Auto Lateness + Manual) */}
+            <div className="space-y-2.5 text-xs">
+              <p className="font-semibold text-slate-900 dark:text-white pb-1.5 border-b border-slate-200 dark:border-slate-800">
+                Itemized Deductions (AED)
+              </p>
+              {selectedPayslip.deductions.length === 0 ? (
+                <p className="text-slate-500">No deductions for this month.</p>
+              ) : (
+                selectedPayslip.deductions.map((d) => (
+                  <div
+                    key={d.id}
+                    className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 flex items-start justify-between gap-3"
+                  >
+                    <div>
+                      <p className="font-semibold text-rose-700 dark:text-rose-400">
+                        {d.category} · {formatShortDate(d.date)}
+                        {d.source === 'auto_lateness' ? ' (Auto Model Tier)' : ''}
+                      </p>
+                      <p className="text-slate-600 dark:text-slate-400 mt-0.5">{d.reason}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-mono font-semibold text-rose-700 dark:text-rose-400">
+                        -{formatAED(d.amountAED)}
+                      </span>
+                      {canManagePayroll && d.source !== 'auto_lateness' && (
+                        <button
+                          type="button"
+                          onClick={() => void onRemoveAdjustment(d.id)}
+                          aria-label="Remove deduction"
+                          className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         )}
-      </section>
+      </SlideOverDrawer>
 
       {/* Log Deduction / Bonus Modal */}
       {showAdjModal && (
@@ -534,50 +493,46 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="adj-modal-title"
         >
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
-              <h3 id="adj-modal-title" className="text-base font-semibold text-slate-900 dark:text-white">
-                Log Payroll Deduction or Bonus ({monthLabel})
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+                {t(lang, 'logAdjustment')}
               </h3>
               <button
                 type="button"
                 onClick={() => setShowAdjModal(false)}
-                aria-label="Close adjustment modal"
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                aria-label="Close"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveAdjustment} className="mt-4 space-y-4">
+            <form onSubmit={handleSaveAdj} className="mt-4 space-y-3.5">
               {adjError && (
-                <p
-                  role="alert"
-                  className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-lg px-3 py-2"
-                >
+                <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">
                   {adjError}
                 </p>
               )}
 
-              <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 w-full">
+              <div className="grid grid-cols-2 rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5">
                 <button
                   type="button"
                   onClick={() =>
                     setAdjForm((p) => ({
                       ...p,
                       kind: 'deduction',
-                      category: DeductionCategory.LateArrival,
+                      category: DeductionCategory.Lateness,
                     }))
                   }
-                  className={`flex-1 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                  className={`py-1.5 text-xs font-semibold rounded-md cursor-pointer ${
                     adjForm.kind === 'deduction'
-                      ? 'bg-white dark:bg-slate-900 text-rose-700 dark:text-rose-400 shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      ? 'bg-white dark:bg-slate-900 text-rose-700 dark:text-rose-400'
+                      : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
-                  Salary Deduction
+                  Deduction
                 </button>
                 <button
                   type="button"
@@ -588,307 +543,95 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                       category: 'Performance Bonus',
                     }))
                   }
-                  className={`flex-1 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                  className={`py-1.5 text-xs font-semibold rounded-md cursor-pointer ${
                     adjForm.kind === 'bonus'
-                      ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      ? 'bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400'
+                      : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
-                  Bonus / Addition
+                  Bonus
                 </button>
               </div>
 
-              <div>
-                <label htmlFor="adj-emp" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Employee
-                </label>
+              <select
+                value={adjForm.employeeId}
+                onChange={(e) => setAdjForm((p) => ({ ...p, employeeId: e.target.value }))}
+                aria-label="Select employee"
+                className={INPUT_CLASS}
+              >
+                {scopedEmployees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.fullName} ({emp.employeeCode})
+                  </option>
+                ))}
+              </select>
+
+              <div className="grid grid-cols-2 gap-2.5">
                 <select
-                  id="adj-emp"
-                  value={adjForm.employeeId}
-                  onChange={(e) => setAdjForm((p) => ({ ...p, employeeId: e.target.value }))}
+                  value={adjForm.category}
+                  onChange={(e) =>
+                    setAdjForm((p) => ({
+                      ...p,
+                      category: e.target.value as
+                        | DeductionCategory
+                        | 'Performance Bonus'
+                        | 'Incentive',
+                    }))
+                  }
+                  aria-label="Category"
                   className={INPUT_CLASS}
                 >
-                  {targetEmployees.map((emp) => (
-                    <option key={emp.id} value={emp.id}>
-                      {emp.fullName} ({emp.employeeCode})
-                    </option>
-                  ))}
+                  {adjForm.kind === 'deduction' ? (
+                    DEDUCTION_CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="Performance Bonus">Performance Bonus</option>
+                      <option value="Incentive">Incentive</option>
+                    </>
+                  )}
                 </select>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label htmlFor="adj-cat" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Category
-                  </label>
-                  <select
-                    id="adj-cat"
-                    value={adjForm.category}
-                    onChange={(e) =>
-                      setAdjForm((p) => ({
-                        ...p,
-                        category: e.target.value as
-                          | DeductionCategory
-                          | 'Performance Bonus'
-                          | 'Overtime Allowance',
-                      }))
-                    }
-                    className={INPUT_CLASS}
-                  >
-                    {adjForm.kind === 'deduction' ? (
-                      DEDUCTION_CATEGORIES.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))
-                    ) : (
-                      <>
-                        <option value="Performance Bonus">Performance Bonus</option>
-                        <option value="Overtime Allowance">Overtime Allowance</option>
-                      </>
-                    )}
-                  </select>
-                </div>
-
-                <div>
-                  <label htmlFor="adj-amt" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Amount (AED)
-                  </label>
-                  <input
-                    id="adj-amt"
-                    type="number"
-                    min={1}
-                    step="0.01"
-                    required
-                    value={adjForm.amountAED}
-                    onChange={(e) => setAdjForm((p) => ({ ...p, amountAED: e.target.value }))}
-                    placeholder="e.g. 250"
-                    className={`${INPUT_CLASS} font-mono`}
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="adj-date" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Effective Date
-                  </label>
-                  <input
-                    id="adj-date"
-                    type="date"
-                    required
-                    value={adjForm.date}
-                    onChange={(e) => setAdjForm((p) => ({ ...p, date: e.target.value }))}
-                    className={INPUT_CLASS}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label htmlFor="adj-reason" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Mandatory Reason / Notes (shown on payslip)
-                </label>
-                <textarea
-                  id="adj-reason"
-                  rows={3}
+                <input
+                  type="number"
+                  min={1}
+                  step="0.01"
                   required
-                  value={adjForm.reason}
-                  onChange={(e) => setAdjForm((p) => ({ ...p, reason: e.target.value }))}
-                  placeholder="Describe the exact reason, date, or reference number..."
-                  className={INPUT_CLASS}
+                  value={adjForm.amountAED}
+                  onChange={(e) => setAdjForm((p) => ({ ...p, amountAED: e.target.value }))}
+                  placeholder="Amount (AED)"
+                  className={`${INPUT_CLASS} font-mono`}
                 />
               </div>
+
+              <textarea
+                rows={3}
+                required
+                value={adjForm.reason}
+                onChange={(e) => setAdjForm((p) => ({ ...p, reason: e.target.value }))}
+                placeholder="Mandatory reason shown on employee payslip..."
+                className={INPUT_CLASS}
+              />
 
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowAdjModal(false)}
-                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium cursor-pointer"
                 >
-                  Cancel
+                  {t(lang, 'cancel')}
                 </button>
                 <button
                   type="submit"
-                  className={`px-4 py-2 rounded-lg text-white text-sm font-medium cursor-pointer ${
-                    adjForm.kind === 'deduction'
-                      ? 'bg-rose-600 hover:bg-rose-700'
-                      : 'bg-emerald-600 hover:bg-emerald-700'
-                  }`}
+                  className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
                 >
-                  Save {adjForm.kind === 'deduction' ? 'Deduction' : 'Bonus'}
+                  {t(lang, 'save')}
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Printable / Downloadable Monthly Payslip Modal */}
-      {selectedPayslip && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="payslip-title"
-        >
-          <div className="w-full max-w-2xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl my-8 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-950">
-              <h3 id="payslip-title" className="text-sm font-semibold text-slate-900 dark:text-white">
-                Monthly Payslip — {monthLabel}
-              </h3>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleDownloadPayslipText(selectedPayslip)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Download
-                </button>
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-700 text-white text-xs font-medium hover:bg-indigo-800 cursor-pointer"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  Print PDF
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPayslip(null)}
-                  aria-label="Close payslip modal"
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <div id="printable-payslip" className="p-6 space-y-6">
-              {/* Company & Employee Header */}
-              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
-                <div>
-                  <p className="text-lg font-bold text-indigo-950 dark:text-indigo-200 font-display">
-                    {settings.companyName}
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Salary Statement &middot; Pay Period: {monthLabel}
-                  </p>
-                </div>
-                <div className="text-left sm:text-right text-xs text-slate-600 dark:text-slate-300 space-y-0.5">
-                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                    {selectedPayslip.employee.fullName}
-                  </p>
-                  <p>
-                    {selectedPayslip.employee.employeeCode} &middot;{' '}
-                    {selectedPayslip.employee.jobTitle}
-                  </p>
-                  <p>{selectedPayslip.employee.department}</p>
-                </div>
-              </div>
-
-              {/* Earnings vs Deductions */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <div>
-                  <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider pb-2 border-b border-slate-200 dark:border-slate-800">
-                    Earnings (AED)
-                  </h4>
-                  <dl className="mt-2.5 space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <dt className="text-slate-600 dark:text-slate-400">Base Salary</dt>
-                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
-                        {formatAED(selectedPayslip.baseSalary)}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-slate-600 dark:text-slate-400">Housing Allowance</dt>
-                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
-                        {formatAED(selectedPayslip.housingAllowance)}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-slate-600 dark:text-slate-400">Transport Allowance</dt>
-                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
-                        {formatAED(selectedPayslip.transportAllowance)}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt className="text-slate-600 dark:text-slate-400">Other Allowance</dt>
-                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
-                        {formatAED(selectedPayslip.otherAllowance)}
-                      </dd>
-                    </div>
-                    {selectedPayslip.bonuses.map((b) => (
-                      <div key={b.id} className="flex justify-between text-emerald-700 dark:text-emerald-400">
-                        <dt className="pr-2">
-                          <span className="font-medium block">{b.category}</span>
-                          <span className="text-[11px] text-emerald-600 dark:text-emerald-400/80">
-                            {b.reason}
-                          </span>
-                        </dt>
-                        <dd className="font-mono tabular-nums whitespace-nowrap">
-                          +{formatAED(b.amountAED)}
-                        </dd>
-                      </div>
-                    ))}
-                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between font-semibold">
-                      <dt className="text-slate-900 dark:text-white">Total Earnings</dt>
-                      <dd className="font-mono tabular-nums text-slate-900 dark:text-white">
-                        {formatAED(selectedPayslip.grossSalary + selectedPayslip.totalBonuses)}
-                      </dd>
-                    </div>
-                  </dl>
-                </div>
-
-                <div>
-                  <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider pb-2 border-b border-slate-200 dark:border-slate-800">
-                    Deductions (AED)
-                  </h4>
-                  {selectedPayslip.deductions.length === 0 ? (
-                    <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-                      No deductions applied for this month.
-                    </p>
-                  ) : (
-                    <dl className="mt-2.5 space-y-2.5 text-sm">
-                      {selectedPayslip.deductions.map((d) => (
-                        <div key={d.id} className="flex justify-between gap-3">
-                          <dt>
-                            <span className="font-medium text-rose-800 dark:text-rose-300 block">
-                              {d.category} ({formatShortDate(d.date)})
-                            </span>
-                            <span className="text-xs text-slate-600 dark:text-slate-400">{d.reason}</span>
-                          </dt>
-                          <dd className="font-mono tabular-nums text-rose-700 dark:text-rose-400 whitespace-nowrap">
-                            -{formatAED(d.amountAED)}
-                          </dd>
-                        </div>
-                      ))}
-                    </dl>
-                  )}
-                  <div className="mt-4 pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between text-sm font-semibold">
-                    <span className="text-slate-900 dark:text-white">Total Deductions</span>
-                    <span className="font-mono tabular-nums text-rose-700 dark:text-rose-400">
-                      -{formatAED(selectedPayslip.totalDeductions)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Net Payable Banner */}
-              <div className="rounded-xl bg-indigo-50/70 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-900 p-4 flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-medium text-indigo-800 dark:text-indigo-200">
-                    Net Salary Payable (WPS Transfer)
-                  </p>
-                  <p className="text-xs text-indigo-700/80 dark:text-indigo-300/80 mt-0.5">
-                    Gross {formatAED(selectedPayslip.grossSalary)} + Bonuses{' '}
-                    {formatAED(selectedPayslip.totalBonuses)} &minus; Deductions{' '}
-                    {formatAED(selectedPayslip.totalDeductions)}
-                  </p>
-                </div>
-                <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-950 dark:text-white">
-                  {formatAED(selectedPayslip.netSalary)}
-                </p>
-              </div>
-            </div>
           </div>
         </div>
       )}

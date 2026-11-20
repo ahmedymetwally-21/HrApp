@@ -1,7 +1,29 @@
+/**
+ * Yaldi HR — Relational Database-Ready TypeScript Schema
+ *
+ * Designed to map 1:1 to self-hosted PostgreSQL tables:
+ * - companies
+ * - sections
+ * - employee_models
+ * - users
+ * - user_companies
+ * - locations
+ * - attendance_logs
+ * - attendance_audit
+ * - documents
+ * - leave_requests
+ * - approval_workflows
+ * - payroll_deductions
+ */
+
+export type Language = 'en' | 'ar' | 'ur';
+
 export enum UserRole {
+  MainManager = 'main_manager',
+  HRAdmin = 'hr_admin',
+  SectionManager = 'section_manager',
+  SectionCoManager = 'section_co_manager',
   Employee = 'employee',
-  Admin = 'admin',
-  Management = 'management',
 }
 
 export enum ClockInPolicyMode {
@@ -9,15 +31,7 @@ export enum ClockInPolicyMode {
   AllowOfficePC = 'allow_office_pc',
 }
 
-export enum DocumentType {
-  Passport = 'Passport',
-  EmiratesID = 'Emirates ID (EID)',
-  Visa = 'Visa',
-  LaborCard = 'Labor Card',
-  EmploymentContract = 'Contract',
-}
-
-export type DocumentExpiryStatus = 'expired' | 'expiring_soon' | 'valid';
+export type PunchSource = 'Mobile App' | 'PC Web';
 
 export enum LeaveType {
   Annual = 'Annual Leave',
@@ -33,7 +47,7 @@ export enum LeaveStatus {
 }
 
 export enum DeductionCategory {
-  LateArrival = 'Late Arrival',
+  Lateness = 'Lateness',
   UnpaidLeave = 'Unpaid Leave',
   FinePenalty = 'Fine / Penalty',
   SalaryAdvance = 'Salary Advance',
@@ -42,139 +56,68 @@ export enum DeductionCategory {
 
 export type AdjustmentKind = 'deduction' | 'bonus';
 
-export type PunchSource = 'Mobile App' | 'PC Web';
-
-// ============================================================================
-// Relational PostgreSQL Schema Mirror Types
-// Mirrors tables: users, locations, user_locations, attendance_logs,
-// documents, leave_requests, payroll_adjustments
-// ============================================================================
-
-export interface UserRow {
-  id: string;
-  employee_code: string;
-  full_name: string;
-  email: string;
-  phone: string;
-  avatar_url: string;
-  role: UserRole;
-  department: string;
-  job_title: string;
-  join_date: string;
-  active: boolean;
-  clock_in_policy_override: ClockInPolicyMode | 'inherit';
-  base_salary_aed: number;
-  housing_allowance_aed: number;
-  transport_allowance_aed: number;
-  other_allowance_aed: number;
+export enum BuiltInDocumentType {
+  Passport = 'Passport',
+  EmiratesID = 'Emirates ID (EID)',
+  Visa = 'Visa',
+  LaborCard = 'Labor Card',
+  EmploymentContract = 'Employment Contract',
+  DrivingLicense = 'Driving License',
 }
 
-export interface LocationRow {
+export type DocumentTypeValue = BuiltInDocumentType | string;
+
+export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
+
+export type ApprovalStepRole = 'section_manager' | 'hr_admin' | 'main_manager';
+
+export interface Company {
+  id: string;
+  code: string;
+  name: string;
+  industry: string;
+  city: string;
+  active: boolean;
+}
+
+export interface Section {
   id: string;
   name: string;
-  address: string;
-  latitude: number;
-  longitude: number;
-  radius_meters: number;
-  active: boolean;
+  code: string;
 }
 
-export interface UserLocationRow {
-  user_id: string;
-  location_id: string;
-}
-
-export interface AttendanceLogRow {
+export interface LatenessPenaltyTier {
   id: string;
-  user_id: string;
-  work_date: string;
-  clock_in_time: string;
-  clock_out_time?: string;
-  location_id: string;
-  location_name: string;
-  clock_in_lat: number;
-  clock_in_lng: number;
-  clock_out_lat?: number;
-  clock_out_lng?: number;
-  accuracy_meters: number;
-  device_type: PunchSource;
-  is_late: boolean;
-  late_minutes: number;
+  minLateMinutes: number;
+  maxLateMinutes: number | null; // null means open-ended (e.g. > 60 mins)
+  penaltyAED: number;
 }
 
-export interface DocumentRow {
-  id: string;
-  user_id: string;
-  doc_type: DocumentType;
-  document_number: string;
-  file_name: string;
-  mime_type: string;
-  file_url?: string;
-  issue_date: string;
-  expiry_date: string;
-  uploaded_at: string;
-  notes?: string;
+export interface LeaveQuotas {
+  annualTotal: number;
+  sickTotal: number;
+  emergencyTotal: number;
+  unpaidLimit: number;
 }
 
-export interface LeaveRequestRow {
-  id: string;
-  user_id: string;
-  leave_type: LeaveType;
-  start_date: string;
-  end_date: string;
-  days: number;
-  reason: string;
-  attachment_name?: string;
-  attachment_url?: string;
-  status: LeaveStatus;
-  submitted_at: string;
-  reviewed_by?: string;
-  reviewed_by_role?: UserRole;
-  reviewed_at?: string;
-  manager_comment?: string;
-  overridden_by_management?: boolean;
-}
-
-export interface PayrollAdjustmentRow {
-  id: string;
-  user_id: string;
-  pay_month: string; // YYYY-MM
-  kind: AdjustmentKind;
-  category: DeductionCategory | 'Performance Bonus' | 'Overtime Allowance';
-  amount_aed: number;
-  effective_date: string;
-  reason: string;
-  created_by: string;
-  created_by_role: UserRole;
-  created_at: string;
-}
-
-// ============================================================================
-// Application Domain Models
-// ============================================================================
-
-export interface GeofenceZone {
+export interface EmployeeModel {
   id: string;
   name: string;
-  address: string;
-  latitude: number;
-  longitude: number;
-  radiusMeters: number;
-  active: boolean;
+  description: string;
+  shiftStart: string; // HH:mm fixed shift start
+  shiftEnd: string;   // HH:mm fixed shift end (no overtime calculated)
+  workingDays: Weekday[];
+  graceMinutes: number;
+  latenessTiers: LatenessPenaltyTier[];
+  leaveQuotas: LeaveQuotas;
+  requiredDocuments: DocumentTypeValue[];
 }
 
-export interface EmployeeDocument {
-  id: string;
-  employeeId: string;
-  type: DocumentType;
-  documentNumber: string;
-  fileName: string;
-  fileType: string;
-  fileDataUrl?: string;
-  issueDate: string; // YYYY-MM-DD
-  expiryDate: string; // YYYY-MM-DD
-  uploadedAt: string; // ISO
-  notes?: string;
+export interface SalaryStructure {
+  baseSalary: number;
+  housingAllowance: number;
+  transportAllowance: number;
+  otherAllowance: number;
 }
 
 export interface LeaveBalance {
@@ -187,11 +130,19 @@ export interface LeaveBalance {
   unpaidUsed: number;
 }
 
-export interface SalaryStructure {
-  baseSalary: number;
-  housingAllowance: number;
-  transportAllowance: number;
-  otherAllowance: number;
+export interface ShiftSchedule {
+  shiftStart: string;
+  shiftEnd: string;
+  workingDays: Weekday[];
+}
+
+export interface PendingShiftProposal {
+  shiftStart: string;
+  shiftEnd: string;
+  workingDays: Weekday[];
+  proposedBy: string;
+  proposedAt: string;
+  status: 'pending_manager_approval';
 }
 
 export interface Employee {
@@ -200,9 +151,13 @@ export interface Employee {
   fullName: string;
   email: string;
   phone: string;
-  avatarUrl: string;
+  avatarUrl?: string;
   role: UserRole;
-  department: string;
+  primaryCompanyId: string;
+  sharedCompanyIds: string[]; // Secondary companies where this employee also operates
+  sectionId: string;
+  managedSectionIds: string[]; // For Section Manager / Section Co-Manager scoping
+  modelId: string;
   jobTitle: string;
   joinDate: string; // YYYY-MM-DD
   active: boolean;
@@ -210,16 +165,44 @@ export interface Employee {
   clockInPolicyOverride?: ClockInPolicyMode | 'inherit';
   salary: SalaryStructure;
   leaveBalance: LeaveBalance;
+  customShift?: ShiftSchedule; // Overrides model fixed shift once approved
+  pendingShiftProposal?: PendingShiftProposal | null;
+}
+
+export interface GeofenceZone {
+  id: string;
+  companyId: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number; // 50m - 500m
+  active: boolean;
+}
+
+export interface EmployeeDocument {
+  id: string;
+  employeeId: string;
+  type: DocumentTypeValue;
+  documentNumber: string;
+  issueDate: string;
+  expiryDate: string;
+  fileName: string;
+  fileType: string;
+  fileDataUrl?: string;
+  uploadedAt: string;
+  notes?: string;
 }
 
 export interface AttendanceLog {
   id: string;
   employeeId: string;
+  companyId: string;
   date: string; // YYYY-MM-DD
   clockInTime: string; // ISO
-  clockOutTime?: string; // ISO
-  clockInZoneId: string;
-  clockInZoneName: string;
+  clockOutTime: string | null; // ISO
+  zoneId: string;
+  zoneName: string;
   clockInLat: number;
   clockInLng: number;
   clockOutLat?: number;
@@ -228,49 +211,110 @@ export interface AttendanceLog {
   punchSource: PunchSource;
   isLate: boolean;
   lateMinutes: number;
+  latenessPenaltyAED: number;
+  latenessExcused: boolean;
+  excuseNote?: string;
+  excusedBy?: string;
+  modifiedBy?: string;
   notes?: string;
+}
+
+export interface AttendanceAuditEntry {
+  id: string;
+  attendanceLogId: string;
+  employeeId: string;
+  action: 'excuse_accepted' | 'punch_modified';
+  actorName: string;
+  actorRole: UserRole;
+  summary: string;
+  previousValue?: string;
+  newValue?: string;
+  timestamp: string;
+}
+
+export interface ApprovalStepRecord {
+  stepOrder: number;
+  role: ApprovalStepRole;
+  status: 'pending' | 'approved' | 'rejected' | 'skipped';
+  actorName?: string;
+  remark?: string;
+  decidedAt?: string;
+}
+
+export interface CoManagerNote {
+  id: string;
+  authorName: string;
+  note: string;
+  createdAt: string;
 }
 
 export interface LeaveRequest {
   id: string;
   employeeId: string;
+  companyId: string;
+  sectionId: string;
   type: LeaveType;
-  startDate: string; // YYYY-MM-DD
-  endDate: string; // YYYY-MM-DD
+  startDate: string;
+  endDate: string;
   days: number;
   reason: string;
   attachmentName?: string;
   attachmentDataUrl?: string;
   status: LeaveStatus;
-  submittedAt: string; // ISO
-  reviewedBy?: string;
-  reviewedByRole?: UserRole;
-  reviewedAt?: string;
-  managerComment?: string;
-  overriddenByManagement?: boolean;
+  submittedAt: string;
+  approvalSteps: ApprovalStepRecord[];
+  currentStepIndex: number; // Index into approvalSteps, or -1 if finalized
+  coManagerNotes: CoManagerNote[];
+}
+
+export interface ApprovalWorkflow {
+  id: string;
+  name: string;
+  companyId: string | 'all';
+  sectionId: string | 'all';
+  steps: ApprovalStepRole[];
+  autoApproveMaxDays: number; // 0 disables auto-approval
 }
 
 export interface PayrollAdjustment {
   id: string;
   employeeId: string;
+  companyId: string;
   month: string; // YYYY-MM
   kind: AdjustmentKind;
-  category: DeductionCategory | 'Performance Bonus' | 'Overtime Allowance';
+  category: DeductionCategory | 'Performance Bonus' | 'Incentive';
   amountAED: number;
-  date: string; // YYYY-MM-DD
+  date: string;
   reason: string;
+  source?: 'manual' | 'auto_lateness';
+  attendanceLogId?: string;
   createdBy: string;
   createdByRole: UserRole;
-  createdAt: string; // ISO
+  createdAt: string;
 }
 
 export interface AppSettings {
-  companyName: string;
+  groupName: string;
+  currency: 'AED';
   globalClockInPolicy: ClockInPolicyMode;
-  workStartTime: string; // "09:00"
-  gracePeriodMinutes: number; // e.g. 15
-  maxMobileAccuracyMeters: number; // 150
+  maxMobileAccuracyMeters: number;
+  customDocumentTypes: string[];
   apiBaseUrl: string;
+}
+
+export interface HRDatabase {
+  companies: Company[];
+  sections: Section[];
+  employeeModels: EmployeeModel[];
+  employees: Employee[];
+  geofences: GeofenceZone[];
+  documents: EmployeeDocument[];
+  attendance: AttendanceLog[];
+  attendanceAudit: AttendanceAuditEntry[];
+  leaves: LeaveRequest[];
+  workflows: ApprovalWorkflow[];
+  payrollAdjustments: PayrollAdjustment[];
+  settings: AppSettings;
 }
 
 export interface AuthSession {
@@ -290,12 +334,12 @@ export interface GPSReading {
 
 export interface ClockInEvaluation {
   allowed: boolean;
-  insideZone: boolean;
+  reason: string;
   nearestZone: GeofenceZone | null;
   distanceMeters: number | null;
+  outsideByMeters: number | null;
   effectivePolicy: ClockInPolicyMode;
   punchSource: PunchSource;
-  blockReason: string | null;
 }
 
 export interface MonthlyPayrollRow {
@@ -307,19 +351,142 @@ export interface MonthlyPayrollRow {
   otherAllowance: number;
   totalAllowances: number;
   grossSalary: number;
-  bonuses: PayrollAdjustment[];
   totalBonuses: number;
-  deductions: PayrollAdjustment[];
+  autoLatenessDeductions: number;
+  manualDeductions: number;
   totalDeductions: number;
   netSalary: number;
+  deductions: PayrollAdjustment[];
+  bonuses: PayrollAdjustment[];
 }
 
-export interface HRDatabase {
-  employees: Employee[];
-  geofences: GeofenceZone[];
-  documents: EmployeeDocument[];
-  attendance: AttendanceLog[];
-  leaves: LeaveRequest[];
-  payrollAdjustments: PayrollAdjustment[];
-  settings: AppSettings;
+/* ============================================================================
+ * Relational PostgreSQL Table Row Mirrors (1:1 Self-Hosted Backend Reference)
+ * ========================================================================== */
+
+export interface CompanyRow {
+  id: string;
+  code: string;
+  name: string;
+  industry: string;
+  city: string;
+  active: boolean;
+}
+
+export interface SectionRow {
+  id: string;
+  code: string;
+  name: string;
+}
+
+export interface EmployeeModelRow {
+  id: string;
+  name: string;
+  shift_start: string;
+  shift_end: string;
+  working_days_json: string;
+  grace_minutes: number;
+  lateness_tiers_json: string;
+  leave_quotas_json: string;
+  required_documents_json: string;
+}
+
+export interface UserRow {
+  id: string;
+  employee_code: string;
+  full_name: string;
+  email: string;
+  phone: string;
+  role: UserRole;
+  primary_company_id: string;
+  section_id: string;
+  model_id: string;
+  job_title: string;
+  base_salary_aed: number;
+  allowances_aed: number;
+  active: boolean;
+}
+
+export interface UserCompanyRow {
+  user_id: string;
+  company_id: string;
+  is_primary: boolean;
+}
+
+export interface LocationRow {
+  id: string;
+  company_id: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  radius_meters: number;
+  active: boolean;
+}
+
+export interface AttendanceLogRow {
+  id: string;
+  user_id: string;
+  company_id: string;
+  work_date: string;
+  clock_in_at: string;
+  clock_out_at: string | null;
+  location_id: string;
+  punch_source: PunchSource;
+  late_minutes: number;
+  lateness_penalty_aed: number;
+  lateness_excused: boolean;
+}
+
+export interface AttendanceAuditRow {
+  id: string;
+  attendance_log_id: string;
+  user_id: string;
+  action: 'excuse_accepted' | 'punch_modified';
+  actor_name: string;
+  summary: string;
+  created_at: string;
+}
+
+export interface DocumentRow {
+  id: string;
+  user_id: string;
+  doc_type: string;
+  document_number: string;
+  issue_date: string;
+  expiry_date: string;
+  file_url: string;
+}
+
+export interface LeaveRequestRow {
+  id: string;
+  user_id: string;
+  company_id: string;
+  section_id: string;
+  leave_type: LeaveType;
+  start_date: string;
+  end_date: string;
+  days: number;
+  status: LeaveStatus;
+  approval_steps_json: string;
+}
+
+export interface ApprovalWorkflowRow {
+  id: string;
+  company_id: string | null;
+  section_id: string | null;
+  steps_json: string;
+  auto_approve_max_days: number;
+}
+
+export interface PayrollDeductionRow {
+  id: string;
+  user_id: string;
+  company_id: string;
+  payroll_month: string;
+  kind: AdjustmentKind;
+  category: string;
+  amount_aed: number;
+  reason: string;
+  created_by: string;
 }

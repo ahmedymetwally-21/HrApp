@@ -1,41 +1,29 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+@theme {
+  --font-sans: "DM Sans", "Noto Sans Arabic", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Plus Jakarta Sans", "Noto Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 @layer base {
-  :root {
-    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-    --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-  }
-
-  body {
+  html {
     font-family: var(--font-sans);
-    background-color: #f8fafc;
-    color: #0f172a;
-    overflow-x: hidden;
-    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
   }
 
-  .dark body,
-  html.dark body {
-    background-color: #020617;
-    color: #f1f5f9;
-  }
-
-  h1, h2, h3, h4, .font-display {
+  h1, h2, h3, h4 {
     font-family: var(--font-display);
     text-wrap: balance;
   }
 
-  .font-mono {
-    font-family: var(--font-mono);
+  html[dir="rtl"] body {
+    font-family: "Noto Sans Arabic", "DM Sans", ui-sans-serif, system-ui, sans-serif;
   }
 }
 
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
-}
-
+/* iOS / Android safe-area insets for Capacitor & notched phones */
 .pt-safe {
   padding-top: env(safe-area-inset-top, 0px);
 }
@@ -44,21 +32,19 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* Keep Leaflet controls neatly beneath modals/drawers */
+/* Ensure Leaflet map layers sit neatly below navigation drawers and modals */
 .leaflet-container {
   font-family: var(--font-sans);
   z-index: 10;
 }
 
-.leaflet-pane {
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom {
   z-index: 10;
 }
 
-.leaflet-top,
-.leaflet-bottom {
-  z-index: 20;
-}
-
+/* Clean print layout for employee payslips */
 @media print {
   body * {
     visibility: hidden;
@@ -69,13 +55,9 @@
   }
   #printable-payslip {
     position: fixed;
-    left: 0;
-    top: 0;
-    width: 100%;
+    inset: 0;
     padding: 24px;
     background: #ffffff !important;
     color: #0f172a !important;
-    box-shadow: none;
-    border: none;
   }
 }

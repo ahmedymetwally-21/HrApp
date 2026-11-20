@@ -142,6 +142,12 @@ const EN: Dict = {
   salaryProcessing: 'Processing',
   salaryDelayed: 'Delayed',
   salaryReleased: 'Released',
+  firstLoginSecurityBadge: 'First-Login Security Requirement',
+  passwordMinLengthPlaceholder: 'Minimum 6 characters',
+  passwordConfirmPlaceholder: 'Re-enter new password',
+  passwordMinLengthError: 'Password must be at least 6 characters.',
+  passwordMismatchError: 'Passwords do not match.',
+  passwordUpdateError: 'Unable to update password.',
 };
 
 const AR: Dict = {
@@ -265,6 +271,12 @@ const AR: Dict = {
   salaryProcessing: 'قيد المعالجة',
   salaryDelayed: 'مؤجل',
   salaryReleased: 'تم الصرف',
+  firstLoginSecurityBadge: 'متطلب أمان تسجيل الدخول الأول',
+  passwordMinLengthPlaceholder: '٦ أحرف على الأقل',
+  passwordConfirmPlaceholder: 'أعد إدخال كلمة المرور الجديدة',
+  passwordMinLengthError: 'يجب أن تتكون كلمة المرور من ٦ أحرف على الأقل.',
+  passwordMismatchError: 'كلمتا المرور غير متطابقتين.',
+  passwordUpdateError: 'تعذر تحديث كلمة المرور.',
 };
 
 const UR: Dict = {
@@ -388,6 +400,12 @@ const UR: Dict = {
   salaryProcessing: 'پروسیسنگ میں',
   salaryDelayed: 'مؤخر',
   salaryReleased: 'جاری کر دی گئی',
+  firstLoginSecurityBadge: 'پہلی بار لاگ ان سیکیورٹی تقاضا',
+  passwordMinLengthPlaceholder: 'کم از کم 6 حروف',
+  passwordConfirmPlaceholder: 'نیا پاس ورڈ دوبارہ درج کریں',
+  passwordMinLengthError: 'پاس ورڈ کم از کم 6 حروف کا ہونا چاہیے۔',
+  passwordMismatchError: 'دونوں پاس ورڈ آپس میں میل نہیں کھاتے۔',
+  passwordUpdateError: 'پاس ورڈ اپ ڈیٹ نہیں ہو سکا۔',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };

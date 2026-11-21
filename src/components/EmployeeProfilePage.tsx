@@ -9,6 +9,7 @@ import {
   Eye,
   FileText,
   Infinity as InfinityIcon,
+  KeyRound,
   Landmark,
   Trash2,
   UploadCloud,
@@ -54,6 +55,7 @@ import {
 import {
   calculateEmployeePayroll,
   calculateEmployeePendingBalances,
+  canResetEmployeePassword,
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatAED,
   formatShortDate,
@@ -72,6 +74,7 @@ import {
 import { Avatar } from './Avatar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PageBreadcrumbHeader } from './PageBreadcrumbHeader';
+import { ResetPasswordPanel } from './ResetPasswordPanel';
 
 interface EmployeeProfilePageProps {
   lang: Language;
@@ -96,6 +99,7 @@ interface EmployeeProfilePageProps {
   initialTab?: 'profile' | 'salary' | 'documents' | 'attendance';
   onBack: () => void;
   onEdit: (emp: Employee) => void;
+  onResetPassword?: (employeeId: string, newPassword: string) => Promise<void>;
   onProposeShift: (employeeId: string, schedule: ShiftSchedule) => Promise<void>;
   onDecideShiftProposal: (employeeId: string, approve: boolean) => Promise<void>;
   onUploadDocument: (doc: Omit<EmployeeDocument, 'id' | 'uploadedAt'>) => Promise<void>;
@@ -129,6 +133,7 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
   initialTab = 'profile',
   onBack,
   onEdit,
+  onResetPassword,
   onProposeShift,
   onDecideShiftProposal,
   onUploadDocument,
@@ -136,6 +141,9 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
 }) => {
   const canManageStaff =
     activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const canResetPassword =
+    Boolean(onResetPassword) && canResetEmployeePassword(activeRole, employee.role);
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
   const canApproveShift =
     activeRole === UserRole.MainManager || activeRole === UserRole.SectionManager;
   const isPro = activeRole === UserRole.PRO;
@@ -385,18 +393,44 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
         title={employee.fullName}
         subtitle={`${employee.jobTitle || getRoleLabel(lang, employee.role)} · ${employee.employeeCode}`}
         actions={
-          canManageStaff ? (
-            <button
-              type="button"
-              onClick={() => onEdit(employee)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>{t(lang, 'editEmployee')}</span>
-            </button>
+          canManageStaff || canResetPassword ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {canResetPassword && (
+                <button
+                  type="button"
+                  onClick={() => setResetPasswordOpen((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                  <span>{t(lang, 'resetPassword')}</span>
+                </button>
+              )}
+              {canManageStaff && (
+                <button
+                  type="button"
+                  onClick={() => onEdit(employee)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>{t(lang, 'editEmployee')}</span>
+                </button>
+              )}
+            </div>
           ) : undefined
         }
       />
+
+      {canResetPassword && onResetPassword && (
+        <ResetPasswordPanel
+          lang={lang}
+          employeeId={employee.id}
+          employeeName={employee.fullName}
+          employeeEmail={employee.email}
+          open={resetPasswordOpen}
+          onClose={() => setResetPasswordOpen(false)}
+          onResetPassword={onResetPassword}
+        />
+      )}
 
       {/* Clean Profile Header Card + Horizontal Tabs */}
       <section className="rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">

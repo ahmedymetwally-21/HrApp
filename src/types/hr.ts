@@ -365,6 +365,10 @@ export type CreateEmployeePayload = Omit<
   initialPassword: string;
 };
 
+export type UpdateEmployeePayload = Partial<Employee> & {
+  resetPassword?: string;
+};
+
 export interface GeofenceZone {
   id: string;
   companyId: string;

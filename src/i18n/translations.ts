@@ -352,6 +352,25 @@ const EN: Dict = {
   payrollCategories: 'Payroll Categories',
   viewProfile: 'View Profile',
   collapseSidebar: 'Collapse',
+  resetPassword: 'Reset Password',
+  resetPasswordTitle: 'Reset Employee Password',
+  newTemporaryPassword: 'New Temporary Password',
+  confirmNewPassword: 'Confirm Password',
+  generateRandom: 'Generate Random',
+  resetPasswordNextLoginNote:
+    'The employee will be required to change this password on their next login.',
+  resetPasswordConfirmAction: 'Confirm Password Reset',
+  resetPasswordResetting: 'Resetting...',
+  resetPasswordMinLengthError: 'Temporary password must be at least 6 characters.',
+  resetPasswordMismatchError: 'Passwords do not match.',
+  resetPasswordSuccessTitle: 'Temporary password updated',
+  resetPasswordSuccessBody:
+    'Share this temporary password with the employee. They will be required to change it on their next login.',
+  copyPassword: 'Copy Password',
+  copied: 'Copied!',
+  showPassword: 'Show password',
+  hidePassword: 'Hide password',
+  accountSecurity: 'Account Security',
 };
 
 const AR: Dict = {
@@ -676,6 +695,25 @@ const AR: Dict = {
   payrollCategories: 'فئات الرواتب',
   viewProfile: 'عرض الملف',
   collapseSidebar: 'طي القائمة',
+  resetPassword: 'إعادة تعيين كلمة المرور',
+  resetPasswordTitle: 'إعادة تعيين كلمة مرور الموظف',
+  newTemporaryPassword: 'كلمة المرور المؤقتة الجديدة',
+  confirmNewPassword: 'تأكيد كلمة المرور',
+  generateRandom: 'توليد عشوائي',
+  resetPasswordNextLoginNote:
+    'سيُطلب من الموظف تغيير كلمة المرور هذه عند تسجيل الدخول التالي.',
+  resetPasswordConfirmAction: 'تأكيد إعادة التعيين',
+  resetPasswordResetting: 'جارٍ إعادة التعيين...',
+  resetPasswordMinLengthError: 'يجب أن تتكون كلمة المرور المؤقتة من ٦ أحرف على الأقل.',
+  resetPasswordMismatchError: 'كلمتا المرور غير متطابقتين.',
+  resetPasswordSuccessTitle: 'تم تحديث كلمة المرور المؤقتة',
+  resetPasswordSuccessBody:
+    'شارك كلمة المرور المؤقتة مع الموظف. سيُطلب منه تغييرها عند تسجيل الدخول التالي.',
+  copyPassword: 'نسخ كلمة المرور',
+  copied: 'تم النسخ!',
+  showPassword: 'إظهار كلمة المرور',
+  hidePassword: 'إخفاء كلمة المرور',
+  accountSecurity: 'أمان الحساب',
 };
 
 const UR: Dict = {
@@ -1000,6 +1038,25 @@ const UR: Dict = {
   payrollCategories: 'تنخواہ کے زمرے',
   viewProfile: 'پروفائل دیکھیں',
   collapseSidebar: 'بند کریں',
+  resetPassword: 'پاس ورڈ ری سیٹ کریں',
+  resetPasswordTitle: 'ملازم کا پاس ورڈ ری سیٹ کریں',
+  newTemporaryPassword: 'نیا عارضی پاس ورڈ',
+  confirmNewPassword: 'پاس ورڈ کی تصدیق کریں',
+  generateRandom: 'خودکار بنائیں',
+  resetPasswordNextLoginNote:
+    'ملازم کو اگلی بار لاگ ان ہونے پر یہ پاس ورڈ تبدیل کرنا لازمی ہوگا۔',
+  resetPasswordConfirmAction: 'پاس ورڈ ری سیٹ کی تصدیق کریں',
+  resetPasswordResetting: 'ری سیٹ ہو رہا ہے...',
+  resetPasswordMinLengthError: 'عارضی پاس ورڈ کم از کم 6 حروف کا ہونا چاہیے۔',
+  resetPasswordMismatchError: 'دونوں پاس ورڈ آپس میں میل نہیں کھاتے۔',
+  resetPasswordSuccessTitle: 'عارضی پاس ورڈ اپ ڈیٹ ہو گیا',
+  resetPasswordSuccessBody:
+    'یہ عارضی پاس ورڈ ملازم کے ساتھ شیئر کریں۔ اگلی بار لاگ ان ہونے پر انہیں اسے تبدیل کرنا ہوگا۔',
+  copyPassword: 'پاس ورڈ کاپی کریں',
+  copied: 'کاپی ہو گیا!',
+  showPassword: 'پاس ورڈ دکھائیں',
+  hidePassword: 'پاس ورڈ چھپائیں',
+  accountSecurity: 'اکاؤنٹ سیکیورٹی',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };

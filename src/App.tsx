@@ -1263,6 +1263,11 @@ export function App() {
                   await loadDatabase();
                   showToast('Employee profile updated.');
                 }}
+                onResetPassword={async (employeeId, newPassword) => {
+                  await api.employees.update(employeeId, { resetPassword: newPassword });
+                  await loadDatabase();
+                  showToast(t(lang, 'resetPasswordSuccessTitle'));
+                }}
                 onProposeShift={async (employeeId: string, schedule: ShiftSchedule) => {
                   await api.employees.proposeShift(employeeId, schedule, currentUser.fullName);
                   await loadDatabase();

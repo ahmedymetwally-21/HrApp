@@ -40,6 +40,7 @@ import {
   SalaryReleaseSchedule,
   Section,
   ShiftSchedule,
+  UpdateEmployeePayload,
   UserRole,
 } from '../types/hr';
 import {
@@ -94,7 +95,8 @@ interface EmployeesViewProps {
       reason: string;
     }[]
   ) => Promise<void>;
-  onUpdateEmployee: (id: string, patch: Partial<Employee>) => Promise<void>;
+  onUpdateEmployee: (id: string, patch: UpdateEmployeePayload) => Promise<void>;
+  onResetPassword?: (employeeId: string, newPassword: string) => Promise<void>;
   onProposeShift: (employeeId: string, schedule: ShiftSchedule) => Promise<void>;
   onDecideShiftProposal: (employeeId: string, approve: boolean) => Promise<void>;
   onUploadDocument: (doc: Omit<EmployeeDocument, 'id' | 'uploadedAt'>) => Promise<void>;
@@ -133,6 +135,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   customDocumentTypes,
   onCreateEmployee,
   onUpdateEmployee,
+  onResetPassword,
   onProposeShift,
   onDecideShiftProposal,
   onUploadDocument,
@@ -404,6 +407,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     const formNode = (
       <EmployeeFormPage
         lang={lang}
+        activeRole={activeRole}
         mode="create"
         editingEmployee={null}
         selectedCompanyId={selectedCompanyId}
@@ -437,6 +441,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     const formNode = (
       <EmployeeFormPage
         lang={lang}
+        activeRole={activeRole}
         mode="edit"
         editingEmployee={editingEmp}
         selectedCompanyId={selectedCompanyId}
@@ -464,6 +469,12 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
             setSubPage('list');
           }
         }}
+        onResetPassword={
+          onResetPassword ??
+          (async (employeeId, newPassword) => {
+            await onUpdateEmployee(employeeId, { resetPassword: newPassword });
+          })
+        }
       />
     );
     if (isCompactOverlay) {
@@ -501,6 +512,12 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         initialTab={profileInitialTab}
         onBack={() => setSubPage('list')}
         onEdit={(emp) => openEditEmployee(emp)}
+        onResetPassword={
+          onResetPassword ??
+          (async (employeeId, newPassword) => {
+            await onUpdateEmployee(employeeId, { resetPassword: newPassword });
+          })
+        }
         onProposeShift={onProposeShift}
         onDecideShiftProposal={onDecideShiftProposal}
         onUploadDocument={onUploadDocument}

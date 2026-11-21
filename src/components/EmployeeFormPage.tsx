@@ -36,12 +36,14 @@ import {
   UserRole,
 } from '../types/hr';
 import {
+  canResetEmployeePassword,
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatAED,
   inferDefaultEmployeeType,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 import { PageBreadcrumbHeader } from './PageBreadcrumbHeader';
+import { ResetPasswordPanel } from './ResetPasswordPanel';
 
 export interface AdditionalIncomeDraftRow {
   tempId: string;
@@ -55,6 +57,7 @@ export interface AdditionalIncomeDraftRow {
 
 interface EmployeeFormPageProps {
   lang: Language;
+  activeRole: UserRole;
   mode: 'create' | 'edit';
   editingEmployee: Employee | null;
   selectedCompanyId: string;
@@ -80,6 +83,7 @@ interface EmployeeFormPageProps {
     }[]
   ) => Promise<void>;
   onUpdateEmployee: (id: string, patch: Partial<Employee>) => Promise<void>;
+  onResetPassword?: (employeeId: string, newPassword: string) => Promise<void>;
 }
 
 const INPUT_CLASS =
@@ -95,6 +99,7 @@ function getCurrentMonthKey(): string {
 
 export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
   lang,
+  activeRole,
   mode,
   editingEmployee,
   selectedCompanyId,
@@ -109,8 +114,16 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
   onBack,
   onCreateEmployee,
   onUpdateEmployee,
+  onResetPassword,
 }) => {
   const isEdit = mode === 'edit' && Boolean(editingEmployee);
+  const canResetPassword = Boolean(
+    isEdit &&
+      editingEmployee &&
+      onResetPassword &&
+      canResetEmployeePassword(activeRole, editingEmployee.role)
+  );
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
   const currentMonth = useMemo(() => getCurrentMonthKey(), []);
 
   const inPayrollEarningCategories = useMemo(
@@ -521,7 +534,31 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
             ? 'Update account, personal, professional, or salary package details. Optional fields may remain blank.'
             : 'Complete the 4 steps below to onboard a new employee with their full salary package.'
         }
+        actions={
+          canResetPassword ? (
+            <button
+              type="button"
+              onClick={() => setResetPasswordOpen((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <KeyRound className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+              <span>{t(lang, 'resetPassword')}</span>
+            </button>
+          ) : undefined
+        }
       />
+
+      {canResetPassword && editingEmployee && onResetPassword && (
+        <ResetPasswordPanel
+          lang={lang}
+          employeeId={editingEmployee.id}
+          employeeName={editingEmployee.fullName}
+          employeeEmail={editingEmployee.email}
+          open={resetPasswordOpen}
+          onClose={() => setResetPasswordOpen(false)}
+          onResetPassword={onResetPassword}
+        />
+      )}
 
       {/* ZenHR-Style Horizontal Chevron Progress Stepper */}
       <nav aria-label="Employee onboarding steps" className="w-full overflow-x-auto pb-1">

@@ -45,6 +45,7 @@ import {
   SalaryReleaseStatus,
   Section,
   ShiftSchedule,
+  UpdateEmployeePayload,
   UserRole,
 } from '../types/hr';
 import {
@@ -1322,25 +1323,43 @@ export const api = {
       writeDb(db);
       return created;
     },
-    async update(id: string, patch: Partial<Employee>): Promise<Employee> {
+    async update(id: string, patch: UpdateEmployeePayload): Promise<Employee> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
+        const payload: Record<string, unknown> = { ...patch };
+        if (patch.employeeType !== undefined) {
+          payload.employee_type = patch.employeeType;
+        }
+        if (patch.deductionWorkflowOverride !== undefined) {
+          payload.deduction_workflow_override = patch.deductionWorkflowOverride;
+        }
+        if (patch.mohrePersonId !== undefined) {
+          payload.mohre_person_id = patch.mohrePersonId;
+        }
         const res = await restFetch<unknown>(`/users/${id}`, {
           method: 'PUT',
-          body: JSON.stringify({
-            ...patch,
-            employee_type: patch.employeeType,
-            deduction_workflow_override: patch.deductionWorkflowOverride,
-            mohre_person_id: patch.mohrePersonId,
-          }),
+          body: JSON.stringify(payload),
         });
         return normalizeEmployee(res);
       }
       const db = readDb();
+      const { resetPassword, ...employeePatch } = patch;
+      if (resetPassword !== undefined && resetPassword.trim().length < 6) {
+        throw new Error('Temporary password must be at least 6 characters.');
+      }
       let updated: Employee | null = null;
       db.employees = db.employees.map((e) => {
         if (e.id === id) {
-          updated = { ...e, ...patch };
+          updated = {
+            ...e,
+            ...employeePatch,
+            ...(resetPassword !== undefined
+              ? {
+                  passwordHash: resetPassword.trim(),
+                  mustChangePassword: true,
+                }
+              : {}),
+          };
           return updated;
         }
         return e;

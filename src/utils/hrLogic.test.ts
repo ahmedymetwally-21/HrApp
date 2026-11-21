@@ -35,6 +35,7 @@ import {
   calculateHaversineDistanceMeters,
   canActOnDeductionApproval,
   canControlSalaryRelease,
+  canResetEmployeePassword,
   canRoleActOnLeaveStep,
   computeTemporaryEndMonth,
   countUnpaidLeaveDaysInMonth,
@@ -44,6 +45,7 @@ import {
   evaluateModelLateness,
   evaluateStartupEndpointResults,
   formatAdcbWpsAsSif,
+  generateTemporaryPassword,
   getDocumentExpiryStatus,
   getDocumentPreviewSource,
   getEffectiveDeductionStatus,
@@ -1449,6 +1451,55 @@ test('Attendance lateness permissions strictly enforce No Self-Approval and Mana
   assert.equal(mmOnLayla.isSelf, false);
   assert.equal(mmOnLayla.canFinalizeExcuse, true);
 });
+
+test('Reset Password RBAC: Main Manager & HR Admin visibility, HR Admin blocked on Main Manager', () => {
+  // Main Manager can reset any profile (including Main Manager, HR Admin, Section Manager, Employee)
+  assert.equal(canResetEmployeePassword(UserRole.MainManager, UserRole.MainManager), true);
+  assert.equal(canResetEmployeePassword(UserRole.MainManager, UserRole.HRAdmin), true);
+  assert.equal(canResetEmployeePassword(UserRole.MainManager, UserRole.SectionManager), true);
+  assert.equal(canResetEmployeePassword(UserRole.MainManager, UserRole.Employee), true);
+
+  // HR Admin can reset non-MainManager profiles, but MUST NOT reset Main Manager
+  assert.equal(canResetEmployeePassword(UserRole.HRAdmin, UserRole.MainManager), false);
+  assert.equal(canResetEmployeePassword(UserRole.HRAdmin, UserRole.HRAdmin), true);
+  assert.equal(canResetEmployeePassword(UserRole.HRAdmin, UserRole.SectionManager), true);
+  assert.equal(canResetEmployeePassword(UserRole.HRAdmin, UserRole.Employee), true);
+  assert.equal(canResetEmployeePassword(UserRole.HRAdmin, UserRole.PRO), true);
+  assert.equal(canResetEmployeePassword(UserRole.HRAdmin, UserRole.Accounting), true);
+
+  // Case-insensitive string role variants work identically
+  assert.equal(canResetEmployeePassword('HR_ADMIN', 'MAIN_MANAGER'), false);
+  assert.equal(canResetEmployeePassword('hr', 'employee'), true);
+  assert.equal(canResetEmployeePassword('MAIN_MANAGER', 'hr_admin'), true);
+
+  // Non-admin roles NEVER see Reset Password
+  assert.equal(canResetEmployeePassword(UserRole.SectionManager, UserRole.Employee), false);
+  assert.equal(canResetEmployeePassword(UserRole.SectionCoManager, UserRole.Employee), false);
+  assert.equal(canResetEmployeePassword(UserRole.PRO, UserRole.Employee), false);
+  assert.equal(canResetEmployeePassword(UserRole.Accounting, UserRole.Employee), false);
+  assert.equal(canResetEmployeePassword(UserRole.Employee, UserRole.Employee), false);
+});
+
+test('generateTemporaryPassword enforces min 6 chars, character diversity, and readability', () => {
+  const pwd = generateTemporaryPassword(10);
+  assert.equal(pwd.length, 10);
+  assert.match(pwd, /[A-Z]/);
+  assert.match(pwd, /[a-z]/);
+  assert.match(pwd, /[2-9]/);
+  assert.match(pwd, /[@#$%&*!]/);
+  // Excludes ambiguous characters
+  assert.doesNotMatch(pwd, /[0Ol1I]/);
+
+  // Enforces minimum length of 6 even if smaller requested
+  const shortReq = generateTemporaryPassword(3);
+  assert.equal(shortReq.length, 6);
+
+  // Generates distinct passwords
+  const pwd2 = generateTemporaryPassword(10);
+  const pwd3 = generateTemporaryPassword(10);
+  assert.ok(pwd !== pwd2 || pwd2 !== pwd3);
+});
+
 
 
 

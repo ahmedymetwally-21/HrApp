@@ -2439,3 +2439,68 @@ export function validateApiBaseUrl(url: string): { valid: boolean; error?: strin
 export function getDefaultStepsForWorkflow(): ApprovalStepRole[] {
   return ['section_manager', 'hr_admin', 'main_manager'];
 }
+
+/**
+ * RBAC check for the Admin/HR Reset Password action:
+ * - Only `main_manager` and `hr_admin` may reset passwords.
+ * - `hr_admin` CANNOT reset a `main_manager` account (button hidden).
+ * - `main_manager` may reset any employee account.
+ */
+export function canResetEmployeePassword(
+  actorRole: UserRole | string,
+  targetRole: UserRole | string
+): boolean {
+  const actor = normalizeUserRole(actorRole);
+  const target = normalizeUserRole(targetRole);
+  if (actor === UserRole.MainManager) {
+    return true;
+  }
+  if (actor === UserRole.HRAdmin) {
+    return target !== UserRole.MainManager;
+  }
+  return false;
+}
+
+/**
+ * Generates a readable, unambiguous random temporary password (min 6 chars, default 10)
+ * containing at least one uppercase letter, lowercase letter, digit, and symbol.
+ */
+export function generateTemporaryPassword(length = 10): string {
+  const targetLen = Math.max(6, Math.min(32, Math.floor(length || 10)));
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '@#$%&*!';
+  const all = upper + lower + digits + symbols;
+
+  const getRandomIndex = (max: number): number => {
+    if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
+      const buf = new Uint32Array(1);
+      globalThis.crypto.getRandomValues(buf);
+      return buf[0] % max;
+    }
+    return Math.floor(Math.random() * max);
+  };
+
+  const chars: string[] = [
+    upper[getRandomIndex(upper.length)],
+    lower[getRandomIndex(lower.length)],
+    digits[getRandomIndex(digits.length)],
+    symbols[getRandomIndex(symbols.length)],
+  ];
+
+  while (chars.length < targetLen) {
+    chars.push(all[getRandomIndex(all.length)]);
+  }
+
+  // Fisher-Yates shuffle
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = getRandomIndex(i + 1);
+    const tmp = chars[i];
+    chars[i] = chars[j];
+    chars[j] = tmp;
+  }
+
+  return chars.join('');
+}
+

@@ -1,15 +1,27 @@
 import {
+  AdcbWpsEdrRow,
+  AdcbWpsExportResult,
+  AdcbWpsScrRow,
   ApprovalStepRecord,
   ApprovalStepRole,
   ApprovalWorkflow,
   AttendanceLog,
   ClockInEvaluation,
   ClockInPolicyMode,
+  Company,
+  DeductionApprovalRequest,
+  DeductionApprovalStatus,
+  DeductionApprovalTrigger,
   DeductionCategory,
+  DeductionTargetBucket,
+  DeductionWorkflowChain,
+  DeductionWorkflowConfig,
   DocumentTypeValue,
   Employee,
   EmployeeDocument,
   EmployeeModel,
+  EmployeePendingBalanceItem,
+  EmployeeType,
   EndpointFailure,
   GeofenceZone,
   GPSReading,
@@ -18,7 +30,10 @@ import {
   LeaveStatus,
   LeaveType,
   MonthlyPayrollRow,
+  PatchMoneyRelease,
+  PatchReleaseAllocation,
   PayrollAdjustment,
+  PayrollEntry,
   ProAssignment,
   PunchSource,
   ResolvedSalaryRelease,
@@ -118,6 +133,10 @@ export type StartupEndpointKey =
   | 'leaves'
   | 'workflows'
   | 'payrollAdjustments'
+  | 'payrollCategories'
+  | 'payrollEntries'
+  | 'deductionApprovals'
+  | 'patchReleases'
   | 'salaryReleases'
   | 'settings';
 
@@ -140,6 +159,10 @@ export const ALL_STARTUP_ENDPOINTS: StartupEndpointSpec[] = [
   { key: 'leaves', path: '/leaves' },
   { key: 'workflows', path: '/approval-workflows' },
   { key: 'payrollAdjustments', path: '/payroll/deductions' },
+  { key: 'payrollCategories', path: '/payroll/categories' },
+  { key: 'payrollEntries', path: '/payroll/entries' },
+  { key: 'deductionApprovals', path: '/payroll/deduction-approvals' },
+  { key: 'patchReleases', path: '/payroll/patch-releases' },
   { key: 'salaryReleases', path: '/payroll/releases' },
   { key: 'settings', path: '/settings' },
 ];
@@ -163,7 +186,12 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'labels',
       'employees',
       'attendance',
+      'leaves',
       'payrollAdjustments',
+      'payrollCategories',
+      'payrollEntries',
+      'deductionApprovals',
+      'patchReleases',
       'salaryReleases',
       'settings',
     ]);
@@ -191,6 +219,10 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'attendanceAudit',
       'leaves',
       'payrollAdjustments',
+      'payrollCategories',
+      'payrollEntries',
+      'deductionApprovals',
+      'patchReleases',
       'salaryReleases',
       'settings',
     ]);
@@ -207,6 +239,10 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'attendance',
       'leaves',
       'payrollAdjustments',
+      'payrollCategories',
+      'payrollEntries',
+      'deductionApprovals',
+      'patchReleases',
       'salaryReleases',
       'settings',
     ]);
@@ -1066,18 +1102,435 @@ export function resolveSalaryRelease(
 }
 
 /**
- * Monthly AED payroll computation combining:
- * - Gross Salary (Base + Housing + Transport + Other)
- * - Automatic unexcused lateness deductions from attendance logs for that month
- * - Manual deductions & bonuses from payroll_deductions
- * - Resolved section/employee salary release schedule & delay status
+ * Month arithmetic helpers (`YYYY-MM`) for Phase 1A temporary durations,
+ * permanent historical preservation, and ADCB WPS period formatting.
+ */
+export function addMonthsToYYYYMM(month: string, deltaMonths: number): string {
+  const [yStr, mStr] = month.split('-');
+  const year = Number(yStr);
+  const mon = Number(mStr);
+  if (!Number.isFinite(year) || !Number.isFinite(mon)) return month;
+  const total = year * 12 + (mon - 1) + deltaMonths;
+  const nextYear = Math.floor(total / 12);
+  const nextMonth = ((total % 12) + 12) % 12;
+  return `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}`;
+}
+
+export function computeTemporaryEndMonth(effectiveFrom: string, durationMonths: number): string {
+  const count = Math.max(1, Math.floor(durationMonths || 1));
+  return addMonthsToYYYYMM(effectiveFrom, count - 1);
+}
+
+export function getMonthPeriodMeta(month: string): {
+  periodStart: string;
+  periodEnd: string;
+  daysInPeriod: number;
+  salaryMonthCode: string; // MMYYYY
+} {
+  const [yStr, mStr] = month.split('-');
+  const year = Number(yStr) || new Date().getFullYear();
+  const mon = Number(mStr) || 1;
+  const daysInPeriod = new Date(year, mon, 0).getDate();
+  const mm = String(mon).padStart(2, '0');
+  const dd = String(daysInPeriod).padStart(2, '0');
+  return {
+    periodStart: `${year}-${mm}-01`,
+    periodEnd: `${year}-${mm}-${dd}`,
+    daysInPeriod,
+    salaryMonthCode: `${mm}${year}`,
+  };
+}
+
+export function isPayrollEntryActiveInMonth(entry: PayrollEntry, month: string): boolean {
+  if (!entry.effectiveFrom || !month) return false;
+  if (month < entry.effectiveFrom) return false;
+  if (entry.effectiveTo && month > entry.effectiveTo) return false;
+  return true;
+}
+
+/**
+ * Historical Preservation Rule for Permanent Additional Earnings:
+ * - Editing a permanent earning effective from `effectiveFromMonth` closes the existing
+ *   record at `effectiveFromMonth - 1` (preserving all historical months strictly intact)
+ *   and inserts a new permanent record starting at `effectiveFromMonth` with the new values.
+ * - If `effectiveFromMonth <= existing.effectiveFrom` (no historical months paid yet),
+ *   updates the record in place.
+ */
+export function editPermanentPayrollEntry(params: {
+  entries: PayrollEntry[];
+  entryId: string;
+  effectiveFromMonth: string;
+  patch: {
+    categoryId?: string;
+    categoryName?: string;
+    amountAED?: number;
+    reason?: string;
+  };
+  newEntryId: string;
+  nowIso?: string;
+}): PayrollEntry[] {
+  const { entries, entryId, effectiveFromMonth, patch, newEntryId, nowIso = new Date().toISOString() } = params;
+  const existing = entries.find((e) => e.id === entryId);
+  if (!existing || !existing.isPermanent) return entries;
+
+  if (effectiveFromMonth <= existing.effectiveFrom) {
+    return entries.map((e) =>
+      e.id === entryId
+        ? {
+            ...e,
+            categoryId: patch.categoryId ?? e.categoryId,
+            categoryName: patch.categoryName ?? e.categoryName,
+            amountAED: patch.amountAED !== undefined ? patch.amountAED : e.amountAED,
+            reason: patch.reason !== undefined ? patch.reason : e.reason,
+            effectiveFrom: effectiveFromMonth,
+            effectiveTo: null,
+            updatedAt: nowIso,
+          }
+        : e
+    );
+  }
+
+  const closedEndMonth = addMonthsToYYYYMM(effectiveFromMonth, -1);
+  const replacement: PayrollEntry = {
+    ...existing,
+    id: newEntryId,
+    categoryId: patch.categoryId ?? existing.categoryId,
+    categoryName: patch.categoryName ?? existing.categoryName,
+    amountAED: patch.amountAED !== undefined ? patch.amountAED : existing.amountAED,
+    reason: patch.reason !== undefined ? patch.reason : existing.reason,
+    isPermanent: true,
+    effectiveFrom: effectiveFromMonth,
+    effectiveTo: null,
+    durationMonths: null,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  return [
+    replacement,
+    ...entries.map((e) =>
+      e.id === entryId
+        ? {
+            ...e,
+            effectiveTo: closedEndMonth,
+            updatedAt: nowIso,
+          }
+        : e
+    ),
+  ];
+}
+
+/**
+ * Stops a permanent additional earning starting from `stopFromMonth` inclusive,
+ * preserving all historical months before `stopFromMonth` intact.
+ */
+export function stopPermanentPayrollEntry(params: {
+  entries: PayrollEntry[];
+  entryId: string;
+  stopFromMonth: string;
+  nowIso?: string;
+}): PayrollEntry[] {
+  const { entries, entryId, stopFromMonth, nowIso = new Date().toISOString() } = params;
+  const existing = entries.find((e) => e.id === entryId);
+  if (!existing || !existing.isPermanent) return entries;
+
+  const endMonth = addMonthsToYYYYMM(stopFromMonth, -1);
+  return entries.map((e) =>
+    e.id === entryId
+      ? {
+          ...e,
+          effectiveTo: endMonth,
+          updatedAt: nowIso,
+        }
+      : e
+  );
+}
+
+/**
+ * Counts approved Unpaid Leave calendar days falling within the target `YYYY-MM` month.
+ */
+export function countUnpaidLeaveDaysInMonth(
+  employeeId: string,
+  month: string,
+  leaves: LeaveRequest[] = []
+): number {
+  const { periodStart, periodEnd } = getMonthPeriodMeta(month);
+  const [msy, msm, msd] = periodStart.split('-').map(Number);
+  const [mey, mem, med] = periodEnd.split('-').map(Number);
+  const monthStartMs = new Date(msy, msm - 1, msd).getTime();
+  const monthEndMs = new Date(mey, mem - 1, med).getTime();
+
+  let total = 0;
+  for (const lv of leaves) {
+    if (
+      lv.employeeId !== employeeId ||
+      lv.status !== LeaveStatus.Approved ||
+      lv.type !== LeaveType.Unpaid
+    ) {
+      continue;
+    }
+    const [lsy, lsm, lsd] = lv.startDate.split('-').map(Number);
+    const [ley, lem, led] = lv.endDate.split('-').map(Number);
+    if (!lsy || !ley) continue;
+    const lvStartMs = new Date(lsy, lsm - 1, lsd).getTime();
+    const lvEndMs = new Date(ley, lem - 1, led).getTime();
+
+    const overlapStart = Math.max(monthStartMs, lvStartMs);
+    const overlapEnd = Math.min(monthEndMs, lvEndMs);
+    if (overlapEnd >= overlapStart) {
+      total += Math.round((overlapEnd - overlapStart) / 86_400_000) + 1;
+    }
+  }
+  return total;
+}
+
+export const DEFAULT_DEDUCTION_WORKFLOW_CONFIG: DeductionWorkflowConfig = {
+  office_employee: 'manager_then_hr',
+  driver: 'manager_then_hr',
+  management: 'main_manager_only',
+  autoEscalationHours: 48,
+};
+
+export function inferDefaultEmployeeType(employee: {
+  role?: UserRole;
+  sectionId?: string;
+  modelId?: string;
+}): EmployeeType {
+  const role = normalizeUserRole(employee.role);
+  if (role === UserRole.MainManager || employee.sectionId === 'sec-mgmt') {
+    return 'management';
+  }
+  if (employee.sectionId === 'sec-drivers' || employee.modelId === 'model-drivers') {
+    return 'driver';
+  }
+  return 'office_employee';
+}
+
+export function resolveEmployeeDeductionWorkflow(
+  employee: Pick<Employee, 'employeeType' | 'deductionWorkflowOverride'>,
+  config: DeductionWorkflowConfig = DEFAULT_DEDUCTION_WORKFLOW_CONFIG
+): DeductionWorkflowChain {
+  if (
+    employee.deductionWorkflowOverride &&
+    employee.deductionWorkflowOverride !== 'inherit'
+  ) {
+    return employee.deductionWorkflowOverride;
+  }
+  const type = employee.employeeType || 'office_employee';
+  return config[type] ?? 'manager_then_hr';
+}
+
+/**
+ * Evaluates auto-escalation dynamically: if a deduction request is still
+ * `pending_manager` past its `escalationDeadline`, it resolves to `escalated_to_hr`.
+ */
+export function getEffectiveDeductionStatus(
+  request: Pick<DeductionApprovalRequest, 'status' | 'escalationDeadline'>,
+  now: Date = new Date()
+): DeductionApprovalStatus {
+  if (request.status === 'pending_manager' && request.escalationDeadline) {
+    const deadlineMs = new Date(request.escalationDeadline).getTime();
+    if (!Number.isNaN(deadlineMs) && now.getTime() >= deadlineMs) {
+      return 'escalated_to_hr';
+    }
+  }
+  return request.status;
+}
+
+export function buildNewDeductionApprovalRequest(params: {
+  id: string;
+  employee: Employee;
+  month: string;
+  triggerType: DeductionApprovalTrigger;
+  date: string;
+  amountAED: number;
+  targetBucket: DeductionTargetBucket;
+  reason: string;
+  createdBy: string;
+  createdByRole: UserRole;
+  workflowConfig: DeductionWorkflowConfig;
+  now?: Date;
+}): DeductionApprovalRequest {
+  const now = params.now ?? new Date();
+  const chain = resolveEmployeeDeductionWorkflow(params.employee, params.workflowConfig);
+  const timeoutHours = Math.max(1, Number(params.workflowConfig.autoEscalationHours) || 48);
+  const escalationDeadline = new Date(now.getTime() + timeoutHours * 3_600_000).toISOString();
+
+  let initialStatus: DeductionApprovalStatus = 'pending_manager';
+  if (chain === 'hr_only') initialStatus = 'pending_hr_approval';
+  if (chain === 'main_manager_only') initialStatus = 'pending_main_manager';
+
+  return {
+    id: params.id,
+    employeeId: params.employee.id,
+    companyId: params.employee.primaryCompanyId,
+    sectionId: params.employee.sectionId,
+    month: params.month,
+    triggerType: params.triggerType,
+    date: params.date,
+    amountAED: Number(Number(params.amountAED).toFixed(2)),
+    targetBucket: params.targetBucket,
+    reason: params.reason.trim(),
+    workflowChain: chain,
+    status: initialStatus,
+    escalationDeadline,
+    createdBy: params.createdBy,
+    createdByRole: params.createdByRole,
+    createdAt: now.toISOString(),
+  };
+}
+
+export function canActOnDeductionApproval(params: {
+  request: DeductionApprovalRequest;
+  actorRole: UserRole;
+  actorManagedSectionIds: string[];
+  now?: Date;
+}): { canManagerAct: boolean; canHrAct: boolean; effectiveStatus: DeductionApprovalStatus } {
+  const effectiveStatus = getEffectiveDeductionStatus(params.request, params.now);
+  const role = normalizeUserRole(params.actorRole);
+
+  const managesSection =
+    role === UserRole.MainManager ||
+    (role === UserRole.SectionManager &&
+      params.actorManagedSectionIds.includes(params.request.sectionId));
+
+  const canManagerAct = effectiveStatus === 'pending_manager' && managesSection;
+
+  const canHrAct =
+    (effectiveStatus === 'pending_hr_approval' ||
+      effectiveStatus === 'pending_hr_decision' ||
+      effectiveStatus === 'escalated_to_hr') &&
+    (role === UserRole.HRAdmin || role === UserRole.MainManager);
+
+  const canMainManagerAct =
+    effectiveStatus === 'pending_main_manager' && role === UserRole.MainManager;
+
+  return {
+    canManagerAct,
+    canHrAct: canHrAct || canMainManagerAct,
+    effectiveStatus,
+  };
+}
+
+export function applyManagerDeductionDecision(params: {
+  request: DeductionApprovalRequest;
+  decision: 'approved' | 'rejected';
+  actorName: string;
+  note: string;
+  now?: Date;
+}): DeductionApprovalRequest {
+  const now = params.now ?? new Date();
+  const nextStatus: DeductionApprovalStatus =
+    params.decision === 'approved' ? 'pending_hr_approval' : 'pending_hr_decision';
+
+  return {
+    ...params.request,
+    status: nextStatus,
+    managerActorName: params.actorName,
+    managerDecision: params.decision,
+    managerNote: params.note.trim() || undefined,
+    managerDecidedAt: now.toISOString(),
+  };
+}
+
+export function applyHrDeductionDecision(params: {
+  request: DeductionApprovalRequest;
+  decision: 'approved' | 'waived';
+  actorName: string;
+  note: string;
+  now?: Date;
+}): DeductionApprovalRequest {
+  const now = params.now ?? new Date();
+  const nextStatus: DeductionApprovalStatus =
+    params.decision === 'approved' ? 'approved' : 'waived';
+
+  return {
+    ...params.request,
+    status: nextStatus,
+    hrActorName: params.actorName,
+    hrDecision: params.decision,
+    hrNote: params.note.trim() || undefined,
+    hrDecidedAt: now.toISOString(),
+  };
+}
+
+/**
+ * Validates that split-bucket patch release allocations are positive and sum exactly to totalAmountAED.
+ */
+export function validatePatchReleaseAllocations(
+  totalAmountAED: number,
+  allocations: PatchReleaseAllocation[]
+): { valid: boolean; allocatedSum: number; remaining: number; error?: string } {
+  const target = Number(Number(totalAmountAED).toFixed(2));
+  if (!Number.isFinite(target) || target <= 0) {
+    return {
+      valid: false,
+      allocatedSum: 0,
+      remaining: 0,
+      error: 'Release amount must be greater than AED 0.',
+    };
+  }
+  const activeAllocs = allocations.filter((a) => Number(a.amountAED) > 0);
+  if (activeAllocs.length === 0) {
+    return {
+      valid: false,
+      allocatedSum: 0,
+      remaining: target,
+      error: 'Allocate the release amount across at least one pending balance bucket.',
+    };
+  }
+  for (const a of activeAllocs) {
+    if (a.amountAED < 0 || !Number.isFinite(a.amountAED)) {
+      return {
+        valid: false,
+        allocatedSum: 0,
+        remaining: target,
+        error: 'Allocation amounts must be valid positive numbers.',
+      };
+    }
+  }
+  const allocatedSum = Number(
+    activeAllocs.reduce((sum, a) => sum + Number(a.amountAED), 0).toFixed(2)
+  );
+  const remaining = Number((target - allocatedSum).toFixed(2));
+  if (Math.abs(remaining) > 0.009) {
+    return {
+      valid: false,
+      allocatedSum,
+      remaining,
+      error:
+        remaining > 0
+          ? `AED ${remaining.toFixed(2)} still needs to be allocated across buckets.`
+          : `Allocated total exceeds release amount by AED ${Math.abs(remaining).toFixed(2)}.`,
+    };
+  }
+  return { valid: true, allocatedSum, remaining: 0 };
+}
+
+/**
+ * 3-Bucket Monthly AED Payroll Computation (Phase 1A + Phase 1B):
+ * 1) Main Salary (Basic + Housing + Transport + Other Allowances — untouched)
+ * 2) Additional Earning (In Payroll) — released via WPS (added to Variable Income)
+ * 3) Additional Earning (Off Cycle) — released outside WPS (NEVER included in WPS exports)
+ *
+ * Phase 1B Rules:
+ * - Only finalized `status === 'approved'` DeductionApprovalRequests apply to payroll.
+ *   Pending (`pending_manager`, `pending_hr_approval`, `pending_hr_decision`, `escalated_to_hr`)
+ *   and `waived` requests NEVER reduce payroll.
+ * - Any Patch Money Release allocated to `upcoming_main_salary` or `upcoming_additional_in_payroll`
+ *   for this month is automatically subtracted from `wpsVariableIncome` so the employee is never paid twice
+ *   while keeping `wpsFixedIncome` (Basic Salary) intact!
  */
 export function calculateEmployeePayroll(
   employee: Employee,
   month: string,
   adjustments: PayrollAdjustment[],
   attendanceLogs: AttendanceLog[] = [],
-  salaryReleases: SalaryReleaseSchedule[] = []
+  salaryReleases: SalaryReleaseSchedule[] = [],
+  payrollEntries: PayrollEntry[] = [],
+  leaves: LeaveRequest[] = [],
+  deductionApprovals: DeductionApprovalRequest[] = [],
+  patchReleases: PatchMoneyRelease[] = []
 ): MonthlyPayrollRow {
   const { baseSalary, housingAllowance, transportAllowance, otherAllowance } = employee.salary;
   const totalAllowances = housingAllowance + transportAllowance + otherAllowance;
@@ -1111,6 +1564,7 @@ export function calculateEmployeePayroll(
       amountAED: log.latenessPenaltyAED,
       date: log.date,
       reason: `Unexcused late arrival (${log.lateMinutes}m late at ${log.zoneName})`,
+      targetBucket: 'main_salary',
       source: 'auto_lateness',
       attendanceLogId: log.id,
       createdBy: 'Employee Model Policy',
@@ -1122,11 +1576,100 @@ export function calculateEmployeePayroll(
   const bonuses = manualItems.filter((a) => a.kind === 'bonus');
   const deductions = [...autoLatenessItems, ...manualDeductionsList];
 
+  // Phase 1A active permanent & temporary entries for this month
+  const activeEntries = payrollEntries.filter(
+    (entry) => entry.employeeId === employee.id && isPayrollEntryActiveInMonth(entry, month)
+  );
+  const inPayrollEarningEntries = activeEntries.filter((e) => e.type === 'earning_in_payroll');
+  const offCycleEarningEntries = activeEntries.filter((e) => e.type === 'earning_off_cycle');
+  const inPayrollDeductionEntries = activeEntries.filter((e) => e.type === 'deduction_in_payroll');
+  const offCycleDeductionEntries = activeEntries.filter((e) => e.type === 'deduction_off_cycle');
+
+  // Phase 1B finalized approved off-day / latency deduction requests (ONLY status === 'approved')
+  const approvedDeductionRequests = deductionApprovals.filter(
+    (req) =>
+      req.employeeId === employee.id &&
+      req.month === month &&
+      req.status === 'approved'
+  );
+  const approvedInPayrollWorkflowDeductions = approvedDeductionRequests
+    .filter((req) => req.targetBucket !== 'additional_off_cycle')
+    .reduce((sum, req) => sum + req.amountAED, 0);
+  const approvedOffCycleWorkflowDeductions = approvedDeductionRequests
+    .filter((req) => req.targetBucket === 'additional_off_cycle')
+    .reduce((sum, req) => sum + req.amountAED, 0);
+  const approvedWorkflowDeductions = Number(
+    (approvedInPayrollWorkflowDeductions + approvedOffCycleWorkflowDeductions).toFixed(2)
+  );
+
+  // Phase 1B patch money releases impacting this month
+  const appliedPatchReleases = patchReleases.filter(
+    (rel) =>
+      rel.employeeId === employee.id && rel.allocations.some((a) => a.month === month && a.amountAED > 0)
+  );
+  let earlyWpsReleasedAED = 0;
+  let earlyOffCycleReleasedAED = 0;
+  for (const rel of appliedPatchReleases) {
+    for (const alloc of rel.allocations) {
+      if (alloc.month !== month || alloc.amountAED <= 0) continue;
+      if (
+        alloc.bucket === 'upcoming_main_salary' ||
+        alloc.bucket === 'upcoming_additional_in_payroll'
+      ) {
+        earlyWpsReleasedAED += alloc.amountAED;
+      } else if (alloc.bucket === 'off_cycle' || alloc.bucket === 'upcoming_off_cycle') {
+        earlyOffCycleReleasedAED += alloc.amountAED;
+      }
+    }
+  }
+  earlyWpsReleasedAED = Number(earlyWpsReleasedAED.toFixed(2));
+  earlyOffCycleReleasedAED = Number(earlyOffCycleReleasedAED.toFixed(2));
+
+  const legacyBonuses = bonuses.reduce((sum, b) => sum + b.amountAED, 0);
+  const inPayrollEntriesTotal = inPayrollEarningEntries.reduce((sum, e) => sum + e.amountAED, 0);
+  const offCycleEarnings = offCycleEarningEntries.reduce((sum, e) => sum + e.amountAED, 0);
+
+  const inPayrollEarnings = legacyBonuses + inPayrollEntriesTotal;
+  const totalBonuses = inPayrollEarnings + offCycleEarnings;
+
   const autoLatenessDeductions = autoLatenessItems.reduce((sum, d) => sum + d.amountAED, 0);
   const manualDeductions = manualDeductionsList.reduce((sum, d) => sum + d.amountAED, 0);
-  const totalDeductions = autoLatenessDeductions + manualDeductions;
-  const totalBonuses = bonuses.reduce((sum, b) => sum + b.amountAED, 0);
-  const netSalary = Math.max(0, grossSalary + totalBonuses - totalDeductions);
+  const entryInPayrollDeductions = inPayrollDeductionEntries.reduce(
+    (sum, d) => sum + d.amountAED,
+    0
+  );
+  const entryOffCycleDeductions = offCycleDeductionEntries.reduce((sum, d) => sum + d.amountAED, 0);
+
+  const inPayrollDeductions = Number(
+    (
+      autoLatenessDeductions +
+      manualDeductions +
+      entryInPayrollDeductions +
+      approvedInPayrollWorkflowDeductions
+    ).toFixed(2)
+  );
+  const offCycleDeductions = Number(
+    (entryOffCycleDeductions + approvedOffCycleWorkflowDeductions).toFixed(2)
+  );
+  const totalDeductions = Number((inPayrollDeductions + offCycleDeductions).toFixed(2));
+
+  // WPS Rule: Basic Salary (Fixed Income) stays intact; deductions & early WPS patch releases reduce Variable Income
+  const wpsFixedIncome = Number(baseSalary.toFixed(2));
+  const wpsVariableIncome = Number(
+    Math.max(0, totalAllowances + inPayrollEarnings - inPayrollDeductions - earlyWpsReleasedAED).toFixed(2)
+  );
+  const wpsTotalPayout = Number((wpsFixedIncome + wpsVariableIncome).toFixed(2));
+  const offCycleNetPayout = Number(Math.max(0, offCycleEarnings - offCycleDeductions).toFixed(2));
+  const remainingOffCyclePayout = Number(
+    Math.max(0, offCycleNetPayout - earlyOffCycleReleasedAED).toFixed(2)
+  );
+  const netSalary = Number(
+    Math.max(0, grossSalary + inPayrollEarnings + offCycleEarnings - totalDeductions).toFixed(2)
+  );
+  const remainingNetPayable = Number(
+    Math.max(0, netSalary - earlyWpsReleasedAED - earlyOffCycleReleasedAED).toFixed(2)
+  );
+  const unpaidLeaveDays = countUnpaidLeaveDaysInMonth(employee.id, month, leaves);
   const release = resolveSalaryRelease(employee, month, salaryReleases);
 
   return {
@@ -1138,6 +1681,20 @@ export function calculateEmployeePayroll(
     otherAllowance,
     totalAllowances,
     grossSalary,
+    inPayrollEarnings,
+    offCycleEarnings,
+    inPayrollDeductions,
+    offCycleDeductions,
+    wpsFixedIncome,
+    wpsVariableIncome,
+    wpsTotalPayout,
+    offCycleNetPayout,
+    approvedWorkflowDeductions,
+    earlyWpsReleasedAED,
+    earlyOffCycleReleasedAED,
+    remainingOffCyclePayout,
+    remainingNetPayable,
+    unpaidLeaveDays,
     totalBonuses,
     autoLatenessDeductions,
     manualDeductions,
@@ -1145,8 +1702,292 @@ export function calculateEmployeePayroll(
     netSalary,
     deductions,
     bonuses,
+    inPayrollEarningEntries,
+    offCycleEarningEntries,
+    inPayrollDeductionEntries,
+    offCycleDeductionEntries,
+    approvedDeductionRequests,
+    appliedPatchReleases,
     release,
   };
+}
+
+/**
+ * Computes an employee's pending unpaid balances across recent months & buckets
+ * for the "Release Money / Patch" modal and Employee Profile Salary tab.
+ */
+export function calculateEmployeePendingBalances(params: {
+  employee: Employee;
+  currentMonth: string; // YYYY-MM
+  adjustments: PayrollAdjustment[];
+  attendanceLogs?: AttendanceLog[];
+  salaryReleases?: SalaryReleaseSchedule[];
+  payrollEntries?: PayrollEntry[];
+  leaves?: LeaveRequest[];
+  deductionApprovals?: DeductionApprovalRequest[];
+  patchReleases?: PatchMoneyRelease[];
+}): EmployeePendingBalanceItem[] {
+  const {
+    employee,
+    currentMonth,
+    adjustments,
+    attendanceLogs = [],
+    salaryReleases = [],
+    payrollEntries = [],
+    leaves = [],
+    deductionApprovals = [],
+    patchReleases = [],
+  } = params;
+
+  if (!isPayrollEligible(employee)) return [];
+
+  const prevMonth = addMonthsToYYYYMM(currentMonth, -1);
+  const items: EmployeePendingBalanceItem[] = [];
+
+  const releasedByMonthBucket = (m: string, bucket: PatchReleaseAllocation['bucket']): number =>
+    Number(
+      patchReleases
+        .filter((r) => r.employeeId === employee.id)
+        .flatMap((r) => r.allocations)
+        .filter((a) => a.month === m && a.bucket === bucket)
+        .reduce((sum, a) => sum + a.amountAED, 0)
+        .toFixed(2)
+    );
+
+  // 1) Previous month unpaid Off-Cycle balance (e.g. Oct Off-Cycle)
+  const prevRow = calculateEmployeePayroll(
+    employee,
+    prevMonth,
+    adjustments,
+    attendanceLogs,
+    salaryReleases,
+    payrollEntries,
+    leaves,
+    deductionApprovals,
+    patchReleases
+  );
+  const prevOffCycleReleased = Number(
+    (
+      releasedByMonthBucket(prevMonth, 'off_cycle') +
+      releasedByMonthBucket(prevMonth, 'upcoming_off_cycle')
+    ).toFixed(2)
+  );
+  const prevOffCycleAvail = Number(Math.max(0, prevRow.offCycleNetPayout - prevOffCycleReleased).toFixed(2));
+  if (prevRow.offCycleNetPayout > 0 && prevOffCycleAvail > 0) {
+    items.push({
+      key: `${prevMonth}:off_cycle`,
+      month: prevMonth,
+      bucket: 'off_cycle',
+      earnedOrScheduledAED: prevRow.offCycleNetPayout,
+      alreadyReleasedAED: prevOffCycleReleased,
+      availableAED: prevOffCycleAvail,
+      impactsWps: false,
+    });
+  }
+
+  // 2) Current month balances
+  const currRow = calculateEmployeePayroll(
+    employee,
+    currentMonth,
+    adjustments,
+    attendanceLogs,
+    salaryReleases,
+    payrollEntries,
+    leaves,
+    deductionApprovals,
+    patchReleases
+  );
+
+  // Current month Off-Cycle
+  const currOffCycleReleased = Number(
+    (
+      releasedByMonthBucket(currentMonth, 'off_cycle') +
+      releasedByMonthBucket(currentMonth, 'upcoming_off_cycle')
+    ).toFixed(2)
+  );
+  const currOffCycleAvail = Number(Math.max(0, currRow.offCycleNetPayout - currOffCycleReleased).toFixed(2));
+  if (currRow.offCycleNetPayout > 0 && currOffCycleAvail > 0) {
+    items.push({
+      key: `${currentMonth}:off_cycle`,
+      month: currentMonth,
+      bucket: 'off_cycle',
+      earnedOrScheduledAED: currRow.offCycleNetPayout,
+      alreadyReleasedAED: currOffCycleReleased,
+      availableAED: currOffCycleAvail,
+      impactsWps: false,
+    });
+  }
+
+  // Current month Upcoming Additional Earning (In Payroll) — impacts WPS Variable Income
+  const currInPayrollReleased = releasedByMonthBucket(currentMonth, 'upcoming_additional_in_payroll');
+  const currInPayrollAvail = Number(
+    Math.max(0, currRow.inPayrollEarnings - currInPayrollReleased).toFixed(2)
+  );
+  if (currRow.inPayrollEarnings > 0 && currInPayrollAvail > 0) {
+    items.push({
+      key: `${currentMonth}:upcoming_additional_in_payroll`,
+      month: currentMonth,
+      bucket: 'upcoming_additional_in_payroll',
+      earnedOrScheduledAED: currRow.inPayrollEarnings,
+      alreadyReleasedAED: currInPayrollReleased,
+      availableAED: currInPayrollAvail,
+      impactsWps: true,
+    });
+  }
+
+  // Current month Upcoming Main Salary (allowances/main salary advanceable headroom — impacts WPS Variable Income)
+  const currMainReleased = releasedByMonthBucket(currentMonth, 'upcoming_main_salary');
+  const currMainScheduled = currRow.grossSalary;
+  const currMainAvail = Number(Math.max(0, currMainScheduled - currMainReleased).toFixed(2));
+  if (currMainScheduled > 0 && currMainAvail > 0) {
+    items.push({
+      key: `${currentMonth}:upcoming_main_salary`,
+      month: currentMonth,
+      bucket: 'upcoming_main_salary',
+      earnedOrScheduledAED: currMainScheduled,
+      alreadyReleasedAED: currMainReleased,
+      availableAED: currMainAvail,
+      impactsWps: true,
+    });
+  }
+
+  return items;
+}
+
+/**
+ * Multi-Company ADCB WPS Export Builder.
+ * Produces structured EDR rows, SCR summary row, and ordered `aoaRows` for SheetJS (.xlsx),
+ * cleanly decoupled so `.SIF` / `.CSV` formatters can reuse the exact same data model.
+ */
+export function buildAdcbWpsExport(params: {
+  company: Company;
+  month: string;
+  payrollRows: MonthlyPayrollRow[];
+  fileDate?: Date;
+}): AdcbWpsExportResult {
+  const { company, month, payrollRows, fileDate = new Date() } = params;
+  const period = getMonthPeriodMeta(month);
+  const warnings: string[] = [];
+
+  if (!company.molEstablishmentId?.trim()) {
+    warnings.push(`${company.name}: Missing MOL Establishment ID in Company Settings.`);
+  }
+  if (!company.wpsRoutingCode?.trim()) {
+    warnings.push(`${company.name}: Missing WPS Routing Code in Company Settings.`);
+  }
+  if (!company.companyIban?.trim()) {
+    warnings.push(`${company.name}: Missing Company IBAN in Company Settings.`);
+  }
+
+  const eligibleCompanyRows = payrollRows.filter(
+    (r) =>
+      r.employee.primaryCompanyId === company.id &&
+      r.employee.active &&
+      isPayrollEligible(r.employee)
+  );
+
+  const totalEarlyWpsOffsetAed = Number(
+    eligibleCompanyRows.reduce((sum, r) => sum + (r.earlyWpsReleasedAED ?? 0), 0).toFixed(2)
+  );
+
+  const edrRows: AdcbWpsEdrRow[] = eligibleCompanyRows.map((row) => {
+    const mohrePersonId = (row.employee.mohrePersonId ?? '').trim();
+    const bankRoutingCode = (row.employee.bankDetails?.bankRoutingCode ?? '').trim();
+    const iban = (row.employee.bankDetails?.iban ?? '').trim();
+
+    if (!mohrePersonId) {
+      warnings.push(`${row.employee.fullName} (${row.employee.employeeCode}): Missing MOHRE Person ID.`);
+    }
+    if (!bankRoutingCode) {
+      warnings.push(`${row.employee.fullName} (${row.employee.employeeCode}): Missing Bank Routing Code.`);
+    }
+    if (!iban) {
+      warnings.push(`${row.employee.fullName} (${row.employee.employeeCode}): Missing IBAN.`);
+    }
+
+    return {
+      recordType: 'EDR',
+      mohrePersonId,
+      bankRoutingCode,
+      iban,
+      periodStart: period.periodStart,
+      periodEnd: period.periodEnd,
+      daysInPeriod: period.daysInPeriod,
+      fixedIncome: Number(row.wpsFixedIncome.toFixed(2)),
+      variableIncome: Number(row.wpsVariableIncome.toFixed(2)),
+      unpaidLeaveDays: row.unpaidLeaveDays,
+      employeeFullName: row.employee.fullName,
+    };
+  });
+
+  const totalPayoutAed = Number(
+    edrRows.reduce((sum, r) => sum + r.fixedIncome + r.variableIncome, 0).toFixed(2)
+  );
+
+  const fYear = fileDate.getFullYear();
+  const fMonth = String(fileDate.getMonth() + 1).padStart(2, '0');
+  const fDay = String(fileDate.getDate()).padStart(2, '0');
+  const fHour = String(fileDate.getHours()).padStart(2, '0');
+  const fMin = String(fileDate.getMinutes()).padStart(2, '0');
+
+  const scrRow: AdcbWpsScrRow = {
+    recordType: 'SCR',
+    molEstablishmentId: (company.molEstablishmentId ?? '').trim(),
+    companyWpsRoutingCode: (company.wpsRoutingCode ?? '').trim(),
+    fileDate: `${fYear}-${fMonth}-${fDay}`,
+    fileTime: `${fHour}${fMin}`,
+    salaryMonth: period.salaryMonthCode,
+    totalEdrCount: edrRows.length,
+    totalPayoutAed,
+    currency: 'AED',
+    companyIban: (company.companyIban ?? '').trim(),
+  };
+
+  const aoaRows: (string | number)[][] = [
+    ...edrRows.map((r) => [
+      r.recordType,
+      r.mohrePersonId,
+      r.bankRoutingCode,
+      r.iban,
+      r.periodStart,
+      r.periodEnd,
+      r.daysInPeriod,
+      r.fixedIncome,
+      r.variableIncome,
+      r.unpaidLeaveDays,
+      r.employeeFullName,
+    ]),
+    [
+      scrRow.recordType,
+      scrRow.molEstablishmentId,
+      scrRow.companyWpsRoutingCode,
+      scrRow.fileDate,
+      scrRow.fileTime,
+      scrRow.salaryMonth,
+      scrRow.totalEdrCount,
+      scrRow.totalPayoutAed,
+      scrRow.currency,
+      scrRow.companyIban,
+    ],
+  ];
+
+  return {
+    company,
+    month,
+    salaryMonthCode: period.salaryMonthCode,
+    edrRows,
+    scrRow,
+    aoaRows,
+    warnings,
+    totalEarlyWpsOffsetAed,
+  };
+}
+
+/**
+ * Pluggable `.SIF` / `.CSV` formatter for ADCB WPS (ready for future export format options).
+ */
+export function formatAdcbWpsAsSif(result: AdcbWpsExportResult): string {
+  return result.aoaRows.map((row) => row.join(',')).join('\n');
 }
 
 export function formatAED(amount: number): string {
@@ -1247,11 +2088,19 @@ export function buildPayrollExportRecords(
         : r.release.releaseDate,
     'Delay Reason': r.release.delayReason ?? '',
     'Bank Name': r.employee.bankDetails?.bankName ?? '',
+    'Bank Routing Code': r.employee.bankDetails?.bankRoutingCode ?? '',
     'Account Number': r.employee.bankDetails?.accountNumber ?? '',
     IBAN: r.employee.bankDetails?.iban ?? '',
+    'MOHRE Person ID': r.employee.mohrePersonId ?? '',
     'Base Salary (AED)': Number(r.baseSalary.toFixed(2)),
     'Allowances (AED)': Number(r.totalAllowances.toFixed(2)),
     'Gross (AED)': Number(r.grossSalary.toFixed(2)),
+    'In-Payroll Earnings (AED)': Number(r.inPayrollEarnings.toFixed(2)),
+    'Off-Cycle Earnings (AED)': Number(r.offCycleEarnings.toFixed(2)),
+    'In-Payroll Deductions (AED)': Number(r.inPayrollDeductions.toFixed(2)),
+    'Off-Cycle Deductions (AED)': Number(r.offCycleDeductions.toFixed(2)),
+    'WPS Payout (AED)': Number(r.wpsTotalPayout.toFixed(2)),
+    'Off-Cycle Net (AED)': Number(r.offCycleNetPayout.toFixed(2)),
     'Bonuses (AED)': Number(r.totalBonuses.toFixed(2)),
     'Auto Lateness Deductions (AED)': Number(r.autoLatenessDeductions.toFixed(2)),
     'Manual Deductions (AED)': Number(r.manualDeductions.toFixed(2)),

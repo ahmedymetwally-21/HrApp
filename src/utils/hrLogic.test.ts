@@ -3,29 +3,48 @@ import assert from 'node:assert/strict';
 import {
   BuiltInDocumentType,
   ClockInPolicyMode,
+  Company,
+  DeductionApprovalRequest,
   DeductionCategory,
+  DeductionWorkflowConfig,
   Employee,
   EmployeeDocument,
   EmployeeModel,
   GeofenceZone,
+  LeaveRequest,
   LeaveStatus,
+  LeaveType,
+  PatchMoneyRelease,
+  PayrollEntry,
   ProAssignment,
   SalaryReleaseSchedule,
   UserRole,
 } from '../types/hr';
 import {
+  addMonthsToYYYYMM,
   advanceLeaveApproval,
+  applyHrDeductionDecision,
+  applyManagerDeductionDecision,
+  buildAdcbWpsExport,
   buildLeaveApprovalChain,
+  buildNewDeductionApprovalRequest,
   buildPayrollExportRecords,
   calculateEmployeePayroll,
+  calculateEmployeePendingBalances,
   calculateHaversineDistanceMeters,
+  canActOnDeductionApproval,
   canControlSalaryRelease,
   canRoleActOnLeaveStep,
+  computeTemporaryEndMonth,
+  countUnpaidLeaveDaysInMonth,
+  editPermanentPayrollEntry,
   evaluateClockInEligibility,
   evaluateModelLateness,
   evaluateStartupEndpointResults,
+  formatAdcbWpsAsSif,
   getDocumentExpiryStatus,
   getDocumentPreviewSource,
+  getEffectiveDeductionStatus,
   getMissingModelDocuments,
   getScopedEmployees,
   getStartupEndpointsForRole,
@@ -33,8 +52,12 @@ import {
   isAttendanceTracked,
   isMainManagerRole,
   isPayrollEligible,
+  isPayrollEntryActiveInMonth,
   normalizeUserRole,
   resolveApprovalWorkflow,
+  resolveEmployeeDeductionWorkflow,
+  stopPermanentPayrollEntry,
+  validatePatchReleaseAllocations,
 } from './hrLogic';
 
 const dubaiHQ: GeofenceZone = {
@@ -78,6 +101,8 @@ function makeEmp(overrides: Partial<Employee>): Employee {
     phone: '+971 50 000 0000',
     mustChangePassword: false,
     role: UserRole.Employee,
+    employeeType: 'driver',
+    deductionWorkflowOverride: 'inherit',
     primaryCompanyId: 'comp-yaldi',
     sharedCompanyIds: [],
     sectionId: 'sec-drivers',
@@ -566,4 +591,547 @@ test('Promise.allSettled startup evaluator defaults partial 403s to empty while 
   assert.equal(total403.fatalFailures.length, 2);
   assert.equal(total403.fatalFailures[0].status, 403);
 });
+
+test('Phase 1A 3-bucket salary architecture keeps Basic intact in WPS and excludes Off-Cycle from WPS', () => {
+  const emp = makeEmp({
+    id: 'emp-3b',
+    mohrePersonId: '10029481020999',
+    salary: { baseSalary: 5000, housingAllowance: 1000, transportAllowance: 500, otherAllowance: 200 },
+    bankDetails: {
+      bankName: 'ADCB',
+      bankRoutingCode: '300310101',
+      accountNumber: '204-999-01',
+      iban: 'AE440030002049990100001',
+    },
+  });
+
+  const entries: PayrollEntry[] = [
+    {
+      id: 'pe-in-earn',
+      employeeId: 'emp-3b',
+      companyId: 'comp-yaldi',
+      type: 'earning_in_payroll',
+      categoryId: 'cat-1',
+      categoryName: 'Field Allowance',
+      amountAED: 600,
+      isPermanent: true,
+      effectiveFrom: '2026-01',
+      effectiveTo: null,
+      durationMonths: null,
+      targetBucket: null,
+      reason: 'Permanent field allowance',
+      createdBy: 'HR',
+      createdByRole: UserRole.HRAdmin,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'pe-off-earn',
+      employeeId: 'emp-3b',
+      companyId: 'comp-yaldi',
+      type: 'earning_off_cycle',
+      categoryId: 'cat-2',
+      categoryName: 'Fuel Stipend',
+      amountAED: 500,
+      isPermanent: true,
+      effectiveFrom: '2026-01',
+      effectiveTo: null,
+      durationMonths: null,
+      targetBucket: null,
+      reason: 'Cash fuel outside WPS',
+      createdBy: 'HR',
+      createdByRole: UserRole.HRAdmin,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+    {
+      id: 'pe-in-ded',
+      employeeId: 'emp-3b',
+      companyId: 'comp-yaldi',
+      type: 'deduction_in_payroll',
+      categoryId: 'cat-3',
+      categoryName: 'Salik Fine',
+      amountAED: 300,
+      isPermanent: false,
+      effectiveFrom: '2026-06',
+      effectiveTo: computeTemporaryEndMonth('2026-06', 2), // 2026-07
+      durationMonths: 2,
+      targetBucket: 'additional_in_payroll',
+      reason: '2-month fine recovery',
+      createdBy: 'HR',
+      createdByRole: UserRole.HRAdmin,
+      createdAt: '2026-06-01T00:00:00Z',
+    },
+    {
+      id: 'pe-off-ded',
+      employeeId: 'emp-3b',
+      companyId: 'comp-yaldi',
+      type: 'deduction_off_cycle',
+      categoryId: 'cat-4',
+      categoryName: 'Cash Float',
+      amountAED: 100,
+      isPermanent: false,
+      effectiveFrom: '2026-06',
+      effectiveTo: computeTemporaryEndMonth('2026-06', 1), // 2026-06
+      durationMonths: 1,
+      targetBucket: 'additional_off_cycle',
+      reason: '1-month cash float',
+      createdBy: 'Accounting',
+      createdByRole: UserRole.Accounting,
+      createdAt: '2026-06-01T00:00:00Z',
+    },
+  ];
+
+  const june = calculateEmployeePayroll(emp, '2026-06', [], [], [], entries, []);
+  assert.equal(june.grossSalary, 6700); // Basic 5000 + Allowances 1700
+  assert.equal(june.inPayrollEarnings, 600);
+  assert.equal(june.offCycleEarnings, 500);
+  assert.equal(june.inPayrollDeductions, 300);
+  assert.equal(june.offCycleDeductions, 100);
+  // WPS rule: Fixed Income stays 5000 (Basic), Variable Income = 1700 + 600 - 300 = 2000 (Off-Cycle 500 excluded!)
+  assert.equal(june.wpsFixedIncome, 5000);
+  assert.equal(june.wpsVariableIncome, 2000);
+  assert.equal(june.wpsTotalPayout, 7000);
+  assert.equal(june.offCycleNetPayout, 400);
+  assert.equal(june.netSalary, 7400);
+
+  // In August 2026, both temporary deductions have expired; only permanent earnings remain
+  const august = calculateEmployeePayroll(emp, '2026-08', [], [], [], entries, []);
+  assert.equal(august.inPayrollDeductions, 0);
+  assert.equal(august.offCycleDeductions, 0);
+  assert.equal(august.wpsVariableIncome, 2300);
+  assert.equal(august.offCycleNetPayout, 500);
+});
+
+test('Phase 1A permanent earning edit & stop strictly preserve historical months', () => {
+  assert.equal(addMonthsToYYYYMM('2026-01', -1), '2025-12');
+  assert.equal(computeTemporaryEndMonth('2026-11', 3), '2027-01');
+
+  const initial: PayrollEntry[] = [
+    {
+      id: 'perm-1',
+      employeeId: 'emp-1',
+      companyId: 'comp-yaldi',
+      type: 'earning_in_payroll',
+      categoryId: 'cat-1',
+      categoryName: 'Field Allowance',
+      amountAED: 600,
+      isPermanent: true,
+      effectiveFrom: '2026-01',
+      effectiveTo: null,
+      durationMonths: null,
+      targetBucket: null,
+      reason: 'Initial permanent allowance',
+      createdBy: 'HR',
+      createdByRole: UserRole.HRAdmin,
+      createdAt: '2026-01-01T00:00:00Z',
+    },
+  ];
+
+  // Edit from 2026-05 -> 900 AED; Jan..Apr MUST remain 600 AED
+  const afterEdit = editPermanentPayrollEntry({
+    entries: initial,
+    entryId: 'perm-1',
+    effectiveFromMonth: '2026-05',
+    patch: { amountAED: 900, reason: 'Promotion adjustment' },
+    newEntryId: 'perm-2',
+  });
+
+  const activeApril = afterEdit.filter((e) => isPayrollEntryActiveInMonth(e, '2026-04'));
+  const activeMay = afterEdit.filter((e) => isPayrollEntryActiveInMonth(e, '2026-05'));
+  assert.equal(activeApril.length, 1);
+  assert.equal(activeApril[0].amountAED, 600);
+  assert.equal(activeMay.length, 1);
+  assert.equal(activeMay[0].amountAED, 900);
+
+  // Stop perm-2 starting 2026-08 -> May..Jul remain 900 AED, Aug onward = 0
+  const afterStop = stopPermanentPayrollEntry({
+    entries: afterEdit,
+    entryId: 'perm-2',
+    stopFromMonth: '2026-08',
+  });
+  assert.equal(afterStop.filter((e) => isPayrollEntryActiveInMonth(e, '2026-07'))[0].amountAED, 900);
+  assert.equal(afterStop.filter((e) => isPayrollEntryActiveInMonth(e, '2026-08')).length, 0);
+  assert.equal(afterStop.filter((e) => isPayrollEntryActiveInMonth(e, '2026-03'))[0].amountAED, 600);
+});
+
+test('Phase 1A Multi-Company ADCB WPS export produces exact EDR (11 cols) and SCR (10 cols) rows with unpaid leave days', () => {
+  const company: Company = {
+    id: 'comp-yaldi',
+    code: 'YLD',
+    name: 'Yaldi Car Rental',
+    industry: 'Mobility',
+    city: 'Dubai',
+    active: true,
+    molEstablishmentId: '0000104829103',
+    wpsRoutingCode: '300310101',
+    companyIban: 'AE190030010482910300001',
+  };
+
+  const emp1 = makeEmp({
+    id: 'emp-a',
+    fullName: 'Omar Khalid',
+    primaryCompanyId: 'comp-yaldi',
+    mohrePersonId: '10029481020104',
+    salary: { baseSalary: 4800, housingAllowance: 1500, transportAllowance: 500, otherAllowance: 400 },
+    bankDetails: {
+      bankName: 'Emirates NBD',
+      bankRoutingCode: '302620122',
+      accountNumber: '101-7742108-03',
+      iban: 'AE070260001017742108003',
+    },
+  });
+
+  const empOtherComp = makeEmp({
+    id: 'emp-b',
+    fullName: 'Bilal Ahmed',
+    primaryCompanyId: 'comp-wegdaniyah',
+  });
+
+  const leaves: LeaveRequest[] = [
+    {
+      id: 'lv-unpaid',
+      employeeId: 'emp-a',
+      companyId: 'comp-yaldi',
+      sectionId: 'sec-drivers',
+      type: LeaveType.Unpaid,
+      startDate: '2026-02-27',
+      endDate: '2026-03-02', // 2 days in Feb 2026 (27, 28) and 2 days in Mar 2026
+      days: 4,
+      reason: 'Unpaid personal travel',
+      status: LeaveStatus.Approved,
+      submittedAt: '2026-02-10T00:00:00Z',
+      approvalSteps: [],
+      currentStepIndex: -1,
+      coManagerNotes: [],
+    },
+  ];
+
+  assert.equal(countUnpaidLeaveDaysInMonth('emp-a', '2026-02', leaves), 2);
+  assert.equal(countUnpaidLeaveDaysInMonth('emp-a', '2026-03', leaves), 2);
+
+  const rowA = calculateEmployeePayroll(emp1, '2026-02', [], [], [], [], leaves);
+  const rowB = calculateEmployeePayroll(empOtherComp, '2026-02', [], [], [], [], leaves);
+
+  const wps = buildAdcbWpsExport({
+    company,
+    month: '2026-02',
+    payrollRows: [rowA, rowB],
+    fileDate: new Date(2026, 1, 28, 14, 35, 0),
+  });
+
+  assert.equal(wps.edrRows.length, 1); // Strictly isolated to comp-yaldi
+  assert.equal(wps.warnings.length, 0);
+  assert.deepEqual(wps.aoaRows[0], [
+    'EDR',
+    '10029481020104',
+    '302620122',
+    'AE070260001017742108003',
+    '2026-02-01',
+    '2026-02-28',
+    28,
+    4800,
+    2400,
+    2,
+    'Omar Khalid',
+  ]);
+  assert.deepEqual(wps.aoaRows[1], [
+    'SCR',
+    '0000104829103',
+    '300310101',
+    '2026-02-28',
+    '1435',
+    '022026',
+    1,
+    7200,
+    'AED',
+    'AE190030010482910300001',
+  ]);
+  assert.ok(formatAdcbWpsAsSif(wps).includes('SCR,0000104829103,300310101,2026-02-28,1435,022026,1,7200,AED,AE190030010482910300001'));
+});
+
+test('Phase 1B deduction workflow resolves by employeeType + override and requires HR final approval before impacting payroll', () => {
+  const wfConfig: DeductionWorkflowConfig = {
+    office_employee: 'manager_then_hr',
+    driver: 'manager_then_hr',
+    management: 'main_manager_only',
+    autoEscalationHours: 48,
+  };
+
+  const driver = makeEmp({ id: 'emp-drv', employeeType: 'driver', deductionWorkflowOverride: 'inherit' });
+  const overriddenDriver = makeEmp({
+    id: 'emp-drv-ovr',
+    employeeType: 'driver',
+    deductionWorkflowOverride: 'hr_only',
+  });
+  const exec = makeEmp({ id: 'emp-exec', employeeType: 'management' });
+
+  assert.equal(resolveEmployeeDeductionWorkflow(driver, wfConfig), 'manager_then_hr');
+  assert.equal(resolveEmployeeDeductionWorkflow(overriddenDriver, wfConfig), 'hr_only');
+  assert.equal(resolveEmployeeDeductionWorkflow(exec, wfConfig), 'main_manager_only');
+
+  const start = new Date('2026-11-01T08:00:00Z');
+  const req = buildNewDeductionApprovalRequest({
+    id: 'da-test-1',
+    employee: driver,
+    month: '2026-11',
+    triggerType: 'latency',
+    date: '2026-11-01',
+    amountAED: 120,
+    targetBucket: 'main_salary',
+    reason: 'Late arrival',
+    createdBy: 'HR',
+    createdByRole: UserRole.HRAdmin,
+    workflowConfig: wfConfig,
+    now: start,
+  });
+
+  assert.equal(req.status, 'pending_manager');
+  assert.equal(req.escalationDeadline, '2026-11-03T08:00:00.000Z');
+
+  // Pending manager MUST NOT reduce payroll yet
+  const beforeMgr = calculateEmployeePayroll(driver, '2026-11', [], [], [], [], [], [req], []);
+  assert.equal(beforeMgr.approvedWorkflowDeductions, 0);
+  assert.equal(beforeMgr.netSalary, 6500);
+
+  // Manager approves -> moves to pending_hr_approval (STILL does not apply to payroll until HR finalizes!)
+  const afterMgr = applyManagerDeductionDecision({
+    request: req,
+    decision: 'approved',
+    actorName: 'Karim Haddad',
+    note: 'Confirmed late punch',
+    now: new Date('2026-11-01T12:00:00Z'),
+  });
+  assert.equal(afterMgr.status, 'pending_hr_approval');
+
+  const beforeHr = calculateEmployeePayroll(driver, '2026-11', [], [], [], [], [], [afterMgr], []);
+  assert.equal(beforeHr.approvedWorkflowDeductions, 0);
+  assert.equal(beforeHr.netSalary, 6500);
+
+  // HR gives final approval -> NOW applies to payroll (Basic stays intact; Variable Income reduced by 120)
+  const afterHr = applyHrDeductionDecision({
+    request: afterMgr,
+    decision: 'approved',
+    actorName: 'Layla Al-Mansoori',
+    note: 'Final HR approval',
+    now: new Date('2026-11-01T15:00:00Z'),
+  });
+  assert.equal(afterHr.status, 'approved');
+
+  const afterFinal = calculateEmployeePayroll(driver, '2026-11', [], [], [], [], [], [afterHr], []);
+  assert.equal(afterFinal.approvedWorkflowDeductions, 120);
+  assert.equal(afterFinal.wpsFixedIncome, 5000);
+  assert.equal(afterFinal.wpsVariableIncome, 1380);
+  assert.equal(afterFinal.netSalary, 6380);
+});
+
+test('Phase 1B manager rejection/waiver routes to HR decision and timeout auto-escalates to HR', () => {
+  const wfConfig: DeductionWorkflowConfig = {
+    office_employee: 'manager_then_hr',
+    driver: 'manager_then_hr',
+    management: 'main_manager_only',
+    autoEscalationHours: 24,
+  };
+  const driver = makeEmp({ id: 'emp-drv2', sectionId: 'sec-drivers', employeeType: 'driver' });
+  const created = buildNewDeductionApprovalRequest({
+    id: 'da-test-2',
+    employee: driver,
+    month: '2026-11',
+    triggerType: 'off_day',
+    date: '2026-11-02',
+    amountAED: 200,
+    targetBucket: 'main_salary',
+    reason: 'Missed shift',
+    createdBy: 'HR',
+    createdByRole: UserRole.HRAdmin,
+    workflowConfig: wfConfig,
+    now: new Date('2026-11-02T09:00:00Z'),
+  });
+
+  // Before 24h timeout: Section Manager can act, HR cannot yet
+  const permsBefore = canActOnDeductionApproval({
+    request: created,
+    actorRole: UserRole.SectionManager,
+    actorManagedSectionIds: ['sec-drivers'],
+    now: new Date('2026-11-02T15:00:00Z'),
+  });
+  assert.equal(permsBefore.effectiveStatus, 'pending_manager');
+  assert.equal(permsBefore.canManagerAct, true);
+
+  // After 24h timeout: auto-escalates to HR!
+  const afterTimeout = new Date('2026-11-03T10:00:00Z');
+  assert.equal(getEffectiveDeductionStatus(created, afterTimeout), 'escalated_to_hr');
+  const hrPermsEscalated = canActOnDeductionApproval({
+    request: created,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: [],
+    now: afterTimeout,
+  });
+  assert.equal(hrPermsEscalated.effectiveStatus, 'escalated_to_hr');
+  assert.equal(hrPermsEscalated.canHrAct, true);
+
+  // Manager rejects/waives -> moves to pending_hr_decision with note -> HR waives -> 0 payroll impact
+  const rejectedByMgr = applyManagerDeductionDecision({
+    request: created,
+    decision: 'rejected',
+    actorName: 'Karim Haddad',
+    note: 'Emergency medical excuse submitted',
+    now: new Date('2026-11-02T14:00:00Z'),
+  });
+  assert.equal(rejectedByMgr.status, 'pending_hr_decision');
+  assert.equal(rejectedByMgr.managerNote, 'Emergency medical excuse submitted');
+
+  const waivedByHr = applyHrDeductionDecision({
+    request: rejectedByMgr,
+    decision: 'waived',
+    actorName: 'Layla Al-Mansoori',
+    note: 'Accepted medical slip; waived',
+    now: new Date('2026-11-02T16:00:00Z'),
+  });
+  assert.equal(waivedByHr.status, 'waived');
+  const rowWaived = calculateEmployeePayroll(driver, '2026-11', [], [], [], [], [], [waivedByHr], []);
+  assert.equal(rowWaived.approvedWorkflowDeductions, 0);
+  assert.equal(rowWaived.netSalary, 6500);
+});
+
+test('Phase 1B split-bucket Patch Money Release updates pending balances and automatically offsets month-end ADCB WPS Variable Income', () => {
+  const company: Company = {
+    id: 'comp-yaldi',
+    code: 'YLD',
+    name: 'Yaldi Car Rental',
+    industry: 'Mobility',
+    city: 'Dubai',
+    active: true,
+    molEstablishmentId: '0000104829103',
+    wpsRoutingCode: '300310101',
+    companyIban: 'AE190030010482910300001',
+  };
+
+  const emp = makeEmp({
+    id: 'emp-patch',
+    fullName: 'Omar Khalid',
+    primaryCompanyId: 'comp-yaldi',
+    mohrePersonId: '10029481020104',
+    salary: { baseSalary: 4800, housingAllowance: 1500, transportAllowance: 500, otherAllowance: 400 }, // Basic 4800, Allowances 2400
+    bankDetails: {
+      bankName: 'Emirates NBD',
+      bankRoutingCode: '302620122',
+      accountNumber: '101-7742108-03',
+      iban: 'AE070260001017742108003',
+    },
+  });
+
+  const entries: PayrollEntry[] = [
+    {
+      id: 'pe-oc-oct',
+      employeeId: 'emp-patch',
+      companyId: 'comp-yaldi',
+      type: 'earning_off_cycle',
+      categoryId: 'cat-fuel',
+      categoryName: 'Fuel Stipend',
+      amountAED: 150,
+      isPermanent: false,
+      effectiveFrom: '2026-10',
+      effectiveTo: '2026-10',
+      durationMonths: 1,
+      targetBucket: null,
+      reason: 'Oct off-cycle fuel',
+      createdBy: 'HR',
+      createdByRole: UserRole.HRAdmin,
+      createdAt: '2026-10-01T00:00:00Z',
+    },
+    {
+      id: 'pe-oc-nov',
+      employeeId: 'emp-patch',
+      companyId: 'comp-yaldi',
+      type: 'earning_off_cycle',
+      categoryId: 'cat-fuel',
+      categoryName: 'Fuel Stipend',
+      amountAED: 300,
+      isPermanent: false,
+      effectiveFrom: '2026-11',
+      effectiveTo: '2026-11',
+      durationMonths: 1,
+      targetBucket: null,
+      reason: 'Nov off-cycle fuel',
+      createdBy: 'HR',
+      createdByRole: UserRole.HRAdmin,
+      createdAt: '2026-11-01T00:00:00Z',
+    },
+  ];
+
+  // Before patch release: Oct Off-Cycle = 150, Nov Off-Cycle = 300, Nov Upcoming Main = 7200
+  const balancesBefore = calculateEmployeePendingBalances({
+    employee: emp,
+    currentMonth: '2026-11',
+    adjustments: [],
+    payrollEntries: entries,
+    patchReleases: [],
+  });
+  assert.equal(balancesBefore.find((b) => b.key === '2026-10:off_cycle')?.availableAED, 150);
+  assert.equal(balancesBefore.find((b) => b.key === '2026-11:off_cycle')?.availableAED, 300);
+  assert.equal(balancesBefore.find((b) => b.key === '2026-11:upcoming_main_salary')?.availableAED, 7200);
+
+  // Validate mismatched split fails and exact 200 AED split passes
+  assert.equal(
+    validatePatchReleaseAllocations(200, [
+      { month: '2026-10', bucket: 'off_cycle', amountAED: 150 },
+    ]).valid,
+    false
+  );
+  assert.equal(
+    validatePatchReleaseAllocations(200, [
+      { month: '2026-10', bucket: 'off_cycle', amountAED: 150 },
+      { month: '2026-11', bucket: 'upcoming_main_salary', amountAED: 50 },
+    ]).valid,
+    true
+  );
+
+  // Release 200 AED today: 150 from Oct Off-Cycle + 50 from Nov Upcoming Main Salary
+  const release: PatchMoneyRelease = {
+    id: 'pr-split-1',
+    employeeId: 'emp-patch',
+    companyId: 'comp-yaldi',
+    totalAmountAED: 200,
+    allocations: [
+      { month: '2026-10', bucket: 'off_cycle', amountAED: 150 },
+      { month: '2026-11', bucket: 'upcoming_main_salary', amountAED: 50 },
+    ],
+    paymentMethod: 'Cash',
+    releaseDate: '2026-11-12',
+    releasedBy: 'Nadia Mansour',
+    releasedByRole: UserRole.Accounting,
+    referenceNote: 'Cash Voucher #901',
+    createdAt: '2026-11-12T10:00:00Z',
+  };
+
+  // Pending balances after release: Oct Off-Cycle is settled (disappears), Nov Upcoming Main drops by 50
+  const balancesAfter = calculateEmployeePendingBalances({
+    employee: emp,
+    currentMonth: '2026-11',
+    adjustments: [],
+    payrollEntries: entries,
+    patchReleases: [release],
+  });
+  assert.equal(balancesAfter.find((b) => b.key === '2026-10:off_cycle'), undefined);
+  assert.equal(balancesAfter.find((b) => b.key === '2026-11:upcoming_main_salary')?.availableAED, 7150);
+
+  // Month-end Nov payroll & ADCB WPS export automatically deduct the 50 AED early WPS release from Variable Income
+  const novRow = calculateEmployeePayroll(emp, '2026-11', [], [], [], entries, [], [], [release]);
+  assert.equal(novRow.earlyWpsReleasedAED, 50);
+  assert.equal(novRow.wpsFixedIncome, 4800); // Basic intact!
+  assert.equal(novRow.wpsVariableIncome, 2350); // 2400 allowances - 50 early patch release!
+  assert.equal(novRow.wpsTotalPayout, 7150);
+
+  const wps = buildAdcbWpsExport({
+    company,
+    month: '2026-11',
+    payrollRows: [novRow],
+    fileDate: new Date(2026, 10, 28, 12, 0, 0),
+  });
+  assert.equal(wps.totalEarlyWpsOffsetAed, 50);
+  assert.equal(wps.edrRows[0].fixedIncome, 4800);
+  assert.equal(wps.edrRows[0].variableIncome, 2350);
+  assert.equal(wps.scrRow.totalPayoutAed, 7150);
+});
+
+
 

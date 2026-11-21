@@ -16,6 +16,7 @@ import {
   Plus,
   RotateCcw,
   ShieldCheck,
+  SlidersHorizontal,
   Smartphone,
   Tag,
   Trash2,
@@ -23,7 +24,14 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { getRoleLabel, getStepRoleLabel, t } from '../i18n/translations';
+import {
+  getDeductionWorkflowChainLabel,
+  getEmployeeTypeLabel,
+  getPayrollEntryTypeLabel,
+  getRoleLabel,
+  getStepRoleLabel,
+  t,
+} from '../i18n/translations';
 import {
   AppSettings,
   ApprovalStepRole,
@@ -31,24 +39,34 @@ import {
   BuiltInDocumentType,
   ClockInPolicyMode,
   Company,
+  DeductionWorkflowChain,
+  DeductionWorkflowConfig,
   DocumentTypeValue,
   Employee,
   EmployeeLabel,
   EmployeeModel,
+  EmployeeType,
   GeofenceZone,
   Language,
   LatenessPenaltyTier,
+  PayrollCategoryItem,
+  PayrollEntryType,
   ProAssignment,
   Section,
   UserRole,
   Weekday,
 } from '../types/hr';
-import { formatShortDate, isProAssignmentActive } from '../utils/hrLogic';
+import {
+  DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
+  formatShortDate,
+  isProAssignmentActive,
+} from '../utils/hrLogic';
 import { GeofenceMap } from './GeofenceMap';
 
 type SettingsSection =
   | 'hub'
   | 'companies'
+  | 'payroll_categories'
   | 'models'
   | 'labels'
   | 'pro_access'
@@ -68,9 +86,13 @@ interface SettingsHubViewProps {
   employees: Employee[];
   geofences: GeofenceZone[];
   workflows: ApprovalWorkflow[];
+  payrollCategories: PayrollCategoryItem[];
   settings: AppSettings;
   onCreateCompany: (input: Omit<Company, 'id'>) => Promise<void>;
+  onUpdateCompany: (id: string, patch: Partial<Company>) => Promise<void>;
   onToggleCompanyActive: (id: string) => Promise<void>;
+  onCreatePayrollCategory: (input: Omit<PayrollCategoryItem, 'id'>) => Promise<void>;
+  onUpdatePayrollCategory: (id: string, patch: Partial<PayrollCategoryItem>) => Promise<void>;
   onCreateSection: (input: Omit<Section, 'id'>) => Promise<void>;
   onCreateLabel: (input: Omit<EmployeeLabel, 'id'>) => Promise<void>;
   onUpdateLabel: (id: string, patch: Partial<EmployeeLabel>) => Promise<void>;
@@ -112,6 +134,12 @@ const PRESET_LABEL_COLORS = [
 const ALL_WEEKDAYS: Weekday[] = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const BUILT_IN_DOCS: DocumentTypeValue[] = Object.values(BuiltInDocumentType);
 const STEP_ROLES: ApprovalStepRole[] = ['section_manager', 'hr_admin', 'main_manager'];
+const PAYROLL_ENTRY_TYPES: PayrollEntryType[] = [
+  'earning_in_payroll',
+  'earning_off_cycle',
+  'deduction_in_payroll',
+  'deduction_off_cycle',
+];
 
 const INPUT_CLASS =
   'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
@@ -128,9 +156,13 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   employees,
   geofences,
   workflows,
+  payrollCategories,
   settings,
   onCreateCompany,
+  onUpdateCompany,
   onToggleCompanyActive,
+  onCreatePayrollCategory,
+  onUpdatePayrollCategory,
   onCreateSection,
   onCreateLabel,
   onUpdateLabel,
@@ -154,11 +186,22 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   const [subView, setSubView] = useState<SettingsSection>('hub');
   const [saving, setSaving] = useState(false);
 
-  // --- Companies form state ---
+  // --- Companies form state (Create + Edit + WPS Identifiers) ---
+  const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
   const [compName, setCompName] = useState('');
   const [compCode, setCompCode] = useState('');
   const [compIndustry, setCompIndustry] = useState('Car Rental & Mobility');
   const [compCity, setCompCity] = useState('Dubai, UAE');
+  const [compMolId, setCompMolId] = useState('');
+  const [compWpsRouting, setCompWpsRouting] = useState('');
+  const [compIban, setCompIban] = useState('');
+
+  // --- Payroll Categories (Earnings & Deductions Options) state ---
+  const [catFilterType, setCatFilterType] = useState<'all' | PayrollEntryType>('all');
+  const [editingCatId, setEditingCatId] = useState<string | null>(null);
+  const [catName, setCatName] = useState('');
+  const [catType, setCatType] = useState<PayrollEntryType>('earning_in_payroll');
+  const [catDescription, setCatDescription] = useState('');
 
   // --- Employee Models editor state ---
   const [editingModelId, setEditingModelId] = useState<string | 'new' | null>(null);
@@ -194,6 +237,37 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     'main_manager',
   ]);
   const [wfAutoDays, setWfAutoDays] = useState(0);
+
+  // --- Deduction Approval & Escalation Workflow state (Phase 1B) ---
+  const [deductionWfDraft, setDeductionWfDraft] = useState<DeductionWorkflowConfig>(
+    () => settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
+  );
+  const [deductionWfSaved, setDeductionWfSaved] = useState(false);
+
+  const canManageDeductionWorkflow = isMainManager || activeRole === UserRole.HRAdmin;
+
+  const handleSaveDeductionWorkflow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canManageDeductionWorkflow) return;
+    setSaving(true);
+    try {
+      await onUpdateSettings({
+        deductionWorkflowConfig: {
+          office_employee: deductionWfDraft.office_employee,
+          driver: deductionWfDraft.driver,
+          management: deductionWfDraft.management,
+          autoEscalationHours: Math.max(
+            1,
+            Math.min(336, Number(deductionWfDraft.autoEscalationHours) || 48)
+          ),
+        },
+      });
+      setDeductionWfSaved(true);
+      window.setTimeout(() => setDeductionWfSaved(false), 2500);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // --- Geofences editor state ---
   const [zoneName, setZoneName] = useState('');
@@ -345,20 +419,64 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     }
   };
 
-  const handleCreateCompany = async (e: React.FormEvent) => {
+  const resetCompanyForm = () => {
+    setEditingCompanyId(null);
+    setCompName('');
+    setCompCode('');
+    setCompIndustry('Car Rental & Mobility');
+    setCompCity('Dubai, UAE');
+    setCompMolId('');
+    setCompWpsRouting('');
+    setCompIban('');
+  };
+
+  const handleSaveCompany = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!compName.trim()) return;
     setSaving(true);
     try {
-      await onCreateCompany({
+      const payload = {
         name: compName.trim(),
         code: (compCode.trim() || compName.trim().slice(0, 3)).toUpperCase(),
         industry: compIndustry.trim() || 'Operations',
         city: compCity.trim() || 'Dubai, UAE',
-        active: true,
-      });
-      setCompName('');
-      setCompCode('');
+        molEstablishmentId: compMolId.trim() || undefined,
+        wpsRoutingCode: compWpsRouting.trim() || undefined,
+        companyIban: compIban.trim() || undefined,
+      };
+      if (editingCompanyId) {
+        await onUpdateCompany(editingCompanyId, payload);
+      } else {
+        await onCreateCompany({ ...payload, active: true });
+      }
+      resetCompanyForm();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSavePayrollCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!catName.trim()) return;
+    setSaving(true);
+    try {
+      if (editingCatId) {
+        await onUpdatePayrollCategory(editingCatId, {
+          name: catName.trim(),
+          type: catType,
+          description: catDescription.trim() || undefined,
+        });
+        setEditingCatId(null);
+      } else {
+        await onCreatePayrollCategory({
+          name: catName.trim(),
+          type: catType,
+          description: catDescription.trim() || undefined,
+          active: true,
+        });
+      }
+      setCatName('');
+      setCatDescription('');
     } finally {
       setSaving(false);
     }
@@ -433,9 +551,16 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     {
       id: 'companies',
       title: t(lang, 'companies'),
-      description: 'Add and manage group companies (supports 12+ entities and shared staff).',
+      description: 'Manage group entities and ADCB WPS identifiers (MOL Establishment ID, Routing Code, IBAN).',
       metric: `${companies.length} active entities`,
       icon: Building2,
+    },
+    {
+      id: 'payroll_categories',
+      title: t(lang, 'payrollCategoriesManager'),
+      description: t(lang, 'payrollCategoriesDesc'),
+      metric: `${payrollCategories.filter((c) => c.active).length} active / ${payrollCategories.length} total`,
+      icon: SlidersHorizontal,
     },
     {
       id: 'models',
@@ -563,13 +688,13 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     </div>
   );
 
-  // --- 1. COMPANIES SUB-VIEW ---
+  // --- 1. COMPANIES SUB-VIEW (with ADCB WPS Identifiers) ---
   if (subView === 'companies') {
     return (
       <div className="space-y-5">
         {renderSubHeader(
           t(lang, 'companies'),
-          'Scale cleanly to 12+ group companies with isolated data and shared employees.'
+          'Configure group entities, isolated payroll scope, and UAE ADCB WPS filing identifiers.'
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
@@ -577,46 +702,96 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             {companies.map((comp) => {
               const primaryCount = employees.filter((e) => e.primaryCompanyId === comp.id).length;
               const sharedCount = employees.filter((e) => e.sharedCompanyIds.includes(comp.id)).length;
+              const wpsReady = Boolean(
+                comp.molEstablishmentId && comp.wpsRoutingCode && comp.companyIban
+              );
               return (
-                <div key={comp.id} className="p-4 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                <div key={comp.id} className="p-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
                         {comp.code}
                       </span>
                       <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                         {comp.name}
                       </p>
+                      <span
+                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                          wpsReady
+                            ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                            : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
+                        }`}
+                      >
+                        {wpsReady ? 'WPS Ready' : 'WPS Incomplete'}
+                      </span>
                     </div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
                       {comp.industry} · {comp.city} · {primaryCount} primary
                       {sharedCount > 0 ? ` + ${sharedCount} shared` : ''}
                     </p>
+                    <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 break-all">
+                      MOL: {comp.molEstablishmentId || '—'} · Routing: {comp.wpsRoutingCode || '—'} ·
+                      IBAN: {comp.companyIban || '—'}
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void onToggleCompanyActive(comp.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer shrink-0 ${
-                      comp.active
-                        ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
-                        : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500'
-                    }`}
-                  >
-                    {comp.active ? 'Active' : 'Paused'}
-                  </button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCompanyId(comp.id);
+                        setCompName(comp.name);
+                        setCompCode(comp.code);
+                        setCompIndustry(comp.industry);
+                        setCompCity(comp.city);
+                        setCompMolId(comp.molEstablishmentId ?? '');
+                        setCompWpsRouting(comp.wpsRoutingCode ?? '');
+                        setCompIban(comp.companyIban ?? '');
+                      }}
+                      aria-label={`Edit ${comp.name}`}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onToggleCompanyActive(comp.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer shrink-0 ${
+                        comp.active
+                          ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                          : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500'
+                      }`}
+                    >
+                      {comp.active ? 'Active' : 'Paused'}
+                    </button>
+                  </div>
                 </div>
               );
             })}
           </div>
 
           <form
-            onSubmit={handleCreateCompany}
+            onSubmit={handleSaveCompany}
             className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
           >
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-              <Plus className="w-4 h-4 text-indigo-600" />
-              {t(lang, 'addCompany')}
-            </h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                {editingCompanyId ? (
+                  <Edit3 className="w-4 h-4 text-indigo-600" />
+                ) : (
+                  <Plus className="w-4 h-4 text-indigo-600" />
+                )}
+                {editingCompanyId ? t(lang, 'editCompany') : t(lang, 'addCompany')}
+              </h2>
+              {editingCompanyId && (
+                <button
+                  type="button"
+                  onClick={resetCompanyForm}
+                  className="text-xs text-slate-500 hover:underline cursor-pointer"
+                >
+                  {t(lang, 'cancel')}
+                </button>
+              )}
+            </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                 Company Name
@@ -641,7 +816,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                   placeholder="HFL"
                   value={compCode}
                   onChange={(e) => setCompCode(e.target.value)}
-                  className={INPUT_CLASS}
+                  className={`${INPUT_CLASS} font-mono`}
                 />
               </div>
               <div>
@@ -667,12 +842,256 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 className={INPUT_CLASS}
               />
             </div>
+
+            {/* UAE ADCB WPS Filing Identifiers */}
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                UAE ADCB WPS Configuration
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    {t(lang, 'molEstablishmentId')}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="13-digit MOL ID"
+                    value={compMolId}
+                    onChange={(e) => setCompMolId(e.target.value)}
+                    className={`${INPUT_CLASS} font-mono`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    {t(lang, 'wpsRoutingCode')}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., 300310101"
+                    value={compWpsRouting}
+                    onChange={(e) => setCompWpsRouting(e.target.value)}
+                    className={`${INPUT_CLASS} font-mono`}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  {t(lang, 'companyIban')}
+                </label>
+                <input
+                  type="text"
+                  placeholder="AE070030010..."
+                  value={compIban}
+                  onChange={(e) => setCompIban(e.target.value)}
+                  className={`${INPUT_CLASS} font-mono`}
+                />
+              </div>
+            </div>
+
             <button
               type="submit"
               disabled={saving}
               className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
             >
-              {t(lang, 'addCompany')}
+              {editingCompanyId ? t(lang, 'save') : t(lang, 'addCompany')}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- 1B. EARNINGS & DEDUCTIONS CATEGORIES SUB-VIEW ---
+  if (subView === 'payroll_categories') {
+    const filteredCategories =
+      catFilterType === 'all'
+        ? payrollCategories
+        : payrollCategories.filter((c) => c.type === catFilterType);
+
+    return (
+      <div className="space-y-5">
+        {renderSubHeader(
+          t(lang, 'payrollCategoriesManager'),
+          t(lang, 'payrollCategoriesDesc')
+        )}
+
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setCatFilterType('all')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
+              catFilterType === 'all'
+                ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            {t(lang, 'allTypes')} ({payrollCategories.length})
+          </button>
+          {PAYROLL_ENTRY_TYPES.map((tp) => {
+            const count = payrollCategories.filter((c) => c.type === tp).length;
+            return (
+              <button
+                key={tp}
+                type="button"
+                onClick={() => setCatFilterType(tp)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
+                  catFilterType === tp
+                    ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                {getPayrollEntryTypeLabel(lang, tp)} ({count})
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-7 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+            {filteredCategories.length === 0 ? (
+              <p className="p-8 text-center text-xs text-slate-500">{t(lang, 'noRecords')}</p>
+            ) : (
+              filteredCategories.map((cat) => {
+                const isEarning =
+                  cat.type === 'earning_in_payroll' || cat.type === 'earning_off_cycle';
+                return (
+                  <div key={cat.id} className="p-4 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${
+                            isEarning
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                              : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                          }`}
+                        >
+                          {getPayrollEntryTypeLabel(lang, cat.type)}
+                        </span>
+                        <p
+                          className={`text-sm font-semibold truncate ${
+                            cat.active
+                              ? 'text-slate-900 dark:text-white'
+                              : 'text-slate-400 line-through'
+                          }`}
+                        >
+                          {cat.name}
+                        </p>
+                      </div>
+                      {cat.description && (
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                          {cat.description}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCatId(cat.id);
+                          setCatName(cat.name);
+                          setCatType(cat.type);
+                          setCatDescription(cat.description ?? '');
+                        }}
+                        aria-label={`Edit ${cat.name}`}
+                        className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void onUpdatePayrollCategory(cat.id, { active: !cat.active })
+                        }
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
+                          cat.active
+                            ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                            : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500'
+                        }`}
+                      >
+                        {cat.active ? t(lang, 'activeStatus') : t(lang, 'disabledStatus')}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <form
+            onSubmit={handleSavePayrollCategory}
+            className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-indigo-600" />
+                {editingCatId ? `${t(lang, 'edit')} Category` : `${t(lang, 'add')} Category / Reason`}
+              </h2>
+              {editingCatId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCatId(null);
+                    setCatName('');
+                    setCatDescription('');
+                  }}
+                  className="text-xs text-slate-500 hover:underline cursor-pointer"
+                >
+                  {t(lang, 'cancel')}
+                </button>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Entry Type
+              </label>
+              <select
+                value={catType}
+                onChange={(e) => setCatType(e.target.value as PayrollEntryType)}
+                aria-label="Category Entry Type"
+                className={INPUT_CLASS}
+              >
+                {PAYROLL_ENTRY_TYPES.map((tp) => (
+                  <option key={tp} value={tp}>
+                    {getPayrollEntryTypeLabel(lang, tp)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Category / Reason Name
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g., Fleet KPI Bonus or RTA Traffic Fine"
+                value={catName}
+                onChange={(e) => setCatName(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Description (Optional)
+              </label>
+              <input
+                type="text"
+                placeholder="Short policy note..."
+                value={catDescription}
+                onChange={(e) => setCatDescription(e.target.value)}
+                className={INPUT_CLASS}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+            >
+              {editingCatId ? t(lang, 'save') : t(lang, 'add')}
             </button>
           </form>
         </div>
@@ -1621,6 +2040,140 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             </div>
           </form>
         )}
+
+        {/* Phase 1B: Deduction Approval & Escalation Workflow Builder (Off-Days & Latency) */}
+        <form
+          onSubmit={handleSaveDeductionWorkflow}
+          className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <GitBranch className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                {t(lang, 'deductionWorkflowTitle')}
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                {t(lang, 'deductionWorkflowDesc')}
+              </p>
+            </div>
+            {deductionWfSaved && (
+              <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+                Saved
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {(['office_employee', 'driver', 'management'] as EmployeeType[]).map((empType) => (
+              <div
+                key={empType}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 p-3.5 space-y-2"
+              >
+                <label
+                  htmlFor={`deduction-wf-${empType}`}
+                  className="block text-xs font-semibold text-slate-800 dark:text-slate-200"
+                >
+                  {getEmployeeTypeLabel(lang, empType)}
+                </label>
+                <select
+                  id={`deduction-wf-${empType}`}
+                  disabled={!canManageDeductionWorkflow}
+                  value={deductionWfDraft[empType]}
+                  onChange={(e) => {
+                    const nextChain = e.target.value as DeductionWorkflowChain;
+                    setDeductionWfDraft((prev) => ({
+                      ...prev,
+                      [empType]: nextChain,
+                    }));
+                  }}
+                  className={`${INPUT_CLASS} disabled:opacity-60`}
+                >
+                  {(['manager_then_hr', 'hr_only', 'main_manager_only'] as DeductionWorkflowChain[]).map(
+                    (chain) => (
+                      <option key={chain} value={chain}>
+                        {getDeductionWorkflowChainLabel(lang, chain)}
+                      </option>
+                    )
+                  )}
+                </select>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {deductionWfDraft[empType] === 'manager_then_hr'
+                    ? 'Manager reviews first; HR gives final approval or binding decision.'
+                    : deductionWfDraft[empType] === 'hr_only'
+                      ? 'Routes directly to HR Admin for final payroll approval.'
+                      : 'Routes directly to Main Manager for executive sign-off.'}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 p-4 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+            <div className="space-y-1.5 max-w-sm w-full">
+              <label
+                htmlFor="deduction-auto-escalation-hours"
+                className="block text-xs font-semibold text-slate-800 dark:text-slate-200"
+              >
+                {t(lang, 'autoEscalationHours')}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="deduction-auto-escalation-hours"
+                  type="number"
+                  min={1}
+                  max={336}
+                  disabled={!canManageDeductionWorkflow}
+                  value={deductionWfDraft.autoEscalationHours}
+                  onChange={(e) =>
+                    setDeductionWfDraft((prev) => ({
+                      ...prev,
+                      autoEscalationHours: Math.max(1, Number(e.target.value) || 48),
+                    }))
+                  }
+                  className={`${INPUT_CLASS} font-mono max-w-[120px] disabled:opacity-60`}
+                />
+                <div className="flex items-center gap-1.5">
+                  {[
+                    { label: '24h', hours: 24 },
+                    { label: '48h', hours: 48 },
+                    { label: '72h (3d)', hours: 72 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.hours}
+                      type="button"
+                      disabled={!canManageDeductionWorkflow}
+                      onClick={() =>
+                        setDeductionWfDraft((prev) => ({
+                          ...prev,
+                          autoEscalationHours: preset.hours,
+                        }))
+                      }
+                      className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium cursor-pointer disabled:opacity-50 ${
+                        deductionWfDraft.autoEscalationHours === preset.hours
+                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Unanswered Section Manager requests automatically escalate to HR after this window.
+              </p>
+            </div>
+
+            {canManageDeductionWorkflow && (
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60 shrink-0"
+              >
+                {t(lang, 'save')}
+              </button>
+            )}
+          </div>
+        </form>
       </div>
     );
   }

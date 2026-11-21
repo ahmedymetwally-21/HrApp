@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
+  SlidersHorizontal,
   Users,
   Wallet,
   X,
@@ -20,6 +21,7 @@ import { AttendanceView } from './components/AttendanceView';
 import { Avatar } from './components/Avatar';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { DashboardView, NavSection } from './components/DashboardView';
+import { EarningsDeductionsView } from './components/EarningsDeductionsView';
 import { EmployeesView } from './components/EmployeesView';
 import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScreen';
 import { LeavesView } from './components/LeavesView';
@@ -57,6 +59,7 @@ import {
   LeaveStatus,
   LeaveType,
   PayrollAdjustment,
+  PayrollCategoryItem,
   ProAssignment,
   SalaryReleaseStatus,
   Section,
@@ -64,11 +67,14 @@ import {
   UserRole,
 } from './types/hr';
 import {
+  canActOnDeductionApproval,
   canRoleActOnLeaveStep,
+  DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   evaluateClockInEligibility,
   getDocumentExpiryStatus,
   getScopedEmployees,
   getUserAttachedCompanyIds,
+  inferDefaultEmployeeType,
   normalizeUserRole,
   resolveClockInPolicy,
 } from './utils/hrLogic';
@@ -110,6 +116,7 @@ function buildSessionFallbackEmployee(
     avatarUrl: session.avatarUrl,
     mustChangePassword: Boolean(session.mustChangePassword),
     role,
+    employeeType: inferDefaultEmployeeType({ role }),
     primaryCompanyId: session.primaryCompanyId || db?.companies[0]?.id || '',
     sharedCompanyIds: [],
     sectionId: session.sectionId || db?.sections[0]?.id || '',
@@ -378,11 +385,13 @@ export function App() {
   }, [activeRole, currentUser, accessibleCompanies, selectedCompanyId]);
 
   const allowedNavIds = useMemo<NavSection[]>(() => {
-    if (activeRole === UserRole.Accounting) return ['payroll'];
+    if (activeRole === UserRole.Accounting) return ['payroll', 'earnings_deductions'];
     if (activeRole === UserRole.PRO) return ['dashboard', 'employees'];
     const base: NavSection[] = ['dashboard', 'attendance', 'employees', 'leaves', 'payroll'];
     if (activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin) {
-      base.push('settings');
+      base.push('earnings_deductions', 'settings');
+    } else if (activeRole === UserRole.SectionManager) {
+      base.push('earnings_deductions');
     }
     return base;
   }, [activeRole]);
@@ -429,6 +438,21 @@ export function App() {
   const scopedAdjustments = useMemo(() => {
     if (!db) return [];
     return db.payrollAdjustments.filter((p) => scopedEmployeeIds.has(p.employeeId));
+  }, [db, scopedEmployeeIds]);
+
+  const scopedPayrollEntries = useMemo(() => {
+    if (!db) return [];
+    return db.payrollEntries.filter((p) => scopedEmployeeIds.has(p.employeeId));
+  }, [db, scopedEmployeeIds]);
+
+  const scopedDeductionApprovals = useMemo(() => {
+    if (!db) return [];
+    return (db.deductionApprovals ?? []).filter((d) => scopedEmployeeIds.has(d.employeeId));
+  }, [db, scopedEmployeeIds]);
+
+  const scopedPatchReleases = useMemo(() => {
+    if (!db) return [];
+    return (db.patchReleases ?? []).filter((r) => scopedEmployeeIds.has(r.employeeId));
   }, [db, scopedEmployeeIds]);
 
   // Compute simulated or live GPS reading for current user
@@ -504,6 +528,24 @@ export function App() {
             });
           });
       }
+
+      scopedDeductionApprovals.forEach((req) => {
+        const emp = db.employees.find((e) => e.id === req.employeeId);
+        if (!emp) return;
+        const perm = canActOnDeductionApproval({
+          request: req,
+          actorRole: activeRole,
+          actorManagedSectionIds: currentUser.managedSectionIds,
+        });
+        if (perm.canManagerAct || perm.canHrAct) {
+          items.push({
+            id: `da-${req.id}`,
+            title: `Deduction Approval: ${emp.fullName}`,
+            detail: `AED ${req.amountAED} · ${req.triggerType === 'off_day' ? 'Off-Day' : 'Latency'}`,
+            target: 'earnings_deductions',
+          });
+        }
+      });
     }
 
     scopedDocuments.forEach((doc) => {
@@ -524,7 +566,15 @@ export function App() {
     });
 
     return items.slice(0, 8);
-  }, [db, currentUser, activeRole, scopedLeaves, scopedEmployees, scopedDocuments]);
+  }, [
+    db,
+    currentUser,
+    activeRole,
+    scopedLeaves,
+    scopedEmployees,
+    scopedDocuments,
+    scopedDeductionApprovals,
+  ]);
 
   // --- Handlers ---
   const handleUpdateServerConfig = (next: ServerConfig) => {
@@ -776,6 +826,11 @@ export function App() {
 
   const canAccessSettings =
     activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const canAccessEarningsDeductions =
+    activeRole === UserRole.MainManager ||
+    activeRole === UserRole.HRAdmin ||
+    activeRole === UserRole.Accounting ||
+    activeRole === UserRole.SectionManager;
 
   const allNavItems: {
     id: NavSection;
@@ -800,6 +855,11 @@ export function App() {
       id: 'payroll',
       label: activeRole === UserRole.Employee ? t(lang, 'navMySalary') : t(lang, 'navPayroll'),
       icon: Wallet,
+    },
+    {
+      id: 'earnings_deductions',
+      label: t(lang, 'navEarningsDeductions'),
+      icon: SlidersHorizontal,
     },
     { id: 'settings', label: t(lang, 'navSettings'), icon: Settings },
   ];
@@ -990,17 +1050,31 @@ export function App() {
 
         {/* Active View Content */}
         <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-5 pb-[80px] lg:pb-8 max-w-7xl mx-auto w-full">
-          {/* Mobile shortcut to Settings Hub for Admins (since mobile bottom nav shows 5 tabs) */}
-          {canAccessSettings && activeNav !== 'settings' && (
-            <div className="lg:hidden mb-4 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setActiveNav('settings')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                <Settings className="w-3.5 h-3.5 text-indigo-600" />
-                {t(lang, 'navSettings')}
-              </button>
+          {/* Mobile shortcuts for tabs beyond the 5-tab bottom bar */}
+          {(canAccessSettings || canAccessEarningsDeductions) && (
+            <div className="lg:hidden mb-4 flex flex-wrap justify-end gap-2">
+              {canAccessEarningsDeductions &&
+                !mobileNavItems.some((m) => m.id === 'earnings_deductions') &&
+                activeNav !== 'earnings_deductions' && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveNav('earnings_deductions')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600" />
+                    {t(lang, 'navEarningsDeductions')}
+                  </button>
+                )}
+              {canAccessSettings && activeNav !== 'settings' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveNav('settings')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5 text-indigo-600" />
+                  {t(lang, 'navSettings')}
+                </button>
+              )}
             </div>
           )}
 
@@ -1019,6 +1093,9 @@ export function App() {
               attendance={scopedAttendance}
               leaves={scopedLeaves}
               payrollAdjustments={scopedAdjustments}
+              payrollEntries={scopedPayrollEntries}
+              deductionApprovals={scopedDeductionApprovals}
+              patchReleases={scopedPatchReleases}
               salaryReleases={db.salaryReleases}
               proAssignments={db.proAssignments}
               settings={db.settings}
@@ -1093,7 +1170,14 @@ export function App() {
               geofences={db.geofences}
               documents={scopedDocuments}
               attendance={scopedAttendance}
+              leaves={scopedLeaves}
               payrollAdjustments={scopedAdjustments}
+              payrollEntries={scopedPayrollEntries}
+              deductionApprovals={scopedDeductionApprovals}
+              patchReleases={scopedPatchReleases}
+              deductionWorkflowConfig={
+                db.settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
+              }
               salaryReleases={db.salaryReleases}
               customDocumentTypes={db.settings.customDocumentTypes}
               onCreateEmployee={async (emp: CreateEmployeePayload) => {
@@ -1190,7 +1274,11 @@ export function App() {
               labels={db.labels}
               scopedEmployees={scopedEmployees}
               attendance={scopedAttendance}
+              leaves={scopedLeaves}
               adjustments={scopedAdjustments}
+              payrollEntries={scopedPayrollEntries}
+              deductionApprovals={scopedDeductionApprovals}
+              patchReleases={scopedPatchReleases}
               salaryReleases={db.salaryReleases}
               settings={db.settings}
               onAddAdjustment={async (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => {
@@ -1223,6 +1311,89 @@ export function App() {
                     : 'Salary release schedule saved.'
                 );
               }}
+              onCreatePatchRelease={async (input) => {
+                await api.patchReleases.create(input);
+                await loadDatabase();
+                showToast('Patch money release recorded & WPS offsets updated.');
+              }}
+              onDeletePatchRelease={async (id) => {
+                await api.patchReleases.remove(id);
+                await loadDatabase();
+                showToast('Patch release removed.');
+              }}
+            />
+          )}
+
+          {activeNav === 'earnings_deductions' && canAccessEarningsDeductions && (
+            <EarningsDeductionsView
+              lang={lang}
+              currentUser={currentUser}
+              activeRole={activeRole}
+              companies={db.companies}
+              scopedEmployees={scopedEmployees}
+              categories={db.payrollCategories}
+              entries={scopedPayrollEntries}
+              deductionApprovals={scopedDeductionApprovals}
+              deductionWorkflowConfig={
+                db.settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
+              }
+              onCreateEntry={async (input) => {
+                await api.payrollEntries.create(input);
+                await loadDatabase();
+                showToast('Payroll entry saved.');
+              }}
+              onEditPermanentEntry={async (params) => {
+                await api.payrollEntries.editPermanent(params);
+                await loadDatabase();
+                showToast('Permanent earning updated — historical months preserved.');
+              }}
+              onStopPermanentEntry={async (params) => {
+                await api.payrollEntries.stopPermanent(params);
+                await loadDatabase();
+                showToast('Permanent earning stopped — historical months preserved.');
+              }}
+              onDeleteEntry={async (id) => {
+                await api.payrollEntries.remove(id);
+                await loadDatabase();
+                showToast('Entry removed.');
+              }}
+              onCreateDeductionApproval={async (input) => {
+                await api.deductionApprovals.create({
+                  ...input,
+                  createdBy: currentUser.fullName,
+                  createdByRole: activeRole,
+                });
+                await loadDatabase();
+                showToast('Deduction request submitted into approval workflow.');
+              }}
+              onManagerDecideDeduction={async (id, decision, note) => {
+                await api.deductionApprovals.managerDecide({
+                  id,
+                  decision,
+                  actorName: currentUser.fullName,
+                  note,
+                });
+                await loadDatabase();
+                showToast(
+                  decision === 'approved'
+                    ? 'Manager approved — routed to HR for final approval.'
+                    : 'Manager recommended waive — routed to HR for final decision.'
+                );
+              }}
+              onHrDecideDeduction={async (id, decision, note) => {
+                await api.deductionApprovals.hrDecide({
+                  id,
+                  decision,
+                  actorName: currentUser.fullName,
+                  note,
+                });
+                await loadDatabase();
+                showToast(
+                  decision === 'approved'
+                    ? 'Deduction finalized and applied to payroll.'
+                    : 'Deduction waived — will not reduce payroll.'
+                );
+              }}
             />
           )}
 
@@ -1239,15 +1410,31 @@ export function App() {
               employees={db.employees}
               geofences={db.geofences}
               workflows={db.workflows}
+              payrollCategories={db.payrollCategories}
               settings={db.settings}
               onCreateCompany={async (input: Omit<Company, 'id'>) => {
                 await api.companies.create(input);
                 await loadDatabase();
                 showToast(`${input.name} added to group.`);
               }}
+              onUpdateCompany={async (id, patch) => {
+                await api.companies.update(id, patch);
+                await loadDatabase();
+                showToast('Company details & WPS configuration saved.');
+              }}
               onToggleCompanyActive={async (id) => {
                 await api.companies.toggleActive(id);
                 await loadDatabase();
+              }}
+              onCreatePayrollCategory={async (input: Omit<PayrollCategoryItem, 'id'>) => {
+                await api.payrollCategories.create(input);
+                await loadDatabase();
+                showToast(`Category "${input.name}" created.`);
+              }}
+              onUpdatePayrollCategory={async (id, patch) => {
+                await api.payrollCategories.update(id, patch);
+                await loadDatabase();
+                showToast('Category updated.');
               }}
               onCreateSection={async (input: Omit<Section, 'id'>) => {
                 await api.sections.create(input);

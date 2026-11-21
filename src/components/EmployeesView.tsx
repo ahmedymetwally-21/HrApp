@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
+  CalendarRange,
   Camera,
   CheckCircle2,
   ChevronRight,
@@ -10,6 +11,7 @@ import {
   Edit3,
   Eye,
   FileText,
+  Infinity as InfinityIcon,
   KeyRound,
   Landmark,
   MapPinOff,
@@ -21,7 +23,17 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react';
-import { getRoleLabel, getSalaryStatusLabel, t } from '../i18n/translations';
+import {
+  getDeductionBucketLabel,
+  getDeductionWorkflowChainLabel,
+  getEmployeeTypeLabel,
+  getPatchBucketLabel,
+  getPaymentMethodLabel,
+  getPayrollEntryTypeLabel,
+  getRoleLabel,
+  getSalaryStatusLabel,
+  t,
+} from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
 import {
   AttendanceLog,
@@ -29,14 +41,21 @@ import {
   ClockInPolicyMode,
   Company,
   CreateEmployeePayload,
+  DeductionApprovalRequest,
+  DeductionWorkflowChain,
+  DeductionWorkflowConfig,
   DocumentTypeValue,
   Employee,
   EmployeeDocument,
   EmployeeLabel,
   EmployeeModel,
+  EmployeeType,
   GeofenceZone,
   Language,
+  LeaveRequest,
+  PatchMoneyRelease,
   PayrollAdjustment,
+  PayrollEntry,
   ProAssignment,
   SalaryReleaseSchedule,
   Section,
@@ -46,6 +65,8 @@ import {
 } from '../types/hr';
 import {
   calculateEmployeePayroll,
+  calculateEmployeePendingBalances,
+  DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatAED,
   formatShortDate,
   formatTime,
@@ -54,10 +75,13 @@ import {
   getEffectiveShiftEnd,
   getEffectiveShiftStart,
   getMissingModelDocuments,
+  inferDefaultEmployeeType,
   isAttendanceTracked,
   isPayrollEligible,
+  isPayrollEntryActiveInMonth,
   isProAssignmentActive,
   isSharedEmployeeInCompany,
+  resolveEmployeeDeductionWorkflow,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 import { SlideOverDrawer } from './SlideOverDrawer';
@@ -76,7 +100,12 @@ interface EmployeesViewProps {
   geofences: GeofenceZone[];
   documents: EmployeeDocument[];
   attendance: AttendanceLog[];
+  leaves: LeaveRequest[];
   payrollAdjustments: PayrollAdjustment[];
+  payrollEntries: PayrollEntry[];
+  deductionApprovals?: DeductionApprovalRequest[];
+  patchReleases?: PatchMoneyRelease[];
+  deductionWorkflowConfig?: DeductionWorkflowConfig;
   salaryReleases: SalaryReleaseSchedule[];
   customDocumentTypes: string[];
   onCreateEmployee: (emp: CreateEmployeePayload) => Promise<void>;
@@ -105,7 +134,12 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   geofences,
   documents,
   attendance,
+  leaves,
   payrollAdjustments,
+  payrollEntries,
+  deductionApprovals = [],
+  patchReleases = [],
+  deductionWorkflowConfig = DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   salaryReleases,
   customDocumentTypes,
   onCreateEmployee,
@@ -173,6 +207,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     avatarUrl: '',
     initialPassword: '',
     role: UserRole.Employee,
+    employeeType: 'office_employee' as EmployeeType,
+    deductionWorkflowOverride: 'inherit' as DeductionWorkflowChain | 'inherit',
     primaryCompanyId: companies[0]?.id ?? '',
     sharedCompanyIds: [] as string[],
     sectionId: sections[0]?.id ?? '',
@@ -187,8 +223,10 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     housingAllowance: 1800,
     transportAllowance: 600,
     otherAllowance: 300,
+    mohrePersonId: '',
     bankName: '',
     accountNumber: '',
+    bankRoutingCode: '',
     iban: '',
   });
 
@@ -261,11 +299,77 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
             currentMonth,
             payrollAdjustments,
             attendance,
-            salaryReleases
+            salaryReleases,
+            payrollEntries,
+            leaves,
+            deductionApprovals,
+            patchReleases
           )
         : null,
-    [selectedEmp, isPro, currentMonth, payrollAdjustments, attendance, salaryReleases]
+    [
+      selectedEmp,
+      isPro,
+      currentMonth,
+      payrollAdjustments,
+      attendance,
+      salaryReleases,
+      payrollEntries,
+      leaves,
+      deductionApprovals,
+      patchReleases,
+    ]
   );
+
+  const selectedPendingBalances = useMemo(() => {
+    if (!selectedEmp || isPro || !isPayrollEligible(selectedEmp)) return [];
+    return calculateEmployeePendingBalances({
+      employee: selectedEmp,
+      currentMonth,
+      adjustments: payrollAdjustments,
+      attendanceLogs: attendance,
+      salaryReleases,
+      payrollEntries,
+      leaves,
+      deductionApprovals,
+      patchReleases,
+    });
+  }, [
+    selectedEmp,
+    isPro,
+    currentMonth,
+    payrollAdjustments,
+    attendance,
+    salaryReleases,
+    payrollEntries,
+    leaves,
+    deductionApprovals,
+    patchReleases,
+  ]);
+
+  const selectedPatchReleases = useMemo(() => {
+    if (!selectedEmp || isPro) return [];
+    return patchReleases
+      .filter((r) => r.employeeId === selectedEmp.id)
+      .sort((a, b) => b.releaseDate.localeCompare(a.releaseDate));
+  }, [patchReleases, selectedEmp, isPro]);
+
+  const selectedPermanentEarnings = useMemo(() => {
+    if (!selectedEmp || isPro) return [];
+    return payrollEntries.filter(
+      (e) =>
+        e.employeeId === selectedEmp.id &&
+        e.isPermanent &&
+        (e.type === 'earning_in_payroll' || e.type === 'earning_off_cycle') &&
+        isPayrollEntryActiveInMonth(e, currentMonth)
+    );
+  }, [payrollEntries, selectedEmp, isPro, currentMonth]);
+
+  const selectedTemporaryEntries = useMemo(() => {
+    if (!selectedEmp || isPro) return [];
+    return payrollEntries
+      .filter((e) => e.employeeId === selectedEmp.id && !e.isPermanent)
+      .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
+  }, [payrollEntries, selectedEmp, isPro]);
 
   const availableDrawerTabs = useMemo(() => {
     if (!selectedEmp) return [];
@@ -300,6 +404,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       avatarUrl: '',
       initialPassword: '',
       role: UserRole.Employee,
+      employeeType: 'office_employee',
+      deductionWorkflowOverride: 'inherit',
       primaryCompanyId: defaultComp,
       sharedCompanyIds: [],
       sectionId: sections[1]?.id ?? sections[0]?.id ?? '',
@@ -317,8 +423,10 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       housingAllowance: 1800,
       transportAllowance: 600,
       otherAllowance: 300,
+      mohrePersonId: '',
       bankName: '',
       accountNumber: '',
+      bankRoutingCode: '',
       iban: '',
     });
     setShowEmpModal(true);
@@ -335,6 +443,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       avatarUrl: emp.avatarUrl ?? '',
       initialPassword: '',
       role: emp.role,
+      employeeType: emp.employeeType ?? inferDefaultEmployeeType(emp),
+      deductionWorkflowOverride: emp.deductionWorkflowOverride ?? 'inherit',
       primaryCompanyId: emp.primaryCompanyId,
       sharedCompanyIds: [...emp.sharedCompanyIds],
       sectionId: emp.sectionId,
@@ -349,8 +459,10 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       housingAllowance: emp.salary.housingAllowance,
       transportAllowance: emp.salary.transportAllowance,
       otherAllowance: emp.salary.otherAllowance,
+      mohrePersonId: emp.mohrePersonId ?? '',
       bankName: emp.bankDetails?.bankName ?? '',
       accountNumber: emp.bankDetails?.accountNumber ?? '',
+      bankRoutingCode: emp.bankDetails?.bankRoutingCode ?? '',
       iban: emp.bankDetails?.iban ?? '',
     });
     setShowEmpModal(true);
@@ -403,13 +515,22 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         };
 
     const bankDetails =
-      !isMainMgr && (empForm.bankName.trim() || empForm.accountNumber.trim() || empForm.iban.trim())
+      !isMainMgr &&
+      (empForm.bankName.trim() ||
+        empForm.accountNumber.trim() ||
+        empForm.bankRoutingCode.trim() ||
+        empForm.iban.trim())
         ? {
             bankName: empForm.bankName.trim(),
             accountNumber: empForm.accountNumber.trim(),
+            bankRoutingCode: empForm.bankRoutingCode.trim() || undefined,
             iban: empForm.iban.trim(),
           }
         : undefined;
+
+    const mohrePersonId = !isMainMgr && empForm.mohrePersonId.trim()
+      ? empForm.mohrePersonId.trim()
+      : undefined;
 
     if (editingEmp) {
       await onUpdateEmployee(editingEmp.id, {
@@ -419,6 +540,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         phone: empForm.phone.trim(),
         avatarUrl: empForm.avatarUrl || undefined,
         role: empForm.role,
+        employeeType: empForm.employeeType,
+        deductionWorkflowOverride: empForm.deductionWorkflowOverride,
         primaryCompanyId: empForm.primaryCompanyId,
         sharedCompanyIds: sharedClean,
         sectionId: empForm.sectionId,
@@ -430,6 +553,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         assignedZoneIds: isMainMgr ? [] : empForm.assignedZoneIds,
         clockInPolicyOverride: empForm.clockInPolicyOverride,
         salary,
+        mohrePersonId,
         bankDetails,
       });
     } else {
@@ -441,6 +565,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         avatarUrl: empForm.avatarUrl || undefined,
         initialPassword: empForm.initialPassword.trim(),
         role: empForm.role,
+        employeeType: empForm.employeeType,
+        deductionWorkflowOverride: empForm.deductionWorkflowOverride,
         primaryCompanyId: empForm.primaryCompanyId,
         sharedCompanyIds: sharedClean,
         sectionId: empForm.sectionId,
@@ -453,6 +579,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         assignedZoneIds: isMainMgr ? [] : empForm.assignedZoneIds,
         clockInPolicyOverride: empForm.clockInPolicyOverride,
         salary,
+        mohrePersonId,
         bankDetails,
         leaveBalance: {
           annualTotal: chosenModel?.leaveQuotas.annualTotal ?? 30,
@@ -831,6 +958,32 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     <dt className="text-slate-500">Employee Model</dt>
                     <dd className="mt-1 font-semibold text-slate-900 dark:text-white">
                       {selectedModel?.name ?? 'Default'}
+                    </dd>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3">
+                    <dt className="text-slate-500">{t(lang, 'employeeType')}</dt>
+                    <dd className="mt-1 font-semibold text-slate-900 dark:text-white">
+                      {getEmployeeTypeLabel(
+                        lang,
+                        selectedEmp.employeeType ?? inferDefaultEmployeeType(selectedEmp)
+                      )}
+                    </dd>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3">
+                    <dt className="text-slate-500">{t(lang, 'deductionWorkflowOverride')}</dt>
+                    <dd className="mt-1 font-semibold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        {getDeductionWorkflowChainLabel(
+                          lang,
+                          resolveEmployeeDeductionWorkflow(selectedEmp, deductionWorkflowConfig)
+                        )}
+                      </span>
+                      {selectedEmp.deductionWorkflowOverride &&
+                        selectedEmp.deductionWorkflowOverride !== 'inherit' && (
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+                            Override
+                          </span>
+                        )}
                     </dd>
                   </div>
                 </dl>
@@ -1324,7 +1477,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
               </div>
             )}
 
-            {/* TAB 4: SALARY (Strictly blocked for PRO and Main Manager) */}
+            {/* TAB 4: SALARY (3-Bucket Profile: Main Salary, Permanent Earnings, Temporary Entries, WPS IDs) */}
             {effectiveDrawerTab === 'salary' && !isPro && selectedPayroll && (
               <div className="space-y-4 text-xs">
                 <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3.5 flex items-center justify-between gap-2">
@@ -1347,34 +1500,324 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                   </span>
                 </div>
 
-                <dl className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2">
-                  <div className="flex justify-between">
-                    <dt className="text-slate-500">Base Salary</dt>
-                    <dd className="font-mono font-medium text-slate-900 dark:text-white">
-                      {formatAED(selectedPayroll.baseSalary)}
-                    </dd>
+                {/* Bucket 1: Main Salary (Basic + Allowances untouched) */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2">
+                  <p className="font-semibold text-slate-900 dark:text-white">
+                    {t(lang, 'mainSalary')} ({currentMonth})
+                  </p>
+                  <dl className="space-y-1.5">
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">Basic Salary (WPS Fixed)</dt>
+                      <dd className="font-mono font-medium text-slate-900 dark:text-white">
+                        {formatAED(selectedPayroll.baseSalary)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">Allowances (Housing + Transport + Other)</dt>
+                      <dd className="font-mono font-medium text-slate-900 dark:text-white">
+                        {formatAED(selectedPayroll.totalAllowances)}
+                      </dd>
+                    </div>
+                    {selectedPayroll.inPayrollEarnings > 0 && (
+                      <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
+                        <dt>{t(lang, 'typeEarningInPayroll')}</dt>
+                        <dd className="font-mono">+{formatAED(selectedPayroll.inPayrollEarnings)}</dd>
+                      </div>
+                    )}
+                    {selectedPayroll.offCycleEarnings > 0 && (
+                      <div className="flex justify-between text-teal-700 dark:text-teal-400">
+                        <dt>{t(lang, 'typeEarningOffCycle')}</dt>
+                        <dd className="font-mono">+{formatAED(selectedPayroll.offCycleEarnings)}</dd>
+                      </div>
+                    )}
+                    {selectedPayroll.totalDeductions > 0 && (
+                      <div className="flex justify-between text-rose-700 dark:text-rose-400">
+                        <dt>Total Deductions ({currentMonth})</dt>
+                        <dd className="font-mono">-{formatAED(selectedPayroll.totalDeductions)}</dd>
+                      </div>
+                    )}
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 gap-2">
+                      <div className="rounded-lg bg-indigo-50/60 dark:bg-indigo-950/40 px-2.5 py-2">
+                        <p className="text-[10px] text-indigo-700 dark:text-indigo-300 font-medium">
+                          {t(lang, 'wpsPayout')}
+                        </p>
+                        <p className="font-mono font-bold text-indigo-900 dark:text-indigo-200 mt-0.5">
+                          {formatAED(selectedPayroll.wpsTotalPayout)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-teal-50/60 dark:bg-teal-950/40 px-2.5 py-2">
+                        <p className="text-[10px] text-teal-700 dark:text-teal-300 font-medium">
+                          {t(lang, 'offCyclePayout')}
+                        </p>
+                        <p className="font-mono font-bold text-teal-900 dark:text-teal-200 mt-0.5">
+                          {formatAED(selectedPayroll.offCycleNetPayout)}
+                        </p>
+                      </div>
+                    </div>
+                    {selectedPayroll.earlyWpsReleasedAED + selectedPayroll.earlyOffCycleReleasedAED > 0 && (
+                      <div className="flex justify-between text-indigo-700 dark:text-indigo-300">
+                        <dt>{t(lang, 'earlyPatchReleases')}</dt>
+                        <dd className="font-mono">
+                          -
+                          {formatAED(
+                            selectedPayroll.earlyWpsReleasedAED +
+                              selectedPayroll.earlyOffCycleReleasedAED
+                          )}
+                        </dd>
+                      </div>
+                    )}
+                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between text-sm font-bold">
+                      <dt className="text-slate-900 dark:text-white">
+                        {selectedPayroll.earlyWpsReleasedAED +
+                          selectedPayroll.earlyOffCycleReleasedAED >
+                        0
+                          ? t(lang, 'remainingNetPayable')
+                          : 'Total Net Payable'}
+                      </dt>
+                      <dd className="font-mono text-indigo-800 dark:text-indigo-300">
+                        {formatAED(
+                          selectedPayroll.earlyWpsReleasedAED +
+                            selectedPayroll.earlyOffCycleReleasedAED >
+                            0
+                            ? selectedPayroll.remainingNetPayable
+                            : selectedPayroll.netSalary
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {/* WPS / Bank Identifiers */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3.5 space-y-1.5">
+                  <p className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <Landmark className="w-3.5 h-3.5 text-indigo-600" />
+                    WPS & Bank Details
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <span className="text-slate-500 block">{t(lang, 'mohrePersonId')}</span>
+                      <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                        {selectedEmp.mohrePersonId || 'Not set'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">{t(lang, 'bankRoutingCode')}</span>
+                      <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                        {selectedEmp.bankDetails?.bankRoutingCode || 'Not set'}
+                      </span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-slate-500 block">Bank & IBAN</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-300 break-all">
+                        {selectedEmp.bankDetails
+                          ? `${selectedEmp.bankDetails.bankName} · ${selectedEmp.bankDetails.iban}`
+                          : 'Not configured'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <dt className="text-slate-500">Allowances (Housing + Transport + Other)</dt>
-                    <dd className="font-mono font-medium text-slate-900 dark:text-white">
-                      {formatAED(selectedPayroll.totalAllowances)}
-                    </dd>
-                  </div>
-                  <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
-                    <dt>Bonuses ({currentMonth})</dt>
-                    <dd className="font-mono">+{formatAED(selectedPayroll.totalBonuses)}</dd>
-                  </div>
-                  <div className="flex justify-between text-rose-700 dark:text-rose-400">
-                    <dt>Total Deductions ({currentMonth})</dt>
-                    <dd className="font-mono">-{formatAED(selectedPayroll.totalDeductions)}</dd>
-                  </div>
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex justify-between text-sm font-bold">
-                    <dt className="text-slate-900 dark:text-white">Net Payable</dt>
-                    <dd className="font-mono text-indigo-800 dark:text-indigo-300">
-                      {formatAED(selectedPayroll.netSalary)}
-                    </dd>
-                  </div>
-                </dl>
+                </div>
+
+                {/* Active Permanent Additional Earnings */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
+                  <p className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <InfinityIcon className="w-3.5 h-3.5 text-indigo-600" />
+                    {t(lang, 'permanentEarnings')} ({selectedPermanentEarnings.length})
+                  </p>
+                  {selectedPermanentEarnings.length === 0 ? (
+                    <p className="text-slate-500">No active permanent additional earnings.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedPermanentEarnings.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-slate-900 dark:text-white">
+                                {entry.categoryName}
+                              </span>
+                              <span
+                                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                  entry.type === 'earning_in_payroll'
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                                    : 'bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300'
+                                }`}
+                              >
+                                {getPayrollEntryTypeLabel(lang, entry.type)}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              From {entry.effectiveFrom}
+                              {entry.effectiveTo ? ` → ${entry.effectiveTo}` : ' · Ongoing'} ·{' '}
+                              {entry.reason}
+                            </p>
+                          </div>
+                          <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400 shrink-0">
+                            +{formatAED(entry.amountAED)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Scheduled Temporary Earnings & Deductions */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
+                  <p className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <CalendarRange className="w-3.5 h-3.5 text-indigo-600" />
+                    {t(lang, 'scheduledTemporaryEntries')} ({selectedTemporaryEntries.length})
+                  </p>
+                  {selectedTemporaryEntries.length === 0 ? (
+                    <p className="text-slate-500">No scheduled temporary earnings or deductions.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedTemporaryEntries.map((entry) => {
+                        const isEarn =
+                          entry.type === 'earning_in_payroll' ||
+                          entry.type === 'earning_off_cycle';
+                        return (
+                          <div
+                            key={entry.id}
+                            className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-semibold text-slate-900 dark:text-white">
+                                  {entry.categoryName}
+                                </span>
+                                <span
+                                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                    isEarn
+                                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                                  }`}
+                                >
+                                  {getPayrollEntryTypeLabel(lang, entry.type)}
+                                </span>
+                                {!isEarn && entry.targetBucket && (
+                                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                                    → {getDeductionBucketLabel(lang, entry.targetBucket)}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                {entry.effectiveFrom}
+                                {entry.effectiveTo && entry.effectiveTo !== entry.effectiveFrom
+                                  ? ` → ${entry.effectiveTo}`
+                                  : ''}{' '}
+                                ({entry.durationMonths ?? 1}m) · {entry.reason}
+                              </p>
+                            </div>
+                            <span
+                              className={`font-mono font-bold shrink-0 ${
+                                isEarn
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : 'text-rose-700 dark:text-rose-400'
+                              }`}
+                            >
+                              {isEarn ? '+' : '-'}
+                              {formatAED(entry.amountAED)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Phase 1B: Pending Unpaid Balances (By Month & Bucket) */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
+                  <p className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <Landmark className="w-3.5 h-3.5 text-indigo-600" />
+                    {t(lang, 'pendingBalances')} ({selectedPendingBalances.length})
+                  </p>
+                  {selectedPendingBalances.length === 0 ? (
+                    <p className="text-slate-500">No pending unpaid balances.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedPendingBalances.map((bal) => (
+                        <div
+                          key={`${bal.month}-${bal.bucket}`}
+                          className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                                {bal.month}
+                              </span>
+                              <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                                {getPatchBucketLabel(lang, bal.bucket)}
+                              </span>
+                              {bal.impactsWps && (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300">
+                                  WPS
+                                </span>
+                              )}
+                            </div>
+                            {bal.alreadyReleasedAED > 0 && (
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                Released: {formatAED(bal.alreadyReleasedAED)} / Total:{' '}
+                                {formatAED(bal.earnedOrScheduledAED)}
+                              </p>
+                            )}
+                          </div>
+                          <span className="font-mono font-bold text-indigo-700 dark:text-indigo-300 shrink-0">
+                            {formatAED(bal.availableAED)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Phase 1B: Patch Release History */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-2.5">
+                  <p className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                    {t(lang, 'patchReleaseHistory')} ({selectedPatchReleases.length})
+                  </p>
+                  {selectedPatchReleases.length === 0 ? (
+                    <p className="text-slate-500">{t(lang, 'noPatchReleases')}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedPatchReleases.map((rel) => (
+                        <div
+                          key={rel.id}
+                          className="rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-2.5 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-slate-900 dark:text-white">
+                                {formatShortDate(rel.releaseDate)}
+                              </span>
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
+                                {getPaymentMethodLabel(lang, rel.paymentMethod)}
+                              </span>
+                            </div>
+                            <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                              {formatAED(rel.totalAmountAED)}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {rel.allocations.map((al, idx) => (
+                              <span
+                                key={`${rel.id}-${al.month}-${al.bucket}-${idx}`}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono"
+                              >
+                                {al.month} · {getPatchBucketLabel(lang, al.bucket)}:{' '}
+                                {formatAED(al.amountAED)}
+                              </span>
+                            ))}
+                          </div>
+                          {rel.referenceNote && (
+                            <p className="text-[11px] text-slate-500">{rel.referenceNote}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1662,6 +2105,57 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     ))}
                   </select>
                 </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    {t(lang, 'employeeType')}
+                  </label>
+                  <select
+                    value={empForm.employeeType}
+                    onChange={(e) =>
+                      setEmpForm((p) => ({ ...p, employeeType: e.target.value as EmployeeType }))
+                    }
+                    className={INPUT_CLASS}
+                  >
+                    {(['office_employee', 'driver', 'management'] as EmployeeType[]).map((et) => (
+                      <option key={et} value={et}>
+                        {getEmployeeTypeLabel(lang, et)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    {t(lang, 'deductionWorkflowOverride')}
+                  </label>
+                  <select
+                    value={empForm.deductionWorkflowOverride}
+                    onChange={(e) =>
+                      setEmpForm((p) => ({
+                        ...p,
+                        deductionWorkflowOverride: e.target.value as
+                          | DeductionWorkflowChain
+                          | 'inherit',
+                      }))
+                    }
+                    className={INPUT_CLASS}
+                  >
+                    <option value="inherit">
+                      {t(lang, 'inheritWorkflow')} (
+                      {getDeductionWorkflowChainLabel(
+                        lang,
+                        deductionWorkflowConfig[empForm.employeeType]
+                      )}
+                      )
+                    </option>
+                    {(
+                      ['manager_then_hr', 'hr_only', 'main_manager_only'] as DeductionWorkflowChain[]
+                    ).map((ch) => (
+                      <option key={ch} value={ch}>
+                        {getDeductionWorkflowChainLabel(lang, ch)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               {/* Managed Sections (Multi-select for Section Managers & Co-Managers) */}
@@ -1883,8 +2377,38 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Bank Details */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  {/* Bank & WPS Details */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        {t(lang, 'mohrePersonId')}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="14-digit MOHRE Person ID"
+                        value={empForm.mohrePersonId}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, mohrePersonId: e.target.value }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        {t(lang, 'bankRoutingCode')}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g., 302620122"
+                        value={empForm.bankRoutingCode}
+                        onChange={(e) =>
+                          setEmpForm((p) => ({ ...p, bankRoutingCode: e.target.value }))
+                        }
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div>
                       <label className="block text-[11px] text-slate-500 mb-1">Bank Name</label>
                       <input

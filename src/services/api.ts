@@ -16,16 +16,29 @@ import {
   ClockInPolicyMode,
   Company,
   CreateEmployeePayload,
+  DeductionApprovalRequest,
+  DeductionApprovalStatus,
+  DeductionApprovalTrigger,
+  DeductionTargetBucket,
+  DeductionWorkflowChain,
+  DeductionWorkflowConfig,
   Employee,
   EmployeeDocument,
   EmployeeLabel,
   EmployeeModel,
+  EmployeeType,
   EndpointFailure,
   GeofenceZone,
   HRDatabase,
   LeaveRequest,
   LeaveStatus,
+  PatchMoneyRelease,
+  PatchPaymentMethod,
+  PatchReleaseAllocation,
   PayrollAdjustment,
+  PayrollCategoryItem,
+  PayrollEntry,
+  PayrollEntryType,
   ProAssignment,
   PunchSource,
   SalaryReleaseSchedule,
@@ -37,15 +50,24 @@ import {
 import {
   adjustLeaveBalance,
   advanceLeaveApproval,
+  applyHrDeductionDecision,
+  applyManagerDeductionDecision,
   buildLeaveApprovalChain,
+  buildNewDeductionApprovalRequest,
+  computeTemporaryEndMonth,
+  DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
+  editPermanentPayrollEntry,
   evaluateModelLateness,
   evaluateStartupEndpointResults,
   getEffectiveShiftStart,
   getStartupEndpointsForRole,
+  inferDefaultEmployeeType,
   isAttendanceTracked,
   normalizeUserRole,
   resolveApprovalWorkflow,
   SettledStartupItem,
+  stopPermanentPayrollEntry,
+  validatePatchReleaseAllocations,
 } from '../utils/hrLogic';
 import { createInitialSeedData } from './seedData';
 
@@ -271,6 +293,178 @@ export function normalizeAuthSession(
   };
 }
 
+export function normalizeCompany(raw: unknown): Company {
+  const obj = asRecord(raw);
+  return {
+    id: asString(obj.id ?? ''),
+    code: asString(obj.code ?? ''),
+    name: asString(obj.name ?? ''),
+    industry: asString(obj.industry ?? ''),
+    city: asString(obj.city ?? ''),
+    active: asBoolean(obj.active, true),
+    molEstablishmentId:
+      asString(obj.molEstablishmentId ?? obj.mol_establishment_id ?? '') || undefined,
+    wpsRoutingCode: asString(obj.wpsRoutingCode ?? obj.wps_routing_code ?? '') || undefined,
+    companyIban: asString(obj.companyIban ?? obj.company_iban ?? '') || undefined,
+  };
+}
+
+export function normalizePayrollCategory(raw: unknown): PayrollCategoryItem {
+  const obj = asRecord(raw);
+  const rawType = asString(obj.type, 'earning_in_payroll') as PayrollEntryType;
+  return {
+    id: asString(obj.id ?? ''),
+    type: rawType,
+    name: asString(obj.name ?? ''),
+    active: asBoolean(obj.active, true),
+    description: asString(obj.description ?? '') || undefined,
+  };
+}
+
+export function normalizePayrollEntry(raw: unknown): PayrollEntry {
+  const obj = asRecord(raw);
+  const isPermanent = asBoolean(obj.isPermanent ?? obj.is_permanent, false);
+  const rawDuration = obj.durationMonths ?? obj.duration_months;
+  const durationMonths =
+    rawDuration === null || rawDuration === undefined || isPermanent
+      ? null
+      : asNumber(rawDuration, 1);
+  const rawEffectiveTo = obj.effectiveTo ?? obj.effective_to;
+  return {
+    id: asString(obj.id ?? ''),
+    employeeId: asString(obj.employeeId ?? obj.employee_id ?? obj.user_id ?? ''),
+    companyId: asString(obj.companyId ?? obj.company_id ?? ''),
+    type: asString(obj.type, 'earning_in_payroll') as PayrollEntryType,
+    categoryId: asString(obj.categoryId ?? obj.category_id ?? ''),
+    categoryName: asString(obj.categoryName ?? obj.category_name ?? ''),
+    amountAED: asNumber(obj.amountAED ?? obj.amount_aed ?? obj.amount, 0),
+    isPermanent,
+    effectiveFrom: asString(obj.effectiveFrom ?? obj.effective_from ?? ''),
+    effectiveTo:
+      rawEffectiveTo === null || rawEffectiveTo === undefined || rawEffectiveTo === ''
+        ? null
+        : asString(rawEffectiveTo),
+    durationMonths,
+    targetBucket: (obj.targetBucket ?? obj.target_bucket ?? null) as DeductionTargetBucket | null,
+    reason: asString(obj.reason ?? ''),
+    createdBy: asString(obj.createdBy ?? obj.created_by ?? ''),
+    createdByRole: normalizeUserRole(obj.createdByRole ?? obj.created_by_role),
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? new Date().toISOString()),
+    updatedAt: asString(obj.updatedAt ?? obj.updated_at ?? '') || undefined,
+  };
+}
+
+export function normalizeDeductionApproval(raw: unknown): DeductionApprovalRequest {
+  const obj = asRecord(raw);
+  return {
+    id: asString(obj.id ?? ''),
+    employeeId: asString(obj.employeeId ?? obj.employee_id ?? obj.user_id ?? ''),
+    companyId: asString(obj.companyId ?? obj.company_id ?? ''),
+    sectionId: asString(obj.sectionId ?? obj.section_id ?? ''),
+    month: asString(obj.month ?? obj.payroll_month ?? ''),
+    triggerType: asString(obj.triggerType ?? obj.trigger_type, 'latency') as DeductionApprovalTrigger,
+    date: asString(obj.date ?? obj.incident_date ?? ''),
+    amountAED: asNumber(obj.amountAED ?? obj.amount_aed ?? obj.amount, 0),
+    targetBucket: asString(
+      obj.targetBucket ?? obj.target_bucket,
+      'main_salary'
+    ) as DeductionTargetBucket,
+    reason: asString(obj.reason ?? ''),
+    workflowChain: asString(
+      obj.workflowChain ?? obj.workflow_chain,
+      'manager_then_hr'
+    ) as DeductionWorkflowChain,
+    status: asString(obj.status, 'pending_manager') as DeductionApprovalStatus,
+    escalationDeadline: asString(
+      obj.escalationDeadline ?? obj.escalation_deadline ?? new Date().toISOString()
+    ),
+    managerActorName:
+      asString(obj.managerActorName ?? obj.manager_actor_name ?? '') || undefined,
+    managerDecision:
+      (obj.managerDecision ?? obj.manager_decision ?? undefined) as
+        | 'approved'
+        | 'rejected'
+        | undefined,
+    managerNote: asString(obj.managerNote ?? obj.manager_note ?? '') || undefined,
+    managerDecidedAt:
+      asString(obj.managerDecidedAt ?? obj.manager_decided_at ?? '') || undefined,
+    hrActorName: asString(obj.hrActorName ?? obj.hr_actor_name ?? '') || undefined,
+    hrDecision:
+      (obj.hrDecision ?? obj.hr_decision ?? undefined) as 'approved' | 'waived' | undefined,
+    hrNote: asString(obj.hrNote ?? obj.hr_note ?? '') || undefined,
+    hrDecidedAt: asString(obj.hrDecidedAt ?? obj.hr_decided_at ?? '') || undefined,
+    createdBy: asString(obj.createdBy ?? obj.created_by ?? ''),
+    createdByRole: normalizeUserRole(obj.createdByRole ?? obj.created_by_role),
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? new Date().toISOString()),
+  };
+}
+
+export function normalizePatchRelease(raw: unknown): PatchMoneyRelease {
+  const obj = asRecord(raw);
+  const rawAllocs = obj.allocations ?? obj.allocations_json;
+  let parsedAllocs: unknown[] = [];
+  if (Array.isArray(rawAllocs)) {
+    parsedAllocs = rawAllocs;
+  } else if (typeof rawAllocs === 'string' && rawAllocs.trim().startsWith('[')) {
+    try {
+      const p = JSON.parse(rawAllocs);
+      if (Array.isArray(p)) parsedAllocs = p;
+    } catch {
+      parsedAllocs = [];
+    }
+  }
+  const allocations: PatchReleaseAllocation[] = parsedAllocs.map((a) => {
+    const rec = asRecord(a);
+    return {
+      month: asString(rec.month ?? rec.payroll_month ?? ''),
+      bucket: asString(rec.bucket, 'off_cycle') as PatchReleaseAllocation['bucket'],
+      amountAED: asNumber(rec.amountAED ?? rec.amount_aed ?? rec.amount, 0),
+    };
+  });
+
+  return {
+    id: asString(obj.id ?? ''),
+    employeeId: asString(obj.employeeId ?? obj.employee_id ?? obj.user_id ?? ''),
+    companyId: asString(obj.companyId ?? obj.company_id ?? ''),
+    totalAmountAED: asNumber(obj.totalAmountAED ?? obj.total_amount_aed ?? obj.total_amount, 0),
+    allocations,
+    paymentMethod: asString(
+      obj.paymentMethod ?? obj.payment_method,
+      'Cash'
+    ) as PatchPaymentMethod,
+    releaseDate: asString(obj.releaseDate ?? obj.release_date ?? new Date().toISOString().slice(0, 10)),
+    releasedBy: asString(obj.releasedBy ?? obj.released_by ?? ''),
+    releasedByRole: normalizeUserRole(obj.releasedByRole ?? obj.released_by_role),
+    referenceNote: asString(obj.referenceNote ?? obj.reference_note ?? '') || undefined,
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? new Date().toISOString()),
+  };
+}
+
+export function normalizeDeductionWorkflowConfig(raw: unknown): DeductionWorkflowConfig {
+  const obj = asRecord(raw);
+  return {
+    office_employee: asString(
+      obj.office_employee ?? obj.officeEmployee,
+      DEFAULT_DEDUCTION_WORKFLOW_CONFIG.office_employee
+    ) as DeductionWorkflowChain,
+    driver: asString(
+      obj.driver,
+      DEFAULT_DEDUCTION_WORKFLOW_CONFIG.driver
+    ) as DeductionWorkflowChain,
+    management: asString(
+      obj.management,
+      DEFAULT_DEDUCTION_WORKFLOW_CONFIG.management
+    ) as DeductionWorkflowChain,
+    autoEscalationHours: Math.max(
+      1,
+      asNumber(
+        obj.autoEscalationHours ?? obj.auto_escalation_hours,
+        DEFAULT_DEDUCTION_WORKFLOW_CONFIG.autoEscalationHours
+      )
+    ),
+  };
+}
+
 export function normalizeEmployee(raw: unknown): Employee {
   const obj = asRecord(raw);
   const salaryObj = asRecord(obj.salary);
@@ -282,6 +476,30 @@ export function normalizeEmployee(raw: unknown): Employee {
     bankObj.accountNumber ?? bankObj.account_number ?? obj.account_number ?? ''
   );
   const iban = asString(bankObj.iban ?? obj.iban ?? '');
+  const bankRoutingCode =
+    asString(bankObj.bankRoutingCode ?? bankObj.bank_routing_code ?? obj.bank_routing_code ?? '') ||
+    undefined;
+  const mohrePersonId =
+    asString(obj.mohrePersonId ?? obj.mohre_person_id ?? '') || undefined;
+
+  const normalizedRole = normalizeUserRole(obj.role);
+  const sectionId = asString(obj.sectionId ?? obj.section_id ?? '');
+  const modelId = asString(obj.modelId ?? obj.model_id ?? '');
+  const rawEmpType = asString(obj.employeeType ?? obj.employee_type ?? '');
+  const employeeType: EmployeeType =
+    rawEmpType === 'office_employee' || rawEmpType === 'driver' || rawEmpType === 'management'
+      ? rawEmpType
+      : inferDefaultEmployeeType({ role: normalizedRole, sectionId, modelId });
+
+  const rawOverride = asString(
+    obj.deductionWorkflowOverride ?? obj.deduction_workflow_override ?? 'inherit'
+  );
+  const deductionWorkflowOverride: DeductionWorkflowChain | 'inherit' =
+    rawOverride === 'manager_then_hr' ||
+    rawOverride === 'hr_only' ||
+    rawOverride === 'main_manager_only'
+      ? rawOverride
+      : 'inherit';
 
   return {
     id: asString(obj.id ?? obj.user_id ?? ''),
@@ -292,15 +510,17 @@ export function normalizeEmployee(raw: unknown): Employee {
     avatarUrl: asString(obj.avatarUrl ?? obj.avatar_url ?? '') || undefined,
     passwordHash: asString(obj.passwordHash ?? obj.password_hash ?? '') || undefined,
     mustChangePassword: asBoolean(obj.mustChangePassword ?? obj.must_change_password, false),
-    role: normalizeUserRole(obj.role),
+    role: normalizedRole,
+    employeeType,
+    deductionWorkflowOverride,
     primaryCompanyId: asString(obj.primaryCompanyId ?? obj.primary_company_id ?? ''),
     sharedCompanyIds: asStringArray(obj.sharedCompanyIds ?? obj.shared_company_ids),
-    sectionId: asString(obj.sectionId ?? obj.section_id ?? ''),
+    sectionId,
     managedSectionIds: asStringArray(
       obj.managedSectionIds ?? obj.managed_section_ids ?? obj.managed_section_ids_json
     ),
     labelIds: asStringArray(obj.labelIds ?? obj.label_ids),
-    modelId: asString(obj.modelId ?? obj.model_id ?? ''),
+    modelId,
     jobTitle: asString(obj.jobTitle ?? obj.job_title ?? ''),
     joinDate: asString(obj.joinDate ?? obj.join_date ?? new Date().toISOString().slice(0, 10)),
     active: asBoolean(obj.active, true),
@@ -332,9 +552,10 @@ export function normalizeEmployee(raw: unknown): Employee {
         0
       ),
     },
+    mohrePersonId,
     bankDetails:
-      bankName || accountNumber || iban
-        ? { bankName, accountNumber, iban }
+      bankName || accountNumber || iban || bankRoutingCode
+        ? { bankName, accountNumber, iban, bankRoutingCode }
         : undefined,
     leaveBalance: {
       annualTotal: asNumber(leaveObj.annualTotal ?? leaveObj.annual_total, 30),
@@ -360,6 +581,7 @@ function createDefaultLiveSettings(apiBaseUrl: string): AppSettings {
     maxMobileAccuracyMeters: 150,
     customDocumentTypes: [],
     apiBaseUrl,
+    deductionWorkflowConfig: { ...DEFAULT_DEDUCTION_WORKFLOW_CONFIG },
   };
 }
 
@@ -467,9 +689,82 @@ function readDb(): HRDatabase {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as HRDatabase;
+      const parsed = JSON.parse(raw) as Partial<HRDatabase>;
       if (parsed && Array.isArray(parsed.companies) && Array.isArray(parsed.employees)) {
-        return parsed;
+        // Non-destructive Phase 1A + 1B migration for previously cached local demo databases
+        const needsMigration =
+          !Array.isArray(parsed.payrollCategories) ||
+          !Array.isArray(parsed.payrollEntries) ||
+          !Array.isArray(parsed.deductionApprovals) ||
+          !Array.isArray(parsed.patchReleases) ||
+          !parsed.settings?.deductionWorkflowConfig ||
+          parsed.companies.some((c) => !c.molEstablishmentId) ||
+          parsed.employees.some((e) => !e.employeeType);
+
+        if (needsMigration) {
+          const fresh = createInitialSeedData();
+          const freshCompById = new Map(fresh.companies.map((c) => [c.id, c]));
+          const freshEmpById = new Map(fresh.employees.map((e) => [e.id, e]));
+          const migrated: HRDatabase = {
+            ...(parsed as HRDatabase),
+            companies: parsed.companies.map((c) => {
+              const seedComp = freshCompById.get(c.id);
+              return {
+                ...c,
+                molEstablishmentId: c.molEstablishmentId ?? seedComp?.molEstablishmentId,
+                wpsRoutingCode: c.wpsRoutingCode ?? seedComp?.wpsRoutingCode,
+                companyIban: c.companyIban ?? seedComp?.companyIban,
+              };
+            }),
+            employees: parsed.employees.map((e) => {
+              const seedEmp = freshEmpById.get(e.id);
+              return {
+                ...e,
+                employeeType:
+                  e.employeeType ??
+                  seedEmp?.employeeType ??
+                  inferDefaultEmployeeType({
+                    role: e.role,
+                    sectionId: e.sectionId,
+                    modelId: e.modelId,
+                  }),
+                deductionWorkflowOverride:
+                  e.deductionWorkflowOverride ?? seedEmp?.deductionWorkflowOverride ?? 'inherit',
+                mohrePersonId: e.mohrePersonId ?? seedEmp?.mohrePersonId,
+                bankDetails: e.bankDetails
+                  ? {
+                      ...e.bankDetails,
+                      bankRoutingCode:
+                        e.bankDetails.bankRoutingCode ?? seedEmp?.bankDetails?.bankRoutingCode,
+                    }
+                  : seedEmp?.bankDetails,
+              };
+            }),
+            payrollCategories:
+              Array.isArray(parsed.payrollCategories) && parsed.payrollCategories.length > 0
+                ? parsed.payrollCategories
+                : fresh.payrollCategories,
+            payrollEntries: Array.isArray(parsed.payrollEntries)
+              ? parsed.payrollEntries
+              : fresh.payrollEntries,
+            deductionApprovals: Array.isArray(parsed.deductionApprovals)
+              ? parsed.deductionApprovals
+              : fresh.deductionApprovals,
+            patchReleases: Array.isArray(parsed.patchReleases)
+              ? parsed.patchReleases
+              : fresh.patchReleases,
+            settings: {
+              ...fresh.settings,
+              ...(parsed.settings ?? {}),
+              deductionWorkflowConfig: parsed.settings?.deductionWorkflowConfig
+                ? normalizeDeductionWorkflowConfig(parsed.settings.deductionWorkflowConfig)
+                : fresh.settings.deductionWorkflowConfig,
+            },
+          };
+          writeDb(migrated);
+          return migrated;
+        }
+        return parsed as HRDatabase;
       }
     }
   } catch {
@@ -669,6 +964,16 @@ export const api = {
         const reason = result.reason;
         let failure: EndpointFailure;
         if (reason instanceof ApiHttpError) {
+          // Graceful backward compatibility if live server hasn't deployed Phase 1A/1B tables yet
+          if (
+            reason.status === 404 &&
+            (spec.key === 'payrollCategories' ||
+              spec.key === 'payrollEntries' ||
+              spec.key === 'deductionApprovals' ||
+              spec.key === 'patchReleases')
+          ) {
+            return { key: spec.key, path: spec.path, ok: true, value: [] };
+          }
           failure = reason.toEndpointFailure();
         } else if (reason instanceof ServerUnreachableError) {
           failure = {
@@ -694,18 +999,33 @@ export const api = {
       }
 
       const rawValues = evaluated.values;
+      const rawCompanies = Array.isArray(rawValues.companies) ? rawValues.companies : [];
       const rawEmployees = Array.isArray(rawValues.employees) ? rawValues.employees : [];
-      const rawSettings =
+      const rawCategories = Array.isArray(rawValues.payrollCategories)
+        ? rawValues.payrollCategories
+        : [];
+      const rawEntries = Array.isArray(rawValues.payrollEntries) ? rawValues.payrollEntries : [];
+      const rawDeductionApprovals = Array.isArray(rawValues.deductionApprovals)
+        ? rawValues.deductionApprovals
+        : [];
+      const rawPatchReleases = Array.isArray(rawValues.patchReleases)
+        ? rawValues.patchReleases
+        : [];
+      const rawSettingsObj = asRecord(rawValues.settings);
+      const rawSettings: AppSettings =
         rawValues.settings && typeof rawValues.settings === 'object'
           ? {
               ...createDefaultLiveSettings(cfg.apiBaseUrl),
               ...(rawValues.settings as Partial<AppSettings>),
               apiBaseUrl: cfg.apiBaseUrl,
+              deductionWorkflowConfig: normalizeDeductionWorkflowConfig(
+                rawSettingsObj.deductionWorkflowConfig ?? rawSettingsObj.deduction_workflow_config
+              ),
             }
           : createDefaultLiveSettings(cfg.apiBaseUrl);
 
       return {
-        companies: Array.isArray(rawValues.companies) ? (rawValues.companies as Company[]) : [],
+        companies: rawCompanies.map(normalizeCompany),
         sections: Array.isArray(rawValues.sections) ? (rawValues.sections as Section[]) : [],
         labels: Array.isArray(rawValues.labels) ? (rawValues.labels as EmployeeLabel[]) : [],
         employeeModels: Array.isArray(rawValues.employeeModels)
@@ -726,6 +1046,10 @@ export const api = {
         payrollAdjustments: Array.isArray(rawValues.payrollAdjustments)
           ? (rawValues.payrollAdjustments as PayrollAdjustment[])
           : [],
+        payrollCategories: rawCategories.map(normalizePayrollCategory),
+        payrollEntries: rawEntries.map(normalizePayrollEntry),
+        deductionApprovals: rawDeductionApprovals.map(normalizeDeductionApproval),
+        patchReleases: rawPatchReleases.map(normalizePatchRelease),
         salaryReleases: Array.isArray(rawValues.salaryReleases)
           ? (rawValues.salaryReleases as SalaryReleaseSchedule[])
           : [],
@@ -735,11 +1059,27 @@ export const api = {
     const db = readDb();
     return {
       ...db,
-      employees: db.employees.map((e) => ({ ...e, role: normalizeUserRole(e.role) })),
+      employees: db.employees.map((e) => ({
+        ...e,
+        role: normalizeUserRole(e.role),
+        employeeType:
+          e.employeeType ??
+          inferDefaultEmployeeType({ role: e.role, sectionId: e.sectionId, modelId: e.modelId }),
+      })),
       labels: db.labels ?? [],
       proAssignments: db.proAssignments ?? [],
+      payrollCategories: db.payrollCategories ?? [],
+      payrollEntries: db.payrollEntries ?? [],
+      deductionApprovals: db.deductionApprovals ?? [],
+      patchReleases: db.patchReleases ?? [],
       salaryReleases: db.salaryReleases ?? [],
-      settings: { ...db.settings, apiBaseUrl: cfg.apiBaseUrl },
+      settings: {
+        ...db.settings,
+        apiBaseUrl: cfg.apiBaseUrl,
+        deductionWorkflowConfig: normalizeDeductionWorkflowConfig(
+          db.settings?.deductionWorkflowConfig
+        ),
+      },
     };
   },
 
@@ -753,13 +1093,49 @@ export const api = {
     async create(input: Omit<Company, 'id'>): Promise<Company> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        return restFetch<Company>('/companies', { method: 'POST', body: JSON.stringify(input) });
+        const res = await restFetch<unknown>('/companies', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            mol_establishment_id: input.molEstablishmentId ?? null,
+            wps_routing_code: input.wpsRoutingCode ?? null,
+            company_iban: input.companyIban ?? null,
+          }),
+        });
+        return normalizeCompany(res);
       }
       const db = readDb();
       const created: Company = { ...input, id: makeId('comp') };
       db.companies = [...db.companies, created];
       writeDb(db);
       return created;
+    },
+    async update(id: string, patch: Partial<Company>): Promise<Company> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(`/companies/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            ...patch,
+            mol_establishment_id: patch.molEstablishmentId,
+            wps_routing_code: patch.wpsRoutingCode,
+            company_iban: patch.companyIban,
+          }),
+        });
+        return normalizeCompany(res);
+      }
+      const db = readDb();
+      let updated: Company | null = null;
+      db.companies = db.companies.map((c) => {
+        if (c.id === id) {
+          updated = { ...c, ...patch };
+          return updated;
+        }
+        return c;
+      });
+      if (!updated) throw new Error('Company not found.');
+      writeDb(db);
+      return updated;
     },
     async toggleActive(id: string): Promise<Company> {
       const cfg = getServerConfig();
@@ -920,7 +1296,16 @@ export const api = {
     async create(input: CreateEmployeePayload): Promise<Employee> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        return restFetch<Employee>('/users', { method: 'POST', body: JSON.stringify(input) });
+        const res = await restFetch<unknown>('/users', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            employee_type: input.employeeType,
+            deduction_workflow_override: input.deductionWorkflowOverride ?? 'inherit',
+            mohre_person_id: input.mohrePersonId ?? null,
+          }),
+        });
+        return normalizeEmployee(res);
       }
       const db = readDb();
       const { initialPassword, ...rest } = input;
@@ -940,7 +1325,16 @@ export const api = {
     async update(id: string, patch: Partial<Employee>): Promise<Employee> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        return restFetch<Employee>(`/users/${id}`, { method: 'PUT', body: JSON.stringify(patch) });
+        const res = await restFetch<unknown>(`/users/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            ...patch,
+            employee_type: patch.employeeType,
+            deduction_workflow_override: patch.deductionWorkflowOverride,
+            mohre_person_id: patch.mohrePersonId,
+          }),
+        });
+        return normalizeEmployee(res);
       }
       const db = readDb();
       let updated: Employee | null = null;
@@ -1616,14 +2010,408 @@ export const api = {
     },
   },
 
+  payrollCategories: {
+    async create(input: Omit<PayrollCategoryItem, 'id'>): Promise<PayrollCategoryItem> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/payroll/categories', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+        return normalizePayrollCategory(res);
+      }
+      const db = readDb();
+      const created: PayrollCategoryItem = { ...input, id: makeId('pcat') };
+      db.payrollCategories = [...(db.payrollCategories ?? []), created];
+      writeDb(db);
+      return created;
+    },
+    async update(
+      id: string,
+      patch: Partial<PayrollCategoryItem>
+    ): Promise<PayrollCategoryItem> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(`/payroll/categories/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(patch),
+        });
+        return normalizePayrollCategory(res);
+      }
+      const db = readDb();
+      let updated: PayrollCategoryItem | null = null;
+      db.payrollCategories = (db.payrollCategories ?? []).map((cat) => {
+        if (cat.id === id) {
+          updated = { ...cat, ...patch };
+          return updated;
+        }
+        return cat;
+      });
+      if (!updated) throw new Error('Payroll category not found.');
+      writeDb(db);
+      return updated;
+    },
+  },
+
+  payrollEntries: {
+    async create(input: {
+      employeeId: string;
+      companyId: string;
+      type: PayrollEntryType;
+      categoryId: string;
+      categoryName: string;
+      amountAED: number;
+      isPermanent: boolean;
+      effectiveFrom: string;
+      durationMonths: number | null;
+      targetBucket?: DeductionTargetBucket | null;
+      reason: string;
+      createdBy: string;
+      createdByRole: UserRole;
+    }): Promise<PayrollEntry> {
+      const isEarning =
+        input.type === 'earning_in_payroll' || input.type === 'earning_off_cycle';
+      const isPermanent = isEarning && Boolean(input.isPermanent);
+      const durationMonths = isPermanent ? null : Math.max(1, Math.floor(input.durationMonths ?? 1));
+      const effectiveTo = isPermanent
+        ? null
+        : computeTemporaryEndMonth(input.effectiveFrom, durationMonths ?? 1);
+      const targetBucket = isEarning ? null : input.targetBucket ?? 'main_salary';
+
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/payroll/entries', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            isPermanent,
+            durationMonths,
+            effectiveTo,
+            targetBucket,
+            employee_id: input.employeeId,
+            company_id: input.companyId,
+            category_id: input.categoryId,
+            category_name: input.categoryName,
+            amount_aed: input.amountAED,
+            is_permanent: isPermanent,
+            effective_from: input.effectiveFrom,
+            effective_to: effectiveTo,
+            duration_months: durationMonths,
+            target_bucket: targetBucket,
+            created_by: input.createdBy,
+            created_by_role: input.createdByRole,
+          }),
+        });
+        return normalizePayrollEntry(res);
+      }
+
+      const db = readDb();
+      const created: PayrollEntry = {
+        id: makeId('pe'),
+        employeeId: input.employeeId,
+        companyId: input.companyId,
+        type: input.type,
+        categoryId: input.categoryId,
+        categoryName: input.categoryName,
+        amountAED: Number(input.amountAED),
+        isPermanent,
+        effectiveFrom: input.effectiveFrom,
+        effectiveTo,
+        durationMonths,
+        targetBucket,
+        reason: input.reason.trim(),
+        createdBy: input.createdBy,
+        createdByRole: input.createdByRole,
+        createdAt: new Date().toISOString(),
+      };
+      db.payrollEntries = [created, ...(db.payrollEntries ?? [])];
+      writeDb(db);
+      return created;
+    },
+
+    async editPermanent(params: {
+      id: string;
+      effectiveFromMonth: string;
+      patch: {
+        categoryId?: string;
+        categoryName?: string;
+        amountAED?: number;
+        reason?: string;
+      };
+    }): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<unknown>(`/payroll/entries/${params.id}/edit-permanent`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            ...params,
+            effective_from_month: params.effectiveFromMonth,
+          }),
+        });
+        return;
+      }
+      const db = readDb();
+      db.payrollEntries = editPermanentPayrollEntry({
+        entries: db.payrollEntries ?? [],
+        entryId: params.id,
+        effectiveFromMonth: params.effectiveFromMonth,
+        patch: params.patch,
+        newEntryId: makeId('pe'),
+      });
+      writeDb(db);
+    },
+
+    async stopPermanent(params: { id: string; stopFromMonth: string }): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<unknown>(`/payroll/entries/${params.id}/stop-permanent`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            ...params,
+            stop_from_month: params.stopFromMonth,
+          }),
+        });
+        return;
+      }
+      const db = readDb();
+      db.payrollEntries = stopPermanentPayrollEntry({
+        entries: db.payrollEntries ?? [],
+        entryId: params.id,
+        stopFromMonth: params.stopFromMonth,
+      });
+      writeDb(db);
+    },
+
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/payroll/entries/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.payrollEntries = (db.payrollEntries ?? []).filter((e) => e.id !== id);
+      writeDb(db);
+    },
+  },
+
+  deductionApprovals: {
+    async create(input: {
+      employeeId: string;
+      month: string;
+      triggerType: DeductionApprovalTrigger;
+      date: string;
+      amountAED: number;
+      targetBucket: DeductionTargetBucket;
+      reason: string;
+      createdBy: string;
+      createdByRole: UserRole;
+    }): Promise<DeductionApprovalRequest> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/payroll/deduction-approvals', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            employee_id: input.employeeId,
+            payroll_month: input.month,
+            trigger_type: input.triggerType,
+            amount_aed: input.amountAED,
+            target_bucket: input.targetBucket,
+            created_by: input.createdBy,
+            created_by_role: input.createdByRole,
+          }),
+        });
+        return normalizeDeductionApproval(res);
+      }
+      const db = readDb();
+      const emp = db.employees.find((e) => e.id === input.employeeId);
+      if (!emp) throw new Error('Employee not found.');
+      const created = buildNewDeductionApprovalRequest({
+        id: makeId('da'),
+        employee: emp,
+        month: input.month,
+        triggerType: input.triggerType,
+        date: input.date,
+        amountAED: input.amountAED,
+        targetBucket: input.targetBucket,
+        reason: input.reason,
+        createdBy: input.createdBy,
+        createdByRole: input.createdByRole,
+        workflowConfig: db.settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
+      });
+      db.deductionApprovals = [created, ...(db.deductionApprovals ?? [])];
+      writeDb(db);
+      return created;
+    },
+
+    async managerDecide(params: {
+      id: string;
+      decision: 'approved' | 'rejected';
+      actorName: string;
+      note: string;
+    }): Promise<DeductionApprovalRequest> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(
+          `/payroll/deduction-approvals/${params.id}/manager-decision`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              ...params,
+              actor_name: params.actorName,
+            }),
+          }
+        );
+        return normalizeDeductionApproval(res);
+      }
+      const db = readDb();
+      const target = (db.deductionApprovals ?? []).find((r) => r.id === params.id);
+      if (!target) throw new Error('Deduction approval request not found.');
+      const updated = applyManagerDeductionDecision({
+        request: target,
+        decision: params.decision,
+        actorName: params.actorName,
+        note: params.note,
+      });
+      db.deductionApprovals = (db.deductionApprovals ?? []).map((r) =>
+        r.id === params.id ? updated : r
+      );
+      writeDb(db);
+      return updated;
+    },
+
+    async hrDecide(params: {
+      id: string;
+      decision: 'approved' | 'waived';
+      actorName: string;
+      note: string;
+    }): Promise<DeductionApprovalRequest> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(
+          `/payroll/deduction-approvals/${params.id}/hr-decision`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              ...params,
+              actor_name: params.actorName,
+            }),
+          }
+        );
+        return normalizeDeductionApproval(res);
+      }
+      const db = readDb();
+      const target = (db.deductionApprovals ?? []).find((r) => r.id === params.id);
+      if (!target) throw new Error('Deduction approval request not found.');
+      const updated = applyHrDeductionDecision({
+        request: target,
+        decision: params.decision,
+        actorName: params.actorName,
+        note: params.note,
+      });
+      db.deductionApprovals = (db.deductionApprovals ?? []).map((r) =>
+        r.id === params.id ? updated : r
+      );
+      writeDb(db);
+      return updated;
+    },
+  },
+
+  patchReleases: {
+    async create(input: {
+      employeeId: string;
+      companyId: string;
+      totalAmountAED: number;
+      allocations: PatchReleaseAllocation[];
+      paymentMethod: PatchPaymentMethod;
+      releaseDate: string;
+      releasedBy: string;
+      releasedByRole: UserRole;
+      referenceNote?: string;
+    }): Promise<PatchMoneyRelease> {
+      const check = validatePatchReleaseAllocations(input.totalAmountAED, input.allocations);
+      if (!check.valid) {
+        throw new Error(check.error || 'Invalid split-bucket allocation.');
+      }
+      const cleanedAllocations = input.allocations
+        .filter((a) => Number(a.amountAED) > 0)
+        .map((a) => ({
+          month: a.month,
+          bucket: a.bucket,
+          amountAED: Number(Number(a.amountAED).toFixed(2)),
+        }));
+
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/payroll/patch-releases', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            allocations: cleanedAllocations,
+            employee_id: input.employeeId,
+            company_id: input.companyId,
+            total_amount_aed: Number(Number(input.totalAmountAED).toFixed(2)),
+            payment_method: input.paymentMethod,
+            release_date: input.releaseDate,
+            released_by: input.releasedBy,
+            released_by_role: input.releasedByRole,
+            reference_note: input.referenceNote?.trim() || null,
+          }),
+        });
+        return normalizePatchRelease(res);
+      }
+      const db = readDb();
+      const created: PatchMoneyRelease = {
+        id: makeId('pr'),
+        employeeId: input.employeeId,
+        companyId: input.companyId,
+        totalAmountAED: Number(Number(input.totalAmountAED).toFixed(2)),
+        allocations: cleanedAllocations,
+        paymentMethod: input.paymentMethod,
+        releaseDate: input.releaseDate,
+        releasedBy: input.releasedBy,
+        releasedByRole: input.releasedByRole,
+        referenceNote: input.referenceNote?.trim() || undefined,
+        createdAt: new Date().toISOString(),
+      };
+      db.patchReleases = [created, ...(db.patchReleases ?? [])];
+      writeDb(db);
+      return created;
+    },
+
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/payroll/patch-releases/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.patchReleases = (db.patchReleases ?? []).filter((r) => r.id !== id);
+      writeDb(db);
+    },
+  },
+
   settings: {
     async update(patch: Partial<AppSettings>): Promise<AppSettings> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        return restFetch<AppSettings>('/settings', {
+        const res = await restFetch<Record<string, unknown>>('/settings', {
           method: 'PUT',
-          body: JSON.stringify(patch),
+          body: JSON.stringify({
+            ...patch,
+            deduction_workflow_config: patch.deductionWorkflowConfig,
+          }),
         });
+        return {
+          ...createDefaultLiveSettings(cfg.apiBaseUrl),
+          ...(res as Partial<AppSettings>),
+          apiBaseUrl: cfg.apiBaseUrl,
+          deductionWorkflowConfig: normalizeDeductionWorkflowConfig(
+            res.deductionWorkflowConfig ??
+              res.deduction_workflow_config ??
+              patch.deductionWorkflowConfig
+          ),
+        };
       }
       const db = readDb();
       db.settings = { ...db.settings, ...patch };

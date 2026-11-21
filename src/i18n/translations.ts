@@ -1,7 +1,15 @@
 import {
   ApprovalStepRole,
+  DeductionApprovalStatus,
+  DeductionApprovalTrigger,
+  DeductionTargetBucket,
+  DeductionWorkflowChain,
+  EmployeeType,
   Language,
   LeaveStatus,
+  PatchPaymentMethod,
+  PatchReleaseBucket,
+  PayrollEntryType,
   SalaryReleaseStatus,
   UserRole,
 } from '../types/hr';
@@ -157,6 +165,130 @@ const EN: Dict = {
   failedEndpoints: 'Failed Endpoints',
   retry: 'Retry',
   retrying: 'Retrying...',
+  navEarningsDeductions: 'Earnings & Deductions',
+  earningsDeductionsTitle: 'Earnings & Deductions',
+  earningsDeductionsSubtitle:
+    'Manage permanent and temporary additional earnings (In-Payroll & Off-Cycle) and bucket-targeted deductions.',
+  addEntry: 'Add Entry',
+  editPermanent: 'Edit (Future Months)',
+  stopPermanent: 'Stop Future',
+  typeEarningInPayroll: 'Additional Earning (In Payroll)',
+  typeEarningOffCycle: 'Additional Earning (Off Cycle)',
+  typeDeductionInPayroll: 'Deduction (In Payroll)',
+  typeDeductionOffCycle: 'Deduction (Off Cycle)',
+  bucketMainSalary: 'Main Salary',
+  bucketInPayroll: 'Additional Earning (In Payroll)',
+  bucketOffCycle: 'Additional Earning (Off Cycle)',
+  deductFromBucket: 'Deduct From Bucket',
+  durationMode: 'Duration',
+  temporaryDuration: 'Temporary',
+  permanentDuration: 'Permanent',
+  startingMonth: 'Starting Month',
+  effectiveFromMonth: 'Effective From Month',
+  numberOfMonths: 'Number of Months',
+  stopFromMonth: 'Stop Starting From Month',
+  historicalPreservationNote:
+    'Historical months remain untouched. Changes only apply from the selected effective month onward.',
+  payrollCategoriesManager: 'Earnings & Deductions Categories',
+  payrollCategoriesDesc:
+    'Configure categories and reasons for In-Payroll/Off-Cycle additional earnings and deductions.',
+  molEstablishmentId: 'MOL Establishment ID',
+  wpsRoutingCode: 'WPS Routing Code',
+  companyIban: 'Company IBAN',
+  mohrePersonId: 'MOHRE Person ID (Labour Card #)',
+  bankRoutingCode: 'Bank Routing Code',
+  exportAdcbWps: 'Export ADCB WPS (.xlsx)',
+  adcbWpsTitle: 'Export ADCB WPS Salary File (.xlsx)',
+  adcbWpsSubtitle:
+    'Generates ADCB-compliant EDR employee rows and SCR summary row. Off-Cycle earnings are strictly excluded.',
+  wpsPayout: 'WPS Payout',
+  wpsFixedIncome: 'WPS Fixed (Basic)',
+  wpsVariableIncome: 'WPS Variable',
+  offCyclePayout: 'Off-Cycle Net',
+  mainSalary: 'Main Salary',
+  permanentEarnings: 'Active Permanent Additional Earnings',
+  scheduledTemporaryEntries: 'Scheduled Temporary Earnings & Deductions',
+  allTypes: 'All Types',
+  allDurations: 'All Durations',
+  activeStatus: 'Active',
+  disabledStatus: 'Disabled',
+  editCompany: 'Edit Company',
+  employeeType: 'Employee Type',
+  empTypeOffice: 'Office Employee',
+  empTypeDriver: 'Driver',
+  empTypeManagement: 'Management',
+  deductionWorkflowTitle: 'Deduction Approval & Escalation Workflows',
+  deductionWorkflowSubtitle:
+    'Configure default off-day & latency deduction approval chains per employee type and auto-escalation timeout.',
+  deductionWorkflowOverride: 'Deduction Workflow Override',
+  inheritEmployeeTypeDefault: 'Inherit Employee Type Default',
+  chainManagerThenHr: 'Manager → HR',
+  chainHrOnly: 'HR Only',
+  chainMainManagerOnly: 'Main Manager Only',
+  autoEscalationTimeout: 'Auto-Escalation Timeout (Hours)',
+  deductionApprovalsTab: 'Deduction Approvals',
+  entriesLedgerTab: 'Entries Ledger',
+  logDeductionApproval: 'Log Off-Day / Latency Deduction',
+  triggerOffDay: 'Off-Day Deduction',
+  triggerLatency: 'Latency Deduction',
+  statusPendingManager: 'Pending Manager',
+  statusPendingHrApproval: 'Pending HR Final Approval',
+  statusPendingHrDecision: 'Manager Waived → HR Decision',
+  statusEscalatedToHr: 'Auto-Escalated to HR',
+  statusPendingMainManager: 'Pending Main Manager',
+  statusApprovedInPayroll: 'Approved (In Payroll)',
+  statusWaived: 'Waived',
+  approveToHr: 'Approve → Send to HR',
+  rejectWaiveToHr: 'Reject / Waive → Send to HR',
+  hrFinalApprove: 'Final Approve (Apply to Payroll)',
+  hrFinalWaive: 'Final Waive (No Deduction)',
+  managerDecisionNote: 'Manager Note / Waiver Reason',
+  hrDecisionNote: 'HR Final Decision Note',
+  escalationDeadlineLabel: 'Escalation Deadline',
+  autoEscalatedNote: 'Auto-escalated past manager response window',
+  payrollNotAppliedYet: 'Not applied to payroll until HR final approval',
+  releaseMoneyPatch: 'Release Money / Patch',
+  patchReleasesTab: 'Patch Releases',
+  monthlyPayrollTab: 'Monthly Payroll',
+  releaseAmountToday: 'Amount to Release Today (AED)',
+  pendingUnpaidBalances: 'Pending Unpaid Balances',
+  splitBucketAllocation: 'Split-Bucket Allocation',
+  autoAllocate: 'Auto-Allocate',
+  allocatedTotal: 'Allocated Total',
+  remainingToAllocate: 'Remaining to Allocate',
+  paymentMethod: 'Payment Method',
+  methodCash: 'Cash',
+  methodBankTransfer: 'Bank Transfer',
+  methodWps: 'WPS',
+  receiptReferenceNote: 'Receipt / Reference Note',
+  releasedBy: 'Released By',
+  wpsAutoOffsetNotice: 'Automatic WPS Offset',
+  wpsEarlyOffsetSummary: 'Early WPS Patch Offsets Applied',
+  patchBucketOffCycle: 'Off-Cycle Balance',
+  patchBucketUpcomingMain: 'Upcoming Main Salary',
+  patchBucketUpcomingInPayroll: 'Upcoming Additional (In Payroll)',
+  patchBucketUpcomingOffCycle: 'Upcoming Off-Cycle',
+  patchReleaseHistory: 'Patch Release History',
+  noPendingBalances: 'No pending unpaid balances found for this employee.',
+  noPatchReleases: 'No partial or batch money releases recorded yet.',
+  confirmReleaseMoney: 'Confirm Money Release',
+  confirmRelease: 'Confirm Money Release',
+  deductionWorkflowDesc: 'Configure default off-day & latency deduction approval chains per employee type and auto-escalation timeout.',
+  autoEscalationHours: 'Auto-Escalation Timeout (Hours)',
+  logWorkflowDeduction: 'Log Off-Day / Latency Deduction',
+  noPendingApprovals: 'No deduction approval requests match this filter.',
+  notAppliedUntilHr: 'Not applied to payroll until HR final approval',
+  decisionNotePlaceholder: 'Optional note or waiver reason...',
+  managerApproveToHr: 'Approve → Send to HR',
+  managerRejectToHr: 'Waive → Send to HR',
+  targetBucket: 'Deduct From Bucket',
+  earlyPatchReleases: 'Early Patch Releases',
+  remainingNetPayable: 'Remaining Net Payable',
+  automaticWpsOffset: 'Automatic WPS Offset',
+  pendingBalances: 'Pending Unpaid Balances',
+  splitAllocation: 'Split-Bucket Allocation',
+  receiptNote: 'Receipt / Reference Note',
+  inheritWorkflow: 'Inherit from Employee Type',
 };
 
 const AR: Dict = {
@@ -294,6 +426,130 @@ const AR: Dict = {
   failedEndpoints: 'نقاط النهاية الفاشلة',
   retry: 'إعادة المحاولة',
   retrying: 'جارٍ إعادة المحاولة...',
+  navEarningsDeductions: 'الإضافات والخصومات',
+  earningsDeductionsTitle: 'الإضافات والخصومات',
+  earningsDeductionsSubtitle:
+    'إدارة الإضافات الدائمة والمؤقتة (ضمن الراتب وخارج الدورة) والخصومات الموجهة حسب المحفظة.',
+  addEntry: 'إضافة قيد',
+  editPermanent: 'تعديل (للأشهر القادمة)',
+  stopPermanent: 'إيقاف مستقبلي',
+  typeEarningInPayroll: 'إضافة راتب (ضمن الرواتب / WPS)',
+  typeEarningOffCycle: 'إضافة راتب (خارج الدورة)',
+  typeDeductionInPayroll: 'خصم (ضمن الرواتب)',
+  typeDeductionOffCycle: 'خصم (خارج الدورة)',
+  bucketMainSalary: 'الراتب الأساسي والبدلات',
+  bucketInPayroll: 'إضافة راتب (ضمن الرواتب)',
+  bucketOffCycle: 'إضافة راتب (خارج الدورة)',
+  deductFromBucket: 'الخصم من محفظة',
+  durationMode: 'المدة',
+  temporaryDuration: 'مؤقت',
+  permanentDuration: 'دائم',
+  startingMonth: 'شهر البداية',
+  effectiveFromMonth: 'ساري اعتباراً من شهر',
+  numberOfMonths: 'عدد الأشهر',
+  stopFromMonth: 'الإيقاف بدءاً من شهر',
+  historicalPreservationNote:
+    'تبقى الأشهر السابقة محفوظة دون تغيير. تسري التعديلات فقط بدءاً من الشهر المحدد.',
+  payrollCategoriesManager: 'فئات الإضافات والخصومات',
+  payrollCategoriesDesc:
+    'إدارة فئات وأسباب الإضافات والخصومات (ضمن الراتب وخارج الدورة).',
+  molEstablishmentId: 'رقم منشأة وزارة الموارد البشرية (MOL)',
+  wpsRoutingCode: 'رمز توجيه WPS',
+  companyIban: 'رقم IBAN للشركة',
+  mohrePersonId: 'رقم الشخص في MOHRE (بطاقة العمل)',
+  bankRoutingCode: 'رمز توجيه البنك',
+  exportAdcbWps: 'تصدير ADCB WPS (.xlsx)',
+  adcbWpsTitle: 'تصدير ملف رواتب ADCB WPS (.xlsx)',
+  adcbWpsSubtitle:
+    'ينشئ صفوف EDR للموظفين وصف ملخص SCR وفق تنسيق ADCB. يتم استبعاد إضافات خارج الدورة تلقائياً.',
+  wpsPayout: 'صرف WPS',
+  wpsFixedIncome: 'الدخل الثابت WPS (الأساسي)',
+  wpsVariableIncome: 'الدخل المتغير WPS',
+  offCyclePayout: 'صافي خارج الدورة',
+  mainSalary: 'الراتب الرئيسي',
+  permanentEarnings: 'الإضافات الدائمة النشطة',
+  scheduledTemporaryEntries: 'الإضافات والخصومات المؤقتة المجدولة',
+  allTypes: 'جميع الأنواع',
+  allDurations: 'جميع المدد',
+  activeStatus: 'نشط',
+  disabledStatus: 'معطّل',
+  editCompany: 'تعديل الشركة',
+  employeeType: 'نوع الموظف',
+  empTypeOffice: 'موظف مكتب',
+  empTypeDriver: 'سائق',
+  empTypeManagement: 'إدارة',
+  deductionWorkflowTitle: 'سلاسل موافقات وتصعيد الخصومات',
+  deductionWorkflowSubtitle:
+    'حدد سلسلة الموافقة الافتراضية لخصومات الغياب والتأخير حسب نوع الموظف ومهلة التصعيد التلقائي.',
+  deductionWorkflowOverride: 'تجاوز سلسلة موافقة الخصومات',
+  inheritEmployeeTypeDefault: 'استخدام الافتراضي لنوع الموظف',
+  chainManagerThenHr: 'المدير ← الموارد البشرية',
+  chainHrOnly: 'الموارد البشرية فقط',
+  chainMainManagerOnly: 'المدير العام فقط',
+  autoEscalationTimeout: 'مهلة التصعيد التلقائي (بالساعات)',
+  deductionApprovalsTab: 'موافقات الخصومات',
+  entriesLedgerTab: 'سجل القيود',
+  logDeductionApproval: 'تسجيل خصم غياب / تأخير',
+  triggerOffDay: 'خصم يوم غياب',
+  triggerLatency: 'خصم تأخير',
+  statusPendingManager: 'بانتظار المدير',
+  statusPendingHrApproval: 'بانتظار الموافقة النهائية للموارد البشرية',
+  statusPendingHrDecision: 'رفض المدير ← قرار الموارد البشرية',
+  statusEscalatedToHr: 'تم التصعيد تلقائياً للموارد البشرية',
+  statusPendingMainManager: 'بانتظار المدير العام',
+  statusApprovedInPayroll: 'معتمد (ضمن الرواتب)',
+  statusWaived: 'تم الإعفاء',
+  approveToHr: 'موافقة ← إرسال للموارد البشرية',
+  rejectWaiveToHr: 'رفض / إعفاء ← إرسال للموارد البشرية',
+  hrFinalApprove: 'اعتماد نهائي (تطبيق في الراتب)',
+  hrFinalWaive: 'إعفاء نهائي (بدون خصم)',
+  managerDecisionNote: 'ملاحظة المدير / سبب الإعفاء',
+  hrDecisionNote: 'ملاحظة القرار النهائي للموارد البشرية',
+  escalationDeadlineLabel: 'موعد التصعيد التلقائي',
+  autoEscalatedNote: 'تم التصعيد تلقائياً بعد انتهاء مهلة رد المدير',
+  payrollNotAppliedYet: 'لا يُخصم من الراتب حتى الموافقة النهائية للموارد البشرية',
+  releaseMoneyPatch: 'صرف دفعة / مبلغ جزئي',
+  patchReleasesTab: 'الدفعات الجزئية',
+  monthlyPayrollTab: 'الرواتب الشهرية',
+  releaseAmountToday: 'المبلغ المراد صرفه اليوم (درهم)',
+  pendingUnpaidBalances: 'الأرصدة المعلقة غير المدفوعة',
+  splitBucketAllocation: 'توزيع المبلغ على المحافظ',
+  autoAllocate: 'توزيع تلقائي',
+  allocatedTotal: 'إجمالي الموزّع',
+  remainingToAllocate: 'المتبقي للتوزيع',
+  paymentMethod: 'طريقة الدفع',
+  methodCash: 'نقداً',
+  methodBankTransfer: 'تحويل بنكي',
+  methodWps: 'WPS',
+  receiptReferenceNote: 'ملاحظة / مرجع الإيصال',
+  releasedBy: 'تم الصرف بواسطة',
+  wpsAutoOffsetNotice: 'تسوية تلقائية لـ WPS',
+  wpsEarlyOffsetSummary: 'تسويات الدفعات المبكرة من WPS',
+  patchBucketOffCycle: 'رصيد خارج الدورة',
+  patchBucketUpcomingMain: 'الراتب الرئيسي القادم',
+  patchBucketUpcomingInPayroll: 'الإضافي القادم (ضمن الرواتب)',
+  patchBucketUpcomingOffCycle: 'خارج الدورة القادم',
+  patchReleaseHistory: 'سجل الدفعات الجزئية',
+  noPendingBalances: 'لا توجد أرصدة معلقة غير مدفوعة لهذا الموظف.',
+  noPatchReleases: 'لم يتم تسجيل أي دفعات جزئية حتى الآن.',
+  confirmReleaseMoney: 'تأكيد صرف المبلغ',
+  confirmRelease: 'تأكيد صرف المبلغ',
+  deductionWorkflowDesc: 'إعداد سلسلة موافقات خصومات الغياب والتأخير الافتراضية لكل نوع موظف ومهلة التصعيد التلقائي.',
+  autoEscalationHours: 'مهلة التصعيد التلقائي (بالساعات)',
+  logWorkflowDeduction: 'تسجيل خصم غياب / تأخير',
+  noPendingApprovals: 'لا توجد طلبات موافقة خصم مطابقة لهذا التصفية.',
+  notAppliedUntilHr: 'لا يُخصم من الراتب حتى الموافقة النهائية للموارد البشرية',
+  decisionNotePlaceholder: 'ملاحظة اختيارية أو سبب الإعفاء...',
+  managerApproveToHr: 'موافقة ← إرسال للموارد البشرية',
+  managerRejectToHr: 'إعفاء ← إرسال للموارد البشرية',
+  targetBucket: 'الخصم من المحفظة',
+  earlyPatchReleases: 'الدفعات المبكرة (الجزئية)',
+  remainingNetPayable: 'صافي المستحق المتبقي',
+  automaticWpsOffset: 'تسوية تلقائية لـ WPS',
+  pendingBalances: 'الأرصدة المعلقة غير المدفوعة',
+  splitAllocation: 'توزيع المبلغ على المحافظ',
+  receiptNote: 'ملاحظة / مرجع الإيصال',
+  inheritWorkflow: 'افتراضي حسب نوع الموظف',
 };
 
 const UR: Dict = {
@@ -431,6 +687,130 @@ const UR: Dict = {
   failedEndpoints: 'ناکام اینڈ پوائنٹس',
   retry: 'دوبارہ کوشش کریں',
   retrying: 'دوبارہ کوشش ہو رہی ہے...',
+  navEarningsDeductions: 'اضافے اور کٹوتیاں',
+  earningsDeductionsTitle: 'اضافے اور کٹوتیاں',
+  earningsDeductionsSubtitle:
+    'مستقل اور عارضی اضافی آمدنی (ان پے رول اور آف سائیکل) اور بکیٹ کے مطابق کٹوتیاں منظم کریں۔',
+  addEntry: 'اندراج شامل کریں',
+  editPermanent: 'ترمیم (آئندہ ماہ)',
+  stopPermanent: 'آئندہ روکیں',
+  typeEarningInPayroll: 'اضافی آمدنی (پے رول / WPS)',
+  typeEarningOffCycle: 'اضافی آمدنی (آف سائیکل)',
+  typeDeductionInPayroll: 'کٹوتی (پے رول)',
+  typeDeductionOffCycle: 'کٹوتی (آف سائیکل)',
+  bucketMainSalary: 'بنیادی تنخواہ',
+  bucketInPayroll: 'اضافی آمدنی (پے رول)',
+  bucketOffCycle: 'اضافی آمدنی (آف سائیکل)',
+  deductFromBucket: 'کس بکیٹ سے کٹوتی کریں',
+  durationMode: 'مدت',
+  temporaryDuration: 'عارضی',
+  permanentDuration: 'مستقل',
+  startingMonth: 'شروع کا مہینہ',
+  effectiveFromMonth: 'اطلاق کا مہینہ',
+  numberOfMonths: 'مہینوں کی تعداد',
+  stopFromMonth: 'اس مہینے سے بند کریں',
+  historicalPreservationNote:
+    'گزشتہ مہینوں کا ریکارڈ محفوظ رہے گا۔ تبدیلیاں صرف منتخب مہینے سے آگے لاگو ہوں گی۔',
+  payrollCategoriesManager: 'اضافے اور کٹوتیوں کی اقسام',
+  payrollCategoriesDesc:
+    'ان پے رول اور آف سائیکل اضافی آمدنی اور کٹوتیوں کے لیے اقسام اور وجوہات ترتیب دیں۔',
+  molEstablishmentId: 'MOL اسٹیبلشمنٹ آئی ڈی',
+  wpsRoutingCode: 'WPS راؤٹنگ کوڈ',
+  companyIban: 'کمپنی IBAN',
+  mohrePersonId: 'MOHRE پرسن آئی ڈی (لیبر کارڈ #)',
+  bankRoutingCode: 'بینک راؤٹنگ کوڈ',
+  exportAdcbWps: 'ADCB WPS ایکسپورٹ (.xlsx)',
+  adcbWpsTitle: 'ADCB WPS تنخواہ فائل ایکسپورٹ (.xlsx)',
+  adcbWpsSubtitle:
+    'ADCB کے مطابق EDR اور SCR خلاصہ صفیں تیار کرتا ہے۔ آف سائیکل آمدنی WPS میں شامل نہیں ہوتی۔',
+  wpsPayout: 'WPS ادائیگی',
+  wpsFixedIncome: 'WPS فکسڈ (بنیادی)',
+  wpsVariableIncome: 'WPS ویری ایبل',
+  offCyclePayout: 'آف سائیکل خالص',
+  mainSalary: 'مرکزی تنخواہ',
+  permanentEarnings: 'فعال مستقل اضافی آمدنی',
+  scheduledTemporaryEntries: 'شیڈول شدہ عارضی اضافے اور کٹوتیاں',
+  allTypes: 'تمام اقسام',
+  allDurations: 'تمام مدتیں',
+  activeStatus: 'فعال',
+  disabledStatus: 'غیر فعال',
+  editCompany: 'کمپنی میں ترمیم',
+  employeeType: 'ملازم کی قسم',
+  empTypeOffice: 'دفتری ملازم',
+  empTypeDriver: 'ڈرائیور',
+  empTypeManagement: 'انتظامیہ',
+  deductionWorkflowTitle: 'کٹوتی منظوری اور ایسکیلیشن ورک فلو',
+  deductionWorkflowSubtitle:
+    'ہر ملازم کی قسم کے لیے غیر حاضری اور تاخیر کی کٹوتی کی منظوری کا سلسلہ اور خودکار ایسکیلیشن ٹائم آؤٹ ترتیب دیں۔',
+  deductionWorkflowOverride: 'کٹوتی ورک فلو اوور رائیڈ',
+  inheritEmployeeTypeDefault: 'ملازم کی قسم کا ڈیفالٹ استعمال کریں',
+  chainManagerThenHr: 'منیجر ← HR',
+  chainHrOnly: 'صرف HR',
+  chainMainManagerOnly: 'صرف مین منیجر',
+  autoEscalationTimeout: 'خودکار ایسکیلیشن ٹائم آؤٹ (گھنٹے)',
+  deductionApprovalsTab: 'کٹوتی کی منظوریاں',
+  entriesLedgerTab: 'اندراجات کا ریکارڈ',
+  logDeductionApproval: 'غیر حاضری / تاخیر کٹوتی درج کریں',
+  triggerOffDay: 'غیر حاضری کٹوتی',
+  triggerLatency: 'تاخیر کٹوتی',
+  statusPendingManager: 'منیجر کی منظوری زیر التواء',
+  statusPendingHrApproval: 'HR کی حتمی منظوری زیر التواء',
+  statusPendingHrDecision: 'منیجر نے معاف کیا ← HR کا فیصلہ',
+  statusEscalatedToHr: 'HR کو خودکار منتقل',
+  statusPendingMainManager: 'مین منیجر کی منظوری زیر التواء',
+  statusApprovedInPayroll: 'منظور شدہ (پے رول میں شامل)',
+  statusWaived: 'معاف کر دیا گیا',
+  approveToHr: 'منظور کریں ← HR کو بھیجیں',
+  rejectWaiveToHr: 'مسترد / معاف ← HR کو بھیجیں',
+  hrFinalApprove: 'حتمی منظوری (پے رول میں لاگو)',
+  hrFinalWaive: 'حتمی معافی (کوئی کٹوتی نہیں)',
+  managerDecisionNote: 'منیجر کا نوٹ / معافی کی وجہ',
+  hrDecisionNote: 'HR کے حتمی فیصلے کا نوٹ',
+  escalationDeadlineLabel: 'ایسکیلیشن کی آخری تاریخ',
+  autoEscalatedNote: 'منیجر کی مہلت ختم ہونے پر HR کو خودکار منتقل',
+  payrollNotAppliedYet: 'HR کی حتمی منظوری تک تنخواہ سے کٹوتی نہیں ہوگی',
+  releaseMoneyPatch: 'رقم / پیچ جاری کریں',
+  patchReleasesTab: 'جزوی ادائیگیاں (پیچ)',
+  monthlyPayrollTab: 'ماہانہ پے رول',
+  releaseAmountToday: 'آج جاری کرنے کی رقم (AED)',
+  pendingUnpaidBalances: 'زیر التواء غیر ادا شدہ بیلنس',
+  splitBucketAllocation: 'مختلف بکیٹس میں تقسیم',
+  autoAllocate: 'خودکار تقسیم',
+  allocatedTotal: 'کل تقسیم شدہ',
+  remainingToAllocate: 'باقی تقسیم کے لیے',
+  paymentMethod: 'ادائیگی کا طریقہ',
+  methodCash: 'نقد (Cash)',
+  methodBankTransfer: 'بینک ٹرانسفر',
+  methodWps: 'WPS',
+  receiptReferenceNote: 'رسید / حوالہ نوٹ',
+  releasedBy: 'جاری کنندہ',
+  wpsAutoOffsetNotice: 'خودکار WPS ایڈجسٹمنٹ',
+  wpsEarlyOffsetSummary: 'ابتدائی WPS پیچ ایڈجسٹمنٹس',
+  patchBucketOffCycle: 'آف سائیکل بیلنس',
+  patchBucketUpcomingMain: 'آئندہ مرکزی تنخواہ',
+  patchBucketUpcomingInPayroll: 'آئندہ اضافی آمدنی (پے رول)',
+  patchBucketUpcomingOffCycle: 'آئندہ آف سائیکل',
+  patchReleaseHistory: 'جزوی ادائیگیوں کا ریکارڈ',
+  noPendingBalances: 'اس ملازم کے لیے کوئی غیر ادا شدہ بیلنس موجود نہیں ہے۔',
+  noPatchReleases: 'ابھی تک کوئی جزوی یا پیچ ادائیگی درج نہیں کی گئی۔',
+  confirmReleaseMoney: 'رقم کے اجراء کی تصدیق کریں',
+  confirmRelease: 'رقم کے اجراء کی تصدیق کریں',
+  deductionWorkflowDesc: 'ہر ملازم کی قسم کے لیے غیر حاضری اور تاخیر کی کٹوتی کی منظوری کا سلسلہ اور خودکار ایسکیلیشن وقت مقرر کریں۔',
+  autoEscalationHours: 'خودکار ایسکیلیشن کا وقت (گھنٹے)',
+  logWorkflowDeduction: 'غیر حاضری / تاخیر کٹوتی درج کریں',
+  noPendingApprovals: 'اس فلٹر کے مطابق کوئی کٹوتی کی درخواست موجود نہیں ہے۔',
+  notAppliedUntilHr: 'HR کی حتمی منظوری تک تنخواہ سے کٹوتی نہیں ہوگی',
+  decisionNotePlaceholder: 'اختیاری نوٹ یا معافی کی وجہ...',
+  managerApproveToHr: 'منظور کریں ← HR کو بھیجیں',
+  managerRejectToHr: 'معاف کریں ← HR کو بھیجیں',
+  targetBucket: 'کٹوتی کا بکیٹ منتخب کریں',
+  earlyPatchReleases: 'ابتدائی جزوی ادائیگیاں',
+  remainingNetPayable: 'باقی قابل ادائیگی تنخواہ',
+  automaticWpsOffset: 'خودکار WPS ایڈجسٹمنٹ',
+  pendingBalances: 'زیر التواء غیر ادا شدہ بیلنس',
+  splitAllocation: 'مختلف بکیٹس میں تقسیم',
+  receiptNote: 'رسید / حوالہ نوٹ',
+  inheritWorkflow: 'ملازم کی قسم کا طے شدہ سلسلہ',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };
@@ -491,3 +871,80 @@ export function getSalaryStatusLabel(lang: Language, status: SalaryReleaseStatus
   if (status === 'Delayed') return t(lang, 'salaryDelayed');
   return t(lang, 'salaryReleased');
 }
+
+export function getPayrollEntryTypeLabel(lang: Language, type: PayrollEntryType): string {
+  if (type === 'earning_in_payroll') return t(lang, 'typeEarningInPayroll');
+  if (type === 'earning_off_cycle') return t(lang, 'typeEarningOffCycle');
+  if (type === 'deduction_in_payroll') return t(lang, 'typeDeductionInPayroll');
+  return t(lang, 'typeDeductionOffCycle');
+}
+
+export function getDeductionBucketLabel(lang: Language, bucket: DeductionTargetBucket): string {
+  if (bucket === 'additional_in_payroll') return t(lang, 'bucketInPayroll');
+  if (bucket === 'additional_off_cycle') return t(lang, 'bucketOffCycle');
+  return t(lang, 'bucketMainSalary');
+}
+
+export function getEmployeeTypeLabel(lang: Language, type: EmployeeType): string {
+  if (type === 'driver') return t(lang, 'empTypeDriver');
+  if (type === 'management') return t(lang, 'empTypeManagement');
+  return t(lang, 'empTypeOffice');
+}
+
+export function getDeductionWorkflowChainLabel(
+  lang: Language,
+  chain: DeductionWorkflowChain
+): string {
+  if (chain === 'hr_only') return t(lang, 'chainHrOnly');
+  if (chain === 'main_manager_only') return t(lang, 'chainMainManagerOnly');
+  return t(lang, 'chainManagerThenHr');
+}
+
+export function getDeductionTriggerLabel(
+  lang: Language,
+  trigger: DeductionApprovalTrigger
+): string {
+  return trigger === 'off_day' ? t(lang, 'triggerOffDay') : t(lang, 'triggerLatency');
+}
+
+export function getDeductionApprovalStatusLabel(
+  lang: Language,
+  status: DeductionApprovalStatus
+): string {
+  switch (status) {
+    case 'pending_manager':
+      return t(lang, 'statusPendingManager');
+    case 'pending_hr_approval':
+      return t(lang, 'statusPendingHrApproval');
+    case 'pending_hr_decision':
+      return t(lang, 'statusPendingHrDecision');
+    case 'escalated_to_hr':
+      return t(lang, 'statusEscalatedToHr');
+    case 'pending_main_manager':
+      return t(lang, 'statusPendingMainManager');
+    case 'approved':
+      return t(lang, 'statusApprovedInPayroll');
+    case 'waived':
+      return t(lang, 'statusWaived');
+  }
+}
+
+export function getPatchBucketLabel(lang: Language, bucket: PatchReleaseBucket): string {
+  switch (bucket) {
+    case 'off_cycle':
+      return t(lang, 'patchBucketOffCycle');
+    case 'upcoming_main_salary':
+      return t(lang, 'patchBucketUpcomingMain');
+    case 'upcoming_additional_in_payroll':
+      return t(lang, 'patchBucketUpcomingInPayroll');
+    case 'upcoming_off_cycle':
+      return t(lang, 'patchBucketUpcomingOffCycle');
+  }
+}
+
+export function getPaymentMethodLabel(lang: Language, method: PatchPaymentMethod): string {
+  if (method === 'Cash') return t(lang, 'methodCash');
+  if (method === 'Bank Transfer') return t(lang, 'methodBankTransfer');
+  return t(lang, 'methodWps');
+}
+

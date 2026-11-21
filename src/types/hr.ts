@@ -73,6 +73,132 @@ export type Weekday = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
 
 export type ApprovalStepRole = 'section_manager' | 'hr_admin' | 'main_manager';
 
+export type PayrollEntryType =
+  | 'earning_in_payroll'
+  | 'earning_off_cycle'
+  | 'deduction_in_payroll'
+  | 'deduction_off_cycle';
+
+export type DeductionTargetBucket =
+  | 'additional_in_payroll'
+  | 'additional_off_cycle'
+  | 'main_salary';
+
+export interface PayrollCategoryItem {
+  id: string;
+  type: PayrollEntryType;
+  name: string;
+  active: boolean;
+  description?: string;
+}
+
+export interface PayrollEntry {
+  id: string;
+  employeeId: string;
+  companyId: string;
+  type: PayrollEntryType;
+  categoryId: string;
+  categoryName: string;
+  amountAED: number;
+  isPermanent: boolean;
+  effectiveFrom: string; // YYYY-MM inclusive
+  effectiveTo: string | null; // YYYY-MM inclusive; null = ongoing permanent
+  durationMonths: number | null; // Set for temporary entries (e.g. 1, 3, 6)
+  targetBucket?: DeductionTargetBucket | null; // Required for deduction_* types
+  reason: string;
+  createdBy: string;
+  createdByRole: UserRole;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type EmployeeType = 'office_employee' | 'driver' | 'management';
+
+export type DeductionWorkflowChain = 'manager_then_hr' | 'hr_only' | 'main_manager_only';
+
+export interface DeductionWorkflowConfig {
+  office_employee: DeductionWorkflowChain;
+  driver: DeductionWorkflowChain;
+  management: DeductionWorkflowChain;
+  autoEscalationHours: number; // e.g., 48 (2 days) or 72 (3 days)
+}
+
+export type DeductionApprovalTrigger = 'off_day' | 'latency';
+
+export type DeductionApprovalStatus =
+  | 'pending_manager'
+  | 'pending_hr_approval'
+  | 'pending_hr_decision'
+  | 'escalated_to_hr'
+  | 'pending_main_manager'
+  | 'approved'
+  | 'waived';
+
+export interface DeductionApprovalRequest {
+  id: string;
+  employeeId: string;
+  companyId: string;
+  sectionId: string;
+  month: string; // YYYY-MM
+  triggerType: DeductionApprovalTrigger;
+  date: string; // YYYY-MM-DD
+  amountAED: number;
+  targetBucket: DeductionTargetBucket;
+  reason: string;
+  workflowChain: DeductionWorkflowChain;
+  status: DeductionApprovalStatus;
+  escalationDeadline: string; // ISO date-time
+  managerActorName?: string;
+  managerDecision?: 'approved' | 'rejected';
+  managerNote?: string;
+  managerDecidedAt?: string;
+  hrActorName?: string;
+  hrDecision?: 'approved' | 'waived';
+  hrNote?: string;
+  hrDecidedAt?: string;
+  createdBy: string;
+  createdByRole: UserRole;
+  createdAt: string;
+}
+
+export type PatchReleaseBucket =
+  | 'off_cycle'
+  | 'upcoming_main_salary'
+  | 'upcoming_additional_in_payroll'
+  | 'upcoming_off_cycle';
+
+export type PatchPaymentMethod = 'Cash' | 'Bank Transfer' | 'WPS';
+
+export interface PatchReleaseAllocation {
+  month: string; // YYYY-MM
+  bucket: PatchReleaseBucket;
+  amountAED: number;
+}
+
+export interface PatchMoneyRelease {
+  id: string;
+  employeeId: string;
+  companyId: string;
+  totalAmountAED: number;
+  allocations: PatchReleaseAllocation[];
+  paymentMethod: PatchPaymentMethod;
+  releaseDate: string; // YYYY-MM-DD
+  releasedBy: string;
+  releasedByRole: UserRole;
+  referenceNote?: string;
+  createdAt: string;
+}
+
+export interface EmployeePendingBalanceItem {
+  key: string;
+  month: string;
+  bucket: PatchReleaseBucket;
+  earnedOrScheduledAED: number;
+  alreadyReleasedAED: number;
+  availableAED: number;
+  impactsWps: boolean;
+}
+
 export interface Company {
   id: string;
   code: string;
@@ -80,6 +206,9 @@ export interface Company {
   industry: string;
   city: string;
   active: boolean;
+  molEstablishmentId?: string;
+  wpsRoutingCode?: string;
+  companyIban?: string;
 }
 
 export interface Section {
@@ -157,6 +286,7 @@ export interface BankDetails {
   bankName: string;
   accountNumber: string;
   iban: string;
+  bankRoutingCode?: string;
 }
 
 export interface ProAssignment {
@@ -207,6 +337,8 @@ export interface Employee {
   passwordHash?: string; // Demo/local password store (hashed on real backend)
   mustChangePassword: boolean;
   role: UserRole;
+  employeeType: EmployeeType;
+  deductionWorkflowOverride?: DeductionWorkflowChain | 'inherit';
   primaryCompanyId: string;
   sharedCompanyIds: string[]; // Secondary/attached companies (also strict Accounting scope)
   sectionId: string;
@@ -219,6 +351,7 @@ export interface Employee {
   assignedZoneIds: string[]; // Empty array [] = Geofence Exempt (No-Zone Option)
   clockInPolicyOverride?: ClockInPolicyMode | 'inherit';
   salary: SalaryStructure;
+  mohrePersonId?: string; // 14-digit UAE MOHRE Person ID / Labour Card #
   bankDetails?: BankDetails;
   leaveBalance: LeaveBalance;
   customShift?: ShiftSchedule; // Overrides model fixed shift once approved
@@ -349,6 +482,7 @@ export interface PayrollAdjustment {
   amountAED: number;
   date: string;
   reason: string;
+  targetBucket?: DeductionTargetBucket | null;
   source?: 'manual' | 'auto_lateness';
   attendanceLogId?: string;
   createdBy: string;
@@ -363,6 +497,7 @@ export interface AppSettings {
   maxMobileAccuracyMeters: number;
   customDocumentTypes: string[];
   apiBaseUrl: string;
+  deductionWorkflowConfig: DeductionWorkflowConfig;
 }
 
 export interface HRDatabase {
@@ -379,6 +514,10 @@ export interface HRDatabase {
   leaves: LeaveRequest[];
   workflows: ApprovalWorkflow[];
   payrollAdjustments: PayrollAdjustment[];
+  payrollCategories: PayrollCategoryItem[];
+  payrollEntries: PayrollEntry[];
+  deductionApprovals: DeductionApprovalRequest[];
+  patchReleases: PatchMoneyRelease[];
   salaryReleases: SalaryReleaseSchedule[];
   settings: AppSettings;
 }
@@ -432,7 +571,21 @@ export interface MonthlyPayrollRow {
   transportAllowance: number;
   otherAllowance: number;
   totalAllowances: number;
-  grossSalary: number;
+  grossSalary: number; // Main Salary = Basic + Allowances
+  inPayrollEarnings: number; // Bucket 2: Additional Earning (In Payroll) + legacy bonuses
+  offCycleEarnings: number; // Bucket 3: Additional Earning (Off Cycle) — NEVER in WPS
+  inPayrollDeductions: number; // Auto-lateness + legacy deductions + deduction_in_payroll
+  offCycleDeductions: number; // deduction_off_cycle
+  wpsFixedIncome: number; // Basic Salary (kept intact in WPS report)
+  wpsVariableIncome: number; // Allowances + In-Payroll Earnings - In-Payroll Deductions - Early WPS Patch Releases
+  wpsTotalPayout: number; // wpsFixedIncome + wpsVariableIncome
+  offCycleNetPayout: number; // Off-Cycle net payout (outside WPS)
+  approvedWorkflowDeductions: number; // Final HR/Main-Manager approved off-day & latency deductions
+  earlyWpsReleasedAED: number; // Patch releases allocated against upcoming Main Salary / Additional In-Payroll
+  earlyOffCycleReleasedAED: number; // Patch releases allocated against this month's Off-Cycle bucket
+  remainingOffCyclePayout: number; // max(0, offCycleNetPayout - earlyOffCycleReleasedAED)
+  remainingNetPayable: number; // max(0, netSalary - earlyWpsReleasedAED - earlyOffCycleReleasedAED)
+  unpaidLeaveDays: number;
   totalBonuses: number;
   autoLatenessDeductions: number;
   manualDeductions: number;
@@ -440,7 +593,51 @@ export interface MonthlyPayrollRow {
   netSalary: number;
   deductions: PayrollAdjustment[];
   bonuses: PayrollAdjustment[];
+  inPayrollEarningEntries: PayrollEntry[];
+  offCycleEarningEntries: PayrollEntry[];
+  inPayrollDeductionEntries: PayrollEntry[];
+  offCycleDeductionEntries: PayrollEntry[];
+  approvedDeductionRequests: DeductionApprovalRequest[];
+  appliedPatchReleases: PatchMoneyRelease[];
   release: ResolvedSalaryRelease;
+}
+
+export interface AdcbWpsEdrRow {
+  recordType: 'EDR';
+  mohrePersonId: string;
+  bankRoutingCode: string;
+  iban: string;
+  periodStart: string; // YYYY-MM-DD
+  periodEnd: string; // YYYY-MM-DD
+  daysInPeriod: number;
+  fixedIncome: number; // Basic Salary
+  variableIncome: number; // Allowances + In-Payroll Earnings - In-Payroll Deductions
+  unpaidLeaveDays: number;
+  employeeFullName: string;
+}
+
+export interface AdcbWpsScrRow {
+  recordType: 'SCR';
+  molEstablishmentId: string;
+  companyWpsRoutingCode: string;
+  fileDate: string; // YYYY-MM-DD
+  fileTime: string; // HHMM
+  salaryMonth: string; // MMYYYY
+  totalEdrCount: number;
+  totalPayoutAed: number;
+  currency: 'AED';
+  companyIban: string;
+}
+
+export interface AdcbWpsExportResult {
+  company: Company;
+  month: string;
+  salaryMonthCode: string; // MMYYYY
+  edrRows: AdcbWpsEdrRow[];
+  scrRow: AdcbWpsScrRow;
+  aoaRows: (string | number)[][];
+  warnings: string[];
+  totalEarlyWpsOffsetAed: number;
 }
 
 /* ============================================================================
@@ -454,6 +651,9 @@ export interface CompanyRow {
   industry: string;
   city: string;
   active: boolean;
+  mol_establishment_id?: string | null;
+  wps_routing_code?: string | null;
+  company_iban?: string | null;
 }
 
 export interface SectionRow {
@@ -484,6 +684,8 @@ export interface UserRow {
   password_hash?: string;
   must_change_password: boolean;
   role: UserRole;
+  employee_type?: EmployeeType;
+  deduction_workflow_override?: DeductionWorkflowChain | 'inherit' | null;
   primary_company_id: string;
   section_id: string;
   managed_section_ids_json: string;
@@ -492,7 +694,9 @@ export interface UserRow {
   job_title: string;
   base_salary_aed: number;
   allowances_aed: number;
+  mohre_person_id?: string | null;
   bank_name?: string | null;
+  bank_routing_code?: string | null;
   account_number?: string | null;
   iban?: string | null;
   active: boolean;

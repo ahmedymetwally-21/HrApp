@@ -19,6 +19,7 @@ import {
   AppSettings,
   AttendanceLog,
   Company,
+  DeductionApprovalRequest,
   Employee,
   EmployeeDocument,
   EmployeeModel,
@@ -27,7 +28,9 @@ import {
   Language,
   LeaveRequest,
   LeaveStatus,
+  PatchMoneyRelease,
   PayrollAdjustment,
+  PayrollEntry,
   ProAssignment,
   SalaryReleaseSchedule,
   Section,
@@ -57,6 +60,7 @@ export type NavSection =
   | 'employees'
   | 'leaves'
   | 'payroll'
+  | 'earnings_deductions'
   | 'settings';
 
 interface DashboardViewProps {
@@ -73,6 +77,9 @@ interface DashboardViewProps {
   attendance: AttendanceLog[];
   leaves: LeaveRequest[];
   payrollAdjustments: PayrollAdjustment[];
+  payrollEntries?: PayrollEntry[];
+  deductionApprovals?: DeductionApprovalRequest[];
+  patchReleases?: PatchMoneyRelease[];
   salaryReleases: SalaryReleaseSchedule[];
   proAssignments: ProAssignment[];
   settings: AppSettings;
@@ -99,6 +106,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   attendance,
   leaves,
   payrollAdjustments,
+  payrollEntries = [],
+  deductionApprovals = [],
+  patchReleases = [],
   salaryReleases,
   proAssignments,
   settings,
@@ -290,7 +300,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       currentMonth,
       payrollAdjustments,
       attendance,
-      salaryReleases
+      salaryReleases,
+      payrollEntries,
+      leaves,
+      deductionApprovals,
+      patchReleases
     );
     const shiftStart = userModel ? getEffectiveShiftStart(currentUser, userModel) : '08:00';
     const shiftEnd = userModel ? getEffectiveShiftEnd(currentUser, userModel) : '17:00';
@@ -502,8 +516,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
       return (
         sum +
-        calculateEmployeePayroll(emp, currentMonth, payrollAdjustments, attendance, salaryReleases)
-          .netSalary
+        calculateEmployeePayroll(
+          emp,
+          currentMonth,
+          payrollAdjustments,
+          attendance,
+          salaryReleases,
+          payrollEntries,
+          leaves,
+          deductionApprovals,
+          patchReleases
+        ).netSalary
       );
     }, 0);
 

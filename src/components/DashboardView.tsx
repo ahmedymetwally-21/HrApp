@@ -53,15 +53,9 @@ import {
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 import { GeofenceMap } from './GeofenceMap';
+import type { NavSection } from '../types/nav';
 
-export type NavSection =
-  | 'dashboard'
-  | 'attendance'
-  | 'employees'
-  | 'leaves'
-  | 'payroll'
-  | 'earnings_deductions'
-  | 'settings';
+export type { NavSection };
 
 interface DashboardViewProps {
   lang: Language;
@@ -194,8 +188,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <button
             type="button"
-            onClick={() => onNavigate('employees')}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+            onClick={() => onNavigate('documents')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold cursor-pointer"
           >
             <FolderOpen className="w-4 h-4" />
             Open Assigned Docs
@@ -205,40 +199,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <button
             type="button"
-            onClick={() => onNavigate('employees')}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
+            onClick={() => onNavigate('pro_assignments')}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 cursor-pointer transition-colors"
           >
-            <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <p className="mt-2.5 text-2xl font-bold font-mono text-slate-900 dark:text-white">
+            <Users className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+            <p className="mt-2.5 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
               {scopedEmployees.length}
             </p>
             <p className="text-xs text-slate-500 mt-0.5">Active Assigned Employees</p>
           </button>
           <button
             type="button"
-            onClick={() => onNavigate('employees')}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
+            onClick={() => onNavigate('documents')}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 cursor-pointer transition-colors"
           >
             <FolderOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <p className="mt-2.5 text-2xl font-bold font-mono text-slate-900 dark:text-white">
+            <p className="mt-2.5 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
               {documents.length}
             </p>
             <p className="text-xs text-slate-500 mt-0.5">Accessible Documents</p>
           </button>
           <button
             type="button"
-            onClick={() => onNavigate('employees')}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 cursor-pointer"
+            onClick={() => onNavigate('documents')}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 cursor-pointer transition-colors"
           >
             <FileWarning className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-            <p className="mt-2.5 text-2xl font-bold font-mono text-amber-700 dark:text-amber-400">
+            <p className="mt-2.5 text-2xl font-bold font-mono tabular-nums text-amber-700 dark:text-amber-400">
               {proDocAlerts.length}
             </p>
             <p className="text-xs text-slate-500 mt-0.5">{t(lang, 'expiringDocs')}</p>
           </button>
         </section>
 
-        <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
               Active Access Windows
@@ -257,7 +251,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     key={g.id}
                     type="button"
-                    onClick={() => onNavigate('employees')}
+                    onClick={() => onNavigate('documents')}
                     className="w-full px-5 py-3.5 flex items-center justify-between gap-3 text-start hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer"
                   >
                     <div className="flex items-center gap-3 min-w-0">
@@ -271,7 +265,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </p>
                       </div>
                     </div>
-                    <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 shrink-0">
+                    <span className="text-xs font-medium text-teal-700 dark:text-teal-300 shrink-0">
                       {t(lang, 'accessExpires')}: {formatShortDate(g.accessExpiresAt)}
                     </span>
                   </button>
@@ -329,7 +323,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               aria-label={showMapInfo ? t(lang, 'hideMap') : t(lang, 'mapDetails')}
               className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
                 showMapInfo
-                  ? 'border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                  ? 'border-teal-300 dark:border-teal-700 bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300'
                   : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
               }`}
             >
@@ -375,10 +369,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               type="button"
               onClick={() => void handlePrimaryPunch()}
               disabled={busyPunch || (!openShiftLog && !clockEval.allowed)}
-              className={`mt-6 w-full max-w-xs min-h-[56px] rounded-2xl text-base font-semibold text-white flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+              className={`mt-6 w-full max-w-xs min-h-[56px] rounded-xl text-base font-semibold text-white flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
                 openShiftLog
                   ? 'bg-rose-600 hover:bg-rose-700'
-                  : 'bg-indigo-700 hover:bg-indigo-800'
+                  : 'bg-teal-600 hover:bg-teal-700'
               }`}
             >
               <Clock className="w-5 h-5" />
@@ -397,7 +391,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800 text-start space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
                 <span className="inline-flex items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200">
-                  <MapPin className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <MapPin className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
                   {clockEval.nearestZone?.name ?? 'No Zone'}
                 </span>
                 {gpsReading && (
@@ -422,9 +416,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <button
             type="button"
             onClick={() => onNavigate('leaves')}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
           >
-            <CalendarClock className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <CalendarClock className="w-4 h-4 text-teal-600 dark:text-teal-400" />
             <p className="mt-2.5 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
               {Math.max(0, currentUser.leaveBalance.annualTotal - currentUser.leaveBalance.annualUsed)}d
             </p>
@@ -435,10 +429,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           <button
             type="button"
-            onClick={() => onNavigate('employees')}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+            onClick={() => onNavigate('documents')}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
           >
-            <FolderOpen className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <FolderOpen className="w-4 h-4 text-teal-600 dark:text-teal-400" />
             <p className="mt-2.5 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
               {myDocs.length}
             </p>
@@ -458,9 +452,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <button
             type="button"
             onClick={() => onNavigate('payroll')}
-            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
           >
-            <Receipt className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <Receipt className="w-4 h-4 text-teal-600 dark:text-teal-400" />
             <p className="mt-2.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white truncate">
               {myPayroll.netSalary.toLocaleString()}
             </p>
@@ -566,7 +560,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('attendance')}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+          className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
         >
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
             <span>{t(lang, 'liveAttendance')}</span>
@@ -587,7 +581,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('leaves')}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+          className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
         >
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
             <span>{t(lang, 'pendingApprovals')}</span>
@@ -603,8 +597,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <button
           type="button"
-          onClick={() => onNavigate('employees')}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+          onClick={() => onNavigate('documents')}
+          className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
         >
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
             <span>{t(lang, 'expiringDocs')}</span>
@@ -619,13 +613,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('payroll')}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer"
+          className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
         >
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
             <span>{t(lang, 'monthlyPayroll')}</span>
-            <Wallet className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <Wallet className="w-4 h-4 text-teal-600 dark:text-teal-400" />
           </div>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-indigo-900 dark:text-indigo-300 truncate">
+          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-teal-800 dark:text-teal-300 truncate">
             {formatAED(totalNetPayroll)}
           </p>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Net ({currentMonth})</p>
@@ -635,7 +629,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Two Focused Action Panels */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Pending Leave & Shift Approvals */}
-        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
               {t(lang, 'pendingApprovals')}
@@ -643,7 +637,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('leaves')}
-              className="text-xs font-medium text-indigo-700 dark:text-indigo-400 hover:underline cursor-pointer"
+              className="text-xs font-medium text-teal-700 dark:text-teal-400 hover:underline cursor-pointer"
             >
               {t(lang, 'navLeaves')}
             </button>
@@ -729,17 +723,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </section>
 
         {/* Expiring Documents Watchlist */}
-        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
               {t(lang, 'expiringDocs')}
             </h3>
             <button
               type="button"
-              onClick={() => onNavigate('employees')}
-              className="text-xs font-medium text-indigo-700 dark:text-indigo-400 hover:underline cursor-pointer"
+              onClick={() => onNavigate('documents')}
+              className="text-xs font-medium text-teal-700 dark:text-teal-400 hover:underline cursor-pointer"
             >
-              {t(lang, 'navEmployees')}
+              {t(lang, 'navDocuments')}
             </button>
           </div>
 
@@ -756,7 +750,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     key={doc.id}
                     type="button"
-                    onClick={() => onNavigate('employees')}
+                    onClick={() => onNavigate('documents')}
                     className="w-full px-5 py-3.5 flex items-center justify-between gap-3 text-start hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer"
                   >
                     <div className="flex items-center gap-3 min-w-0">

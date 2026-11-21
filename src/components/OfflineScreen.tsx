@@ -59,7 +59,7 @@ export const OfflineScreen: React.FC<OfflineScreenProps> = ({
             type="button"
             onClick={() => void handleRetry()}
             disabled={retrying}
-            className="w-full min-h-[46px] rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+            className="w-full min-h-[46px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
           >
             <RefreshCw className={`w-4 h-4 ${retrying ? 'animate-spin' : ''}`} />
             {retrying ? t(lang, 'checkingConnection') : t(lang, 'retryConnection')}

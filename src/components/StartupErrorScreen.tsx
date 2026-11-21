@@ -132,7 +132,7 @@ export const StartupErrorScreen: React.FC<StartupErrorScreenProps> = ({
             type="button"
             disabled={retrying}
             onClick={() => void handleRetry()}
-            className="flex-1 min-h-[44px] px-4 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+            className="flex-1 min-h-[44px] px-4 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
           >
             <RefreshCw className={`w-4 h-4 ${retrying ? 'animate-spin' : ''}`} />
             <span>{retrying ? t(lang, 'retrying') : t(lang, 'retry')}</span>
@@ -152,7 +152,7 @@ export const StartupErrorScreen: React.FC<StartupErrorScreenProps> = ({
           <button
             type="button"
             onClick={onSwitchToDemoMode}
-            className="w-full py-2 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors cursor-pointer"
+            className="w-full py-2 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-teal-700 dark:hover:text-teal-300 transition-colors cursor-pointer"
           >
             {t(lang, 'switchToDemo')}
           </button>

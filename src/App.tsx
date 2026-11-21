@@ -9,8 +9,6 @@ import {
   FolderOpen,
   LayoutDashboard,
   MapPin,
-  PanelLeftClose,
-  PanelLeftOpen,
   Settings,
   SlidersHorizontal,
   Users,
@@ -20,7 +18,7 @@ import {
 import { AttendanceView } from './components/AttendanceView';
 import { Avatar } from './components/Avatar';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
-import { DashboardView, NavSection } from './components/DashboardView';
+import { DashboardView } from './components/DashboardView';
 import { EarningsDeductionsView } from './components/EarningsDeductionsView';
 import { EmployeesView } from './components/EmployeesView';
 import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScreen';
@@ -29,9 +27,11 @@ import { LoginView } from './components/LoginView';
 import { OfflineScreen } from './components/OfflineScreen';
 import { PayrollView } from './components/PayrollView';
 import { ProfileSettingsMenu, SimPreset } from './components/ProfileSettingsMenu';
-import { SettingsHubView } from './components/SettingsHubView';
+import { SettingsHubView, SettingsRouteSection } from './components/SettingsHubView';
+import { SidebarNav } from './components/SidebarNav';
 import { StartupErrorScreen } from './components/StartupErrorScreen';
 import { getDirection, t } from './i18n/translations';
+import { getAllowedNavRoutesForRole, isSettingsRoute, NavSection } from './types/nav';
 import {
   api,
   ApiHttpError,
@@ -384,17 +384,10 @@ export function App() {
     }
   }, [activeRole, currentUser, accessibleCompanies, selectedCompanyId]);
 
-  const allowedNavIds = useMemo<NavSection[]>(() => {
-    if (activeRole === UserRole.Accounting) return ['payroll', 'earnings_deductions'];
-    if (activeRole === UserRole.PRO) return ['dashboard', 'employees'];
-    const base: NavSection[] = ['dashboard', 'attendance', 'employees', 'leaves', 'payroll'];
-    if (activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin) {
-      base.push('earnings_deductions', 'settings');
-    } else if (activeRole === UserRole.SectionManager) {
-      base.push('earnings_deductions');
-    }
-    return base;
-  }, [activeRole]);
+  const allowedNavIds = useMemo<NavSection[]>(
+    () => getAllowedNavRoutesForRole(activeRole),
+    [activeRole]
+  );
 
   // Redirect away from unauthorized views when switching roles
   useEffect(() => {
@@ -454,6 +447,18 @@ export function App() {
     if (!db) return [];
     return (db.patchReleases ?? []).filter((r) => scopedEmployeeIds.has(r.employeeId));
   }, [db, scopedEmployeeIds]);
+
+  const pendingDeductionCount = useMemo(() => {
+    if (!db || !currentUser) return 0;
+    return scopedDeductionApprovals.filter((req) => {
+      const perm = canActOnDeductionApproval({
+        request: req,
+        actorRole: activeRole,
+        actorManagedSectionIds: currentUser.managedSectionIds,
+      });
+      return perm.canManagerAct || perm.canHrAct;
+    }).length;
+  }, [db, currentUser, activeRole, scopedDeductionApprovals]);
 
   // Compute simulated or live GPS reading for current user
   const gpsReading = useMemo<GPSReading | null>(() => {
@@ -542,7 +547,7 @@ export function App() {
             id: `da-${req.id}`,
             title: `Deduction Approval: ${emp.fullName}`,
             detail: `AED ${req.amountAED} · ${req.triggerType === 'off_day' ? 'Off-Day' : 'Latency'}`,
-            target: 'earnings_deductions',
+            target: 'deduction_approvals',
           });
         }
       });
@@ -560,7 +565,7 @@ export function App() {
           id: `doc-${doc.id}`,
           title: `${doc.type} ${expiry.status === 'expired' ? 'Expired' : 'Expiring'}`,
           detail: `${emp?.fullName ?? 'Employee'} · ${label}`,
-          target: 'employees',
+          target: 'documents',
         });
       }
     });
@@ -612,7 +617,7 @@ export function App() {
       setActiveNav('payroll');
     } else if (normalized === UserRole.PRO) {
       setSelectedCompanyId('all');
-      setActiveNav('employees');
+      setActiveNav('documents');
     } else {
       setActiveNav('dashboard');
     }
@@ -801,7 +806,7 @@ export function App() {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center px-5">
         <div className="w-full max-w-sm rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs text-center space-y-4">
-          <div className="w-9 h-9 mx-auto rounded-full border-2 border-indigo-200 dark:border-indigo-900 border-t-indigo-600 dark:border-t-indigo-400 animate-spin" />
+          <div className="w-9 h-9 mx-auto rounded-full border-2 border-teal-200 dark:border-teal-900 border-t-teal-600 dark:border-t-teal-400 animate-spin" />
           <div className="space-y-1">
             <p className="text-sm font-semibold text-slate-900 dark:text-white">
               {t(lang, 'loadingWorkspace')}
@@ -832,24 +837,20 @@ export function App() {
     activeRole === UserRole.Accounting ||
     activeRole === UserRole.SectionManager;
 
-  const allNavItems: {
+  const mobileCandidateNavs: {
     id: NavSection;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
   }[] = [
     { id: 'dashboard', label: t(lang, 'navDashboard'), icon: LayoutDashboard },
     { id: 'attendance', label: t(lang, 'navAttendance'), icon: Clock },
-    {
-      id: 'employees',
-      label:
-        activeRole === UserRole.PRO
-          ? t(lang, 'navProDocs')
-          : activeRole === UserRole.Employee
-            ? t(lang, 'navMyDocs')
-            : t(lang, 'navEmployees'),
-      icon:
-        activeRole === UserRole.Employee || activeRole === UserRole.PRO ? FolderOpen : Users,
-    },
+    activeRole === UserRole.PRO || activeRole === UserRole.Employee
+      ? {
+          id: 'documents',
+          label: activeRole === UserRole.PRO ? t(lang, 'navProDocs') : t(lang, 'navMyDocs'),
+          icon: FolderOpen,
+        }
+      : { id: 'employees', label: t(lang, 'navEmployees'), icon: Users },
     { id: 'leaves', label: t(lang, 'navLeaves'), icon: CalendarClock },
     {
       id: 'payroll',
@@ -861,16 +862,15 @@ export function App() {
       label: t(lang, 'navEarningsDeductions'),
       icon: SlidersHorizontal,
     },
-    { id: 'settings', label: t(lang, 'navSettings'), icon: Settings },
   ];
 
-  const navItems = allNavItems.filter((item) => allowedNavIds.includes(item.id));
-
   // Mobile bottom nav keeps max 5 clean thumb targets
-  const mobileNavItems = navItems.slice(0, 5);
+  const mobileNavItems = mobileCandidateNavs
+    .filter((item) => allowedNavIds.includes(item.id))
+    .slice(0, 5);
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
+    <div className="min-h-screen bg-slate-50/70 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
       {/* ====================================================================
           MINIMALIST TOP HEADER — STRICTLY 4 ELEMENTS:
           1. Yaldi HR Logo
@@ -878,14 +878,14 @@ export function App() {
           3. Notification Bell (with red dot)
           4. User Profile Icon (tucks Language, Theme, Role, GPS, Server)
          ==================================================================== */}
-      <header className="sticky top-0 z-30 h-[52px] lg:h-[60px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-3 sm:px-5 pt-safe flex items-center justify-between gap-2 sm:gap-4 print:hidden">
+      <header className="sticky top-0 z-30 h-[52px] lg:h-[60px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 px-3 sm:px-5 pt-safe flex items-center justify-between gap-2 sm:gap-4 print:hidden">
         {/* 1. Yaldi HR Logo */}
         <button
           type="button"
-          onClick={() => setActiveNav('dashboard')}
-          className="flex items-center gap-2 shrink-0 cursor-pointer"
+          onClick={() => setActiveNav(allowedNavIds[0] ?? 'dashboard')}
+          className="flex items-center gap-2.5 shrink-0 cursor-pointer"
         >
-          <div className="w-8 h-8 rounded-xl bg-indigo-700 text-white flex items-center justify-center shrink-0">
+          <div className="w-8 h-8 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0">
             <MapPin className="w-4 h-4" />
           </div>
           <span className="font-display text-sm sm:text-base font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
@@ -896,12 +896,12 @@ export function App() {
         {/* 2. Company Switcher */}
         <div className="flex-1 max-w-xs min-w-0 flex justify-center">
           <div className="relative w-full max-w-[240px]">
-            <Building2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 absolute start-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Building2 className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 absolute start-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <select
               aria-label="Company Switcher"
               value={selectedCompanyId}
               onChange={(e) => setSelectedCompanyId(e.target.value)}
-              className="w-full ps-8 pe-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 truncate cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="w-full ps-8 pe-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 truncate cursor-pointer focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600"
             >
               {(activeRole === UserRole.MainManager ||
                 activeRole === UserRole.PRO ||
@@ -991,66 +991,29 @@ export function App() {
               setProfileMenuOpen(true);
             }}
             aria-label="Open profile and quick settings"
-            className="rounded-full p-0.5 border border-slate-200 dark:border-slate-700 hover:border-indigo-400 transition-colors cursor-pointer"
+            className="rounded-full p-0.5 border border-slate-200 dark:border-slate-700 hover:border-teal-400 transition-colors cursor-pointer"
           >
             <Avatar src={currentUser.avatarUrl} name={currentUser.fullName} size="sm" />
           </button>
         </div>
       </header>
 
-      {/* Main Body: Desktop Left Sidebar + Content */}
+      {/* Main Body: Desktop Grouped Collapsible Left Sidebar + Content */}
       <div className="flex-1 flex min-h-0">
-        {/* Desktop Collapsible Sidebar (1024px+) */}
-        <aside
-          className={`hidden lg:flex flex-col border-e border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0 transition-[width] duration-200 print:hidden ${
-            sidebarCollapsed ? 'w-[72px]' : 'w-60'
-          }`}
-        >
-          <nav className="flex-1 p-3 space-y-1">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = activeNav === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setActiveNav(item.id)}
-                  title={sidebarCollapsed ? item.label : undefined}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer ${
-                    active
-                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold'
-                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
-                  } ${sidebarCollapsed ? 'justify-center' : ''}`}
-                >
-                  <Icon className="w-[18px] h-[18px] shrink-0" />
-                  {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="p-3 border-t border-slate-100 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setSidebarCollapsed((c) => !c)}
-              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-            >
-              {sidebarCollapsed ? (
-                <PanelLeftOpen className="w-4 h-4 rtl:rotate-180" />
-              ) : (
-                <>
-                  <PanelLeftClose className="w-4 h-4 rtl:rotate-180" />
-                  <span>Collapse</span>
-                </>
-              )}
-            </button>
-          </div>
-        </aside>
+        <SidebarNav
+          lang={lang}
+          activeRole={activeRole}
+          activeNav={activeNav}
+          allowedNavIds={allowedNavIds}
+          collapsed={sidebarCollapsed}
+          pendingDeductionCount={pendingDeductionCount}
+          onSelectNav={setActiveNav}
+          onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+        />
 
         {/* Active View Content */}
-        <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-5 pb-[80px] lg:pb-8 max-w-7xl mx-auto w-full">
-          {/* Mobile shortcuts for tabs beyond the 5-tab bottom bar */}
+        <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 pb-[80px] lg:pb-10 max-w-7xl mx-auto w-full">
+          {/* Mobile shortcuts for routes beyond the 5-tab bottom bar */}
           {(canAccessSettings || canAccessEarningsDeductions) && (
             <div className="lg:hidden mb-4 flex flex-wrap justify-end gap-2">
               {canAccessEarningsDeductions &&
@@ -1061,17 +1024,17 @@ export function App() {
                     onClick={() => setActiveNav('earnings_deductions')}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
                   >
-                    <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600" />
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-teal-600" />
                     {t(lang, 'navEarningsDeductions')}
                   </button>
                 )}
-              {canAccessSettings && activeNav !== 'settings' && (
+              {canAccessSettings && !isSettingsRoute(activeNav) && (
                 <button
                   type="button"
-                  onClick={() => setActiveNav('settings')}
+                  onClick={() => setActiveNav('settings_companies')}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
                 >
-                  <Settings className="w-3.5 h-3.5 text-indigo-600" />
+                  <Settings className="w-3.5 h-3.5 text-teal-600" />
                   {t(lang, 'navSettings')}
                 </button>
               )}
@@ -1155,63 +1118,106 @@ export function App() {
             />
           )}
 
-          {activeNav === 'employees' && activeRole !== UserRole.Accounting && (
-            <EmployeesView
-              lang={lang}
-              currentUser={currentUser}
-              activeRole={activeRole}
-              selectedCompanyId={selectedCompanyId}
-              companies={db.companies}
-              sections={db.sections}
-              labels={db.labels}
-              proAssignments={db.proAssignments}
-              models={db.employeeModels}
-              scopedEmployees={scopedEmployees}
-              geofences={db.geofences}
-              documents={scopedDocuments}
-              attendance={scopedAttendance}
-              leaves={scopedLeaves}
-              payrollAdjustments={scopedAdjustments}
-              payrollEntries={scopedPayrollEntries}
-              deductionApprovals={scopedDeductionApprovals}
-              patchReleases={scopedPatchReleases}
-              deductionWorkflowConfig={
-                db.settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
-              }
-              salaryReleases={db.salaryReleases}
-              customDocumentTypes={db.settings.customDocumentTypes}
-              onCreateEmployee={async (emp: CreateEmployeePayload) => {
-                await api.employees.create(emp);
-                await loadDatabase();
-                showToast(`${emp.fullName} added (password change required on first login).`);
-              }}
-              onUpdateEmployee={async (id, patch) => {
-                await api.employees.update(id, patch);
-                await loadDatabase();
-                showToast('Employee profile updated.');
-              }}
-              onProposeShift={async (employeeId: string, schedule: ShiftSchedule) => {
-                await api.employees.proposeShift(employeeId, schedule, currentUser.fullName);
-                await loadDatabase();
-                showToast('Shift proposed — pending Manager approval.');
-              }}
-              onDecideShiftProposal={async (employeeId, approve) => {
-                await api.employees.decideShiftProposal(employeeId, approve);
-                await loadDatabase();
-                showToast(approve ? 'Shift schedule approved.' : 'Shift proposal declined.');
-              }}
-              onUploadDocument={async (doc: Omit<EmployeeDocument, 'id' | 'uploadedAt'>) => {
-                await api.documents.upload(doc);
-                await loadDatabase();
-                showToast(`${doc.type} uploaded to vault.`);
-              }}
-              onDeleteDocument={async (id) => {
-                await api.documents.remove(id);
-                await loadDatabase();
-                showToast('Document removed.');
-              }}
-            />
-          )}
+          {(activeNav === 'employees' ||
+            activeNav === 'documents' ||
+            activeNav === 'pro_assignments') &&
+            activeRole !== UserRole.Accounting && (
+              <EmployeesView
+                lang={lang}
+                mode={
+                  activeNav === 'documents'
+                    ? 'documents'
+                    : activeNav === 'pro_assignments'
+                      ? 'pro_assignments'
+                      : 'directory'
+                }
+                currentUser={currentUser}
+                activeRole={activeRole}
+                selectedCompanyId={selectedCompanyId}
+                companies={db.companies}
+                sections={db.sections}
+                labels={db.labels}
+                proAssignments={db.proAssignments}
+                models={db.employeeModels}
+                scopedEmployees={scopedEmployees}
+                allEmployees={db.employees}
+                geofences={db.geofences}
+                documents={scopedDocuments}
+                attendance={scopedAttendance}
+                leaves={scopedLeaves}
+                payrollAdjustments={scopedAdjustments}
+                payrollEntries={scopedPayrollEntries}
+                payrollCategories={db.payrollCategories}
+                deductionApprovals={scopedDeductionApprovals}
+                patchReleases={scopedPatchReleases}
+                deductionWorkflowConfig={
+                  db.settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
+                }
+                salaryReleases={db.salaryReleases}
+                customDocumentTypes={db.settings.customDocumentTypes}
+                onCreateEmployee={async (emp: CreateEmployeePayload, additionalIncomes) => {
+                  const created = await api.employees.create(emp);
+                  for (const inc of additionalIncomes) {
+                    await api.payrollEntries.create({
+                      employeeId: created.id,
+                      companyId: created.primaryCompanyId,
+                      type: 'earning_in_payroll',
+                      categoryId: inc.categoryId,
+                      categoryName: inc.categoryName,
+                      amountAED: inc.amountAED,
+                      isPermanent: inc.isPermanent,
+                      effectiveFrom: inc.effectiveFrom,
+                      durationMonths: inc.durationMonths,
+                      targetBucket: null,
+                      reason: inc.reason,
+                      createdBy: currentUser.fullName,
+                      createdByRole: activeRole,
+                    });
+                  }
+                  await loadDatabase();
+                  showToast(
+                    additionalIncomes.length > 0
+                      ? `${emp.fullName} added with ${additionalIncomes.length} additional income item${additionalIncomes.length === 1 ? '' : 's'}.`
+                      : `${emp.fullName} added (password change required on first login).`
+                  );
+                }}
+                onUpdateEmployee={async (id, patch) => {
+                  await api.employees.update(id, patch);
+                  await loadDatabase();
+                  showToast('Employee profile updated.');
+                }}
+                onProposeShift={async (employeeId: string, schedule: ShiftSchedule) => {
+                  await api.employees.proposeShift(employeeId, schedule, currentUser.fullName);
+                  await loadDatabase();
+                  showToast('Shift proposed — pending Manager approval.');
+                }}
+                onDecideShiftProposal={async (employeeId, approve) => {
+                  await api.employees.decideShiftProposal(employeeId, approve);
+                  await loadDatabase();
+                  showToast(approve ? 'Shift schedule approved.' : 'Shift proposal declined.');
+                }}
+                onUploadDocument={async (doc: Omit<EmployeeDocument, 'id' | 'uploadedAt'>) => {
+                  await api.documents.upload(doc);
+                  await loadDatabase();
+                  showToast(`${doc.type} uploaded to vault.`);
+                }}
+                onDeleteDocument={async (id) => {
+                  await api.documents.remove(id);
+                  await loadDatabase();
+                  showToast('Document removed.');
+                }}
+                onCreateProAssignment={async (input: Omit<ProAssignment, 'id' | 'createdAt'>) => {
+                  await api.proAssignments.create(input);
+                  await loadDatabase();
+                  showToast('PRO time-limited document access granted.');
+                }}
+                onDeleteProAssignment={async (id) => {
+                  await api.proAssignments.remove(id);
+                  await loadDatabase();
+                  showToast('PRO document access revoked.');
+                }}
+              />
+            )}
 
           {activeNav === 'leaves' && (
             <LeavesView
@@ -1263,10 +1269,20 @@ export function App() {
             />
           )}
 
-          {activeNav === 'payroll' && activeRole !== UserRole.PRO && (
-            <PayrollView
-              lang={lang}
-              currentUser={currentUser}
+          {(activeNav === 'payroll' ||
+            activeNav === 'patch_releases' ||
+            activeNav === 'release_schedules') &&
+            activeRole !== UserRole.PRO && (
+              <PayrollView
+                lang={lang}
+                section={
+                  activeNav === 'patch_releases'
+                    ? 'patch_releases'
+                    : activeNav === 'release_schedules'
+                      ? 'release_schedules'
+                      : 'overview'
+                }
+                currentUser={currentUser}
               activeRole={activeRole}
               selectedCompanyId={selectedCompanyId}
               companies={db.companies}
@@ -1324,10 +1340,12 @@ export function App() {
             />
           )}
 
-          {activeNav === 'earnings_deductions' && canAccessEarningsDeductions && (
-            <EarningsDeductionsView
-              lang={lang}
-              currentUser={currentUser}
+          {(activeNav === 'earnings_deductions' || activeNav === 'deduction_approvals') &&
+            canAccessEarningsDeductions && (
+              <EarningsDeductionsView
+                lang={lang}
+                mode={activeNav === 'deduction_approvals' ? 'approvals' : 'entries'}
+                currentUser={currentUser}
               activeRole={activeRole}
               companies={db.companies}
               scopedEmployees={scopedEmployees}
@@ -1397,9 +1415,10 @@ export function App() {
             />
           )}
 
-          {activeNav === 'settings' && canAccessSettings && (
+          {isSettingsRoute(activeNav) && canAccessSettings && (
             <SettingsHubView
               lang={lang}
+              activeSection={activeNav.replace('settings_', '') as SettingsRouteSection}
               currentUser={currentUser}
               activeRole={activeRole}
               companies={db.companies}
@@ -1549,7 +1568,7 @@ export function App() {
               onClick={() => setActiveNav(item.id)}
               className={`flex flex-col items-center justify-center gap-0.5 text-[11px] font-medium cursor-pointer ${
                 active
-                  ? 'text-indigo-700 dark:text-indigo-300 font-semibold'
+                  ? 'text-teal-700 dark:text-teal-300 font-semibold'
                   : 'text-slate-500 dark:text-slate-400'
               }`}
             >
@@ -1606,7 +1625,7 @@ export function App() {
           className={`fixed bottom-20 lg:bottom-6 end-4 z-50 px-4 py-2.5 rounded-xl shadow-lg text-xs font-semibold flex items-center gap-2 print:hidden ${
             toast.kind === 'error'
               ? 'bg-rose-600 text-white'
-              : 'bg-slate-900 dark:bg-indigo-600 text-white'
+              : 'bg-slate-900 dark:bg-teal-600 text-white'
           }`}
         >
           {toast.kind === 'error' ? (

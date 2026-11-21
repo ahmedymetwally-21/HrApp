@@ -87,7 +87,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
       name: 'Tariq Al-Hashemi',
       scope: 'All 4 Companies · Workflow Builder · Exempt from Clock-In & Payroll',
       icon: ShieldCheck,
-      tint: 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300',
+      tint: 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300',
     },
     {
       role: UserRole.HRAdmin,
@@ -138,7 +138,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
       {/* Minimalist Header */}
       <header className="w-full max-w-5xl mx-auto px-5 py-5 flex items-center justify-between gap-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-indigo-700 text-white flex items-center justify-center shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0">
             <MapPin className="w-4 h-4" />
           </div>
           <span className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
@@ -159,7 +159,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 onClick={() => onChangeLang(code)}
                 className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                   lang === code
-                    ? 'bg-indigo-700 text-white'
+                    ? 'bg-teal-700 text-white'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
@@ -216,7 +216,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
                   />
                 </div>
               </div>
@@ -236,7 +236,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
                   />
                 </div>
               </div>
@@ -244,7 +244,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full min-h-[46px] rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+                className="w-full min-h-[46px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
               >
                 <span>{submitting ? t(lang, 'signingIn') : t(lang, 'signIn')}</span>
                 <ArrowRight className="w-4 h-4 rtl:rotate-180" />
@@ -260,7 +260,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 className="w-full flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <span className="inline-flex items-center gap-2">
-                  <Server className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <Server className="w-4 h-4 text-teal-600 dark:text-teal-400" />
                   {t(lang, 'serverConnection')} (
                   {serverConfig.useMockApi ? t(lang, 'demoMode') : t(lang, 'liveServerMode')})
                 </span>
@@ -321,13 +321,13 @@ export const LoginView: React.FC<LoginViewProps> = ({
                       <button
                         type="button"
                         onClick={handleSaveServerUrl}
-                        className="px-3 py-2 rounded-lg bg-slate-900 dark:bg-indigo-600 text-white text-xs font-medium hover:bg-slate-800 dark:hover:bg-indigo-500 cursor-pointer shrink-0"
+                        className="px-3 py-2 rounded-lg bg-slate-900 dark:bg-teal-600 text-white text-xs font-medium hover:bg-slate-800 dark:hover:bg-teal-500 cursor-pointer shrink-0"
                       >
                         {t(lang, 'save')}
                       </button>
                     </div>
                     {urlFeedback && (
-                      <p className="mt-1.5 text-[11px] text-indigo-700 dark:text-indigo-400">
+                      <p className="mt-1.5 text-[11px] text-teal-700 dark:text-teal-400">
                         {urlFeedback}
                       </p>
                     )}
@@ -360,7 +360,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                       key={item.role}
                       type="button"
                       onClick={() => void onDemoRoleLogin(item.role)}
-                      className="w-full p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-700 hover:bg-indigo-50/40 dark:hover:bg-indigo-950/30 text-start flex items-center gap-3.5 transition-colors cursor-pointer"
+                      className="w-full p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-teal-300 dark:hover:border-teal-700 hover:bg-teal-50/40 dark:hover:bg-teal-950/30 text-start flex items-center gap-3.5 transition-colors cursor-pointer"
                     >
                       <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${item.tint}`}>
                         <Icon className="w-5 h-5" />

@@ -27,7 +27,7 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, size = 'md' }) => {
     return (
       <div
         aria-label={name}
-        className={`${SIZE_CLASSES[size]} rounded-full bg-indigo-50 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-800 font-semibold flex items-center justify-center shrink-0 select-none`}
+        className={`${SIZE_CLASSES[size]} rounded-full bg-teal-50 dark:bg-teal-950 text-teal-800 dark:text-teal-200 border border-teal-200 dark:border-teal-800 font-semibold flex items-center justify-center shrink-0 select-none`}
       >
         {getInitials(name)}
       </div>

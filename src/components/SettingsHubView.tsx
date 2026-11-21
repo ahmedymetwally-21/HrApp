@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
@@ -74,8 +74,16 @@ type SettingsSection =
   | 'geofences'
   | 'sections';
 
+export type SettingsRouteSection =
+  | 'companies'
+  | 'models'
+  | 'geofences'
+  | 'payroll_workflows'
+  | 'general';
+
 interface SettingsHubViewProps {
   lang: Language;
+  activeSection?: SettingsRouteSection;
   currentUser: Employee;
   activeRole: UserRole;
   companies: Company[];
@@ -142,10 +150,11 @@ const PAYROLL_ENTRY_TYPES: PayrollEntryType[] = [
 ];
 
 const INPUT_CLASS =
-  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600';
 
 export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   lang,
+  activeSection,
   currentUser,
   activeRole,
   companies,
@@ -183,8 +192,26 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   onResetDemoData,
 }) => {
   const isMainManager = activeRole === UserRole.MainManager;
-  const [subView, setSubView] = useState<SettingsSection>('hub');
+  const resolveSectionToSubView = (sec?: SettingsRouteSection): SettingsSection => {
+    if (sec === 'companies') return 'companies';
+    if (sec === 'models') return 'models';
+    if (sec === 'geofences') return 'geofences';
+    if (sec === 'payroll_workflows') return 'payroll_categories';
+    if (sec === 'general') return 'sections';
+    return 'hub';
+  };
+  const [subView, setSubView] = useState<SettingsSection>(() =>
+    resolveSectionToSubView(activeSection)
+  );
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (activeSection) {
+      setSubView(resolveSectionToSubView(activeSection));
+      setEditingModelId(null);
+      setEditingWfId(null);
+    }
+  }, [activeSection]);
 
   // --- Companies form state (Create + Edit + WPS Identifiers) ---
   const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
@@ -628,11 +655,11 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 key={card.id}
                 type="button"
                 onClick={() => setSubView(card.id)}
-                className="group text-start rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors cursor-pointer flex flex-col justify-between gap-4"
+                className="group text-start rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer flex flex-col justify-between gap-4"
               >
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-xl bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 flex items-center justify-center">
                       <Icon className="w-5 h-5" />
                     </div>
                     {card.badge && (
@@ -643,7 +670,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                     )}
                   </div>
                   <div>
-                    <h2 className="text-base font-semibold text-slate-900 dark:text-white group-hover:text-indigo-700 dark:group-hover:text-indigo-300 transition-colors">
+                    <h2 className="text-base font-semibold text-slate-900 dark:text-white group-hover:text-teal-700 dark:group-hover:text-teal-300 transition-colors">
                       {card.title}
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
@@ -653,7 +680,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 </div>
                 <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-400">
                   <span>{card.metric}</span>
-                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-indigo-600 rtl:rotate-180" />
+                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600 rtl:rotate-180" />
                 </div>
               </button>
             );
@@ -663,30 +690,76 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
     );
   }
 
-  const renderSubHeader = (title: string, subtitle: string) => (
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-3 min-w-0">
-        <button
-          type="button"
-          onClick={() => {
-            setSubView('hub');
-            setEditingModelId(null);
-            setEditingWfId(null);
-          }}
-          className="p-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer shrink-0"
-          aria-label="Back to Settings Hub"
-        >
-          <ArrowLeft className="w-4 h-4 rtl:rotate-180" />
-        </button>
-        <div className="min-w-0">
-          <h1 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white truncate">
-            {title}
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{subtitle}</p>
+  const renderSubHeader = (title: string, subtitle: string) => {
+    const companyGroupTabs: { id: SettingsSection; label: string }[] = [
+      { id: 'companies', label: t(lang, 'companies') },
+      { id: 'sections', label: t(lang, 'sectionsDocs') },
+      { id: 'labels', label: t(lang, 'employeeLabels') },
+    ];
+    const payrollWorkflowTabs: { id: SettingsSection; label: string }[] = [
+      { id: 'payroll_categories', label: t(lang, 'payrollCategories') },
+      { id: 'workflows', label: t(lang, 'workflowBuilder') },
+    ];
+    const showTabs =
+      activeSection === 'companies'
+        ? companyGroupTabs
+        : activeSection === 'payroll_workflows'
+          ? payrollWorkflowTabs
+          : null;
+
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            {!activeSection && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSubView('hub');
+                  setEditingModelId(null);
+                  setEditingWfId(null);
+                }}
+                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+                aria-label="Back to Settings Hub"
+              >
+                <ArrowLeft className="w-4 h-4 rtl:rotate-180" />
+              </button>
+            )}
+            <div className="min-w-0">
+              <h1 className="text-xl font-semibold text-slate-900 dark:text-white truncate tracking-tight">
+                {title}
+              </h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                {subtitle}
+              </p>
+            </div>
+          </div>
         </div>
+
+        {showTabs && (
+          <div className="border-b border-slate-200 dark:border-slate-800 flex items-center gap-5 overflow-x-auto">
+            {showTabs.map((tab) => {
+              const active = subView === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setSubView(tab.id)}
+                  className={`pb-2.5 text-xs font-semibold border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
+                    active
+                      ? 'border-teal-600 text-teal-700 dark:text-teal-300'
+                      : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
 
   // --- 1. COMPANIES SUB-VIEW (with ADCB WPS Identifiers) ---
   if (subView === 'companies') {
@@ -709,7 +782,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 <div key={comp.id} className="p-4 flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+                      <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300">
                         {comp.code}
                       </span>
                       <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
@@ -776,9 +849,9 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
                 {editingCompanyId ? (
-                  <Edit3 className="w-4 h-4 text-indigo-600" />
+                  <Edit3 className="w-4 h-4 text-teal-600" />
                 ) : (
-                  <Plus className="w-4 h-4 text-indigo-600" />
+                  <Plus className="w-4 h-4 text-teal-600" />
                 )}
                 {editingCompanyId ? t(lang, 'editCompany') : t(lang, 'addCompany')}
               </h2>
@@ -845,7 +918,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
 
             {/* UAE ADCB WPS Filing Identifiers */}
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-3">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-300">
                 UAE ADCB WPS Configuration
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -891,7 +964,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
             >
               {editingCompanyId ? t(lang, 'save') : t(lang, 'addCompany')}
             </button>
@@ -921,7 +994,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             onClick={() => setCatFilterType('all')}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
               catFilterType === 'all'
-                ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300'
                 : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
             }`}
           >
@@ -936,7 +1009,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 onClick={() => setCatFilterType(tp)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
                   catFilterType === tp
-                    ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                    ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300'
                     : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
                 }`}
               >
@@ -1023,7 +1096,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           >
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <SlidersHorizontal className="w-4 h-4 text-indigo-600" />
+                <SlidersHorizontal className="w-4 h-4 text-teal-600" />
                 {editingCatId ? `${t(lang, 'edit')} Category` : `${t(lang, 'add')} Category / Reason`}
               </h2>
               {editingCatId && (
@@ -1089,7 +1162,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
             >
               {editingCatId ? t(lang, 'save') : t(lang, 'add')}
             </button>
@@ -1118,7 +1191,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           <button
             type="button"
             onClick={() => openEditModel(null)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             New Model
@@ -1179,7 +1252,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                       {m.requiredDocuments.map((doc) => (
                         <span
                           key={doc}
-                          className="text-[11px] px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300"
+                          className="text-[11px] px-2 py-0.5 rounded-md bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300"
                         >
                           {doc}
                         </span>
@@ -1204,7 +1277,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
         {editingModelId && (
           <form
             onSubmit={handleSaveModel}
-            className="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 p-5 space-y-4"
+            className="rounded-2xl border border-teal-200 dark:border-teal-800 bg-white dark:bg-slate-900 p-5 space-y-4"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
@@ -1306,7 +1379,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                       }
                       className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
                         active
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                          ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300'
                           : 'border-slate-200 dark:border-slate-700 text-slate-500'
                       }`}
                     >
@@ -1379,7 +1452,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                       key={doc}
                       className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs cursor-pointer ${
                         checked
-                          ? 'border-indigo-400 bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200'
+                          ? 'border-teal-400 bg-teal-50/70 dark:bg-teal-950/40 text-teal-800 dark:text-teal-200'
                           : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
                       }`}
                     >
@@ -1394,7 +1467,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                               : [...prev.requiredDocuments, doc],
                           }))
                         }
-                        className="accent-indigo-600"
+                        className="accent-teal-600"
                       />
                       <span className="truncate">{doc}</span>
                     </label>
@@ -1414,7 +1487,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               <button
                 type="submit"
                 disabled={saving}
-                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+                className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
               >
                 {t(lang, 'save')}
               </button>
@@ -1509,7 +1582,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           >
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Tag className="w-4 h-4 text-indigo-600" />
+                <Tag className="w-4 h-4 text-teal-600" />
                 {editingLabelId ? 'Edit Status Label' : 'Create Custom Label'}
               </h2>
               {editingLabelId && (
@@ -1554,7 +1627,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                     aria-label={`Color ${hex}`}
                     className={`w-7 h-7 rounded-full cursor-pointer transition-transform ${
                       labelColor.toLowerCase() === hex.toLowerCase()
-                        ? 'ring-2 ring-offset-2 ring-indigo-600 scale-110'
+                        ? 'ring-2 ring-offset-2 ring-teal-600 scale-110'
                         : ''
                     }`}
                   />
@@ -1586,7 +1659,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
             >
               {editingLabelId ? t(lang, 'save') : 'Create Label'}
             </button>
@@ -1682,7 +1755,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
           >
             <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <FileBadge className="w-4 h-4 text-indigo-600" />
+              <FileBadge className="w-4 h-4 text-teal-600" />
               Grant Time-Limited Access
             </h2>
             {proUsers.length === 0 ? (
@@ -1764,7 +1837,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 <button
                   type="submit"
                   disabled={saving}
-                  className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+                  className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
                 >
                   Grant PRO Document Access
                 </button>
@@ -1789,7 +1862,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <button
               type="button"
               onClick={() => openEditWorkflow(null)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               New Workflow
@@ -1838,7 +1911,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                   <div className="flex items-center flex-wrap gap-1.5">
                     {wf.steps.map((step, i) => (
                       <React.Fragment key={`${wf.id}-${step}-${i}`}>
-                        <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+                        <span className="text-xs font-medium px-2.5 py-1 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300">
                           {i + 1}. {getStepRoleLabel(lang, step)}
                         </span>
                         {i < wf.steps.length - 1 && (
@@ -1879,11 +1952,11 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
         {isMainManager && editingWfId && (
           <form
             onSubmit={handleSaveWorkflow}
-            className="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 p-5 space-y-4"
+            className="rounded-2xl border border-teal-200 dark:border-teal-800 bg-white dark:bg-slate-900 p-5 space-y-4"
           >
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                <ShieldCheck className="w-4 h-4 text-teal-600" />
                 {editingWfId === 'new' ? 'Create Approval Workflow' : 'Edit Approval Workflow'}
               </h3>
               <button
@@ -1956,7 +2029,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                       key={r}
                       type="button"
                       onClick={() => setWfSteps((prev) => [...prev, r])}
-                      className="text-[11px] font-medium px-2 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 cursor-pointer"
+                      className="text-[11px] font-medium px-2 py-1 rounded-lg border border-teal-200 dark:border-teal-800 text-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-950/50 cursor-pointer"
                     >
                       + {getStepRoleLabel(lang, r)}
                     </button>
@@ -2033,7 +2106,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               <button
                 type="submit"
                 disabled={saving}
-                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+                className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
               >
                 {t(lang, 'save')}
               </button>
@@ -2049,7 +2122,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <GitBranch className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <GitBranch className="w-4 h-4 text-teal-600 dark:text-teal-400" />
                 {t(lang, 'deductionWorkflowTitle')}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -2149,7 +2222,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                       }
                       className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium cursor-pointer disabled:opacity-50 ${
                         deductionWfDraft.autoEscalationHours === preset.hours
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300'
+                          ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300'
                           : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                       }`}
                     >
@@ -2167,7 +2240,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               <button
                 type="submit"
                 disabled={saving}
-                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60 shrink-0"
+                className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60 shrink-0"
               >
                 {t(lang, 'save')}
               </button>
@@ -2206,7 +2279,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               }
               className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
                 settings.globalClockInPolicy === ClockInPolicyMode.StrictMobileGPS
-                  ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
+                  ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400'
               }`}
             >
@@ -2220,7 +2293,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               }
               className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer ${
                 settings.globalClockInPolicy === ClockInPolicyMode.AllowOfficePC
-                  ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
+                  ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400'
               }`}
             >
@@ -2301,7 +2374,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
           >
             <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-indigo-600" />
+              <MapPin className="w-4 h-4 text-teal-600" />
               Add Geofence Location
             </h2>
             <div>
@@ -2374,7 +2447,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <div>
               <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                 <span>Geofence Radius</span>
-                <span className="font-mono font-semibold text-indigo-700 dark:text-indigo-300">
+                <span className="font-mono font-semibold text-teal-700 dark:text-teal-300">
                   {zoneRadius}m
                 </span>
               </div>
@@ -2385,13 +2458,13 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                 step={25}
                 value={zoneRadius}
                 onChange={(e) => setZoneRadius(Number(e.target.value))}
-                className="w-full accent-indigo-600"
+                className="w-full accent-teal-600"
               />
             </div>
             <button
               type="submit"
               disabled={saving}
-              className="w-full py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              className="w-full py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
             >
               Save Geofence Pin
             </button>
@@ -2403,7 +2476,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Users className="w-4 h-4 text-indigo-600" />
+                <Users className="w-4 h-4 text-teal-600" />
                 {t(lang, 'bulkAssignZones')}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -2495,7 +2568,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                     }
                     className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
                       selected
-                        ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
+                        ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/60 text-teal-800 dark:text-teal-200'
                         : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
                     }`}
                   >
@@ -2528,7 +2601,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                   setSaving(false);
                 }
               }}
-              className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
+              className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-60"
             >
               Apply Bulk Zone Assignment
             </button>
@@ -2583,7 +2656,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold shrink-0 cursor-pointer"
+              className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold shrink-0 cursor-pointer"
             >
               {t(lang, 'add')}
             </button>
@@ -2616,7 +2689,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
               {settings.customDocumentTypes.map((d) => (
                 <span
                   key={d}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-xs font-medium text-indigo-700 dark:text-indigo-300"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-xs font-medium text-teal-700 dark:text-teal-300"
                 >
                   {d}
                   <button
@@ -2643,7 +2716,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             <button
               type="submit"
               disabled={saving}
-              className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold shrink-0 cursor-pointer"
+              className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold shrink-0 cursor-pointer"
             >
               {t(lang, 'add')}
             </button>
@@ -2655,7 +2728,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
         <div>
           <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Users className="w-4 h-4 text-indigo-600" />
+            <Users className="w-4 h-4 text-teal-600" />
             Manager & Co-Manager Section Assignments
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -2698,7 +2771,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
                         }}
                         className={`px-2.5 py-1 rounded-lg border text-xs font-medium cursor-pointer ${
                           assigned
-                            ? 'border-indigo-600 bg-indigo-600 text-white'
+                            ? 'border-teal-600 bg-teal-600 text-white'
                             : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
                         }`}
                       >

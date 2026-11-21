@@ -106,7 +106,7 @@ export const ForcePasswordChangeScreen: React.FC<ForcePasswordChangeScreenProps>
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder={t(lang, 'passwordMinLengthPlaceholder')}
-                className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
               />
             </div>
           </div>
@@ -129,7 +129,7 @@ export const ForcePasswordChangeScreen: React.FC<ForcePasswordChangeScreenProps>
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder={t(lang, 'passwordConfirmPlaceholder')}
-                className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
               />
             </div>
           </div>
@@ -137,7 +137,7 @@ export const ForcePasswordChangeScreen: React.FC<ForcePasswordChangeScreenProps>
           <button
             type="submit"
             disabled={submitting}
-            className="w-full min-h-[46px] rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+            className="w-full min-h-[46px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
           >
             <span>{t(lang, 'updatePassword')}</span>
             <ArrowRight className="w-4 h-4 rtl:rotate-180" />

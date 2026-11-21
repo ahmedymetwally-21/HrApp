@@ -135,7 +135,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                   onClick={() => onChangeLang(code)}
                   className={`py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
                     lang === code
-                      ? 'bg-white dark:bg-slate-900 text-indigo-700 dark:text-indigo-300 shadow-xs'
+                      ? 'bg-white dark:bg-slate-900 text-teal-700 dark:text-teal-300 shadow-xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
@@ -162,7 +162,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                 </>
               ) : (
                 <>
-                  <Moon className="w-3.5 h-3.5 text-indigo-600" />
+                  <Moon className="w-3.5 h-3.5 text-teal-600" />
                   {t(lang, 'darkMode')}
                 </>
               )}
@@ -187,13 +187,13 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                     }}
                     className={`w-full px-3 py-2 rounded-lg text-start text-xs font-medium flex items-center justify-between transition-colors cursor-pointer ${
                       activeRole === role
-                        ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200 font-semibold'
+                        ? 'bg-teal-50 dark:bg-teal-950/60 text-teal-800 dark:text-teal-200 font-semibold'
                         : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
                     }`}
                   >
                     <span>{getRoleLabel(lang, role)}</span>
                     {activeRole === role && (
-                      <span className="w-2 h-2 rounded-full bg-indigo-600 dark:bg-indigo-400" />
+                      <span className="w-2 h-2 rounded-full bg-teal-600 dark:bg-teal-400" />
                     )}
                   </button>
                 ))}
@@ -211,7 +211,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                 className="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <span className="inline-flex items-center gap-2">
-                  <Crosshair className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <Crosshair className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
                   {t(lang, 'simulateGps')}
                 </span>
                 {showSim ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -233,7 +233,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                         onClick={() => onChangeSimPreset(p.id)}
                         className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
                           simPreset === p.id
-                            ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-200'
+                            ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/60 text-teal-800 dark:text-teal-200'
                             : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'
                         }`}
                       >
@@ -271,7 +271,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                     <button
                       type="button"
                       onClick={onRequestLiveGPS}
-                      className="text-[11px] font-medium text-indigo-700 dark:text-indigo-400 hover:underline cursor-pointer"
+                      className="text-[11px] font-medium text-teal-700 dark:text-teal-400 hover:underline cursor-pointer"
                     >
                       Live GPS
                     </button>
@@ -290,7 +290,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
               className="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
             >
               <span className="inline-flex items-center gap-2">
-                <Server className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <Server className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
                 {t(lang, 'serverConnection')}
               </span>
               {showServer ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -335,12 +335,12 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
                   <button
                     type="button"
                     onClick={handleSaveUrl}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-indigo-600 text-white text-[11px] font-medium cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-teal-600 text-white text-[11px] font-medium cursor-pointer"
                   >
                     {t(lang, 'save')}
                   </button>
                 </div>
-                {urlMsg && <p className="text-[11px] text-indigo-700 dark:text-indigo-400">{urlMsg}</p>}
+                {urlMsg && <p className="text-[11px] text-teal-700 dark:text-teal-400">{urlMsg}</p>}
               </div>
             )}
           </div>
@@ -356,7 +356,7 @@ export const ProfileSettingsMenu: React.FC<ProfileSettingsMenuProps> = ({
             }}
             className="w-full min-h-[40px] rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
           >
-            <KeyRound className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <KeyRound className="w-4 h-4 text-teal-600 dark:text-teal-400" />
             {t(lang, 'changePassword')}
           </button>
           <button

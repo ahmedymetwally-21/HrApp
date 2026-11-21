@@ -60,7 +60,7 @@ const LEAVE_TYPES: LeaveType[] = [
 ];
 
 const INPUT_CLASS =
-  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500';
+  'w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500';
 
 export const LeavesView: React.FC<LeavesViewProps> = ({
   lang,
@@ -188,7 +188,7 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
             setFormError(null);
             setShowRequestModal(true);
           }}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold transition-colors cursor-pointer"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold transition-colors cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           {t(lang, 'requestLeave')}
@@ -321,7 +321,7 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
               <p className="font-semibold text-slate-900 dark:text-white">Reason</p>
               <p className="text-slate-700 dark:text-slate-300">{selectedLeave.reason}</p>
               {selectedLeave.attachmentName && (
-                <p className="inline-flex items-center gap-1.5 text-indigo-700 dark:text-indigo-400 font-medium pt-1">
+                <p className="inline-flex items-center gap-1.5 text-teal-700 dark:text-teal-400 font-medium pt-1">
                   <Paperclip className="w-3.5 h-3.5" />
                   {selectedLeave.attachmentName}
                 </p>
@@ -474,7 +474,7 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
 
             <form onSubmit={handleSubmitRequest} className="mt-4 space-y-3.5">
               {activeRole === UserRole.SectionManager && (
-                <div className="rounded-xl bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-900 px-3 py-2 text-xs text-indigo-800 dark:text-indigo-200">
+                <div className="rounded-xl bg-teal-50 dark:bg-teal-950/50 border border-teal-200 dark:border-teal-900 px-3 py-2 text-xs text-teal-800 dark:text-teal-200">
                   Smart Auto-Skip active: Step 1 (Section Manager) will be skipped automatically and routed straight to HR → Main Manager.
                 </div>
               )}
@@ -558,7 +558,7 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
                   className="block w-full text-xs text-slate-500 file:me-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-200 dark:file:border-slate-700 file:bg-white dark:file:bg-slate-800 file:text-xs"
                 />
                 {formFileName && (
-                  <p className="mt-1 text-xs text-indigo-700 dark:text-indigo-400">
+                  <p className="mt-1 text-xs text-teal-700 dark:text-teal-400">
                     Attached: {formFileName}
                   </p>
                 )}
@@ -574,7 +574,7 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-semibold cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer"
                 >
                   {t(lang, 'submit')}
                 </button>

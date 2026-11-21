@@ -1268,6 +1268,14 @@ export function App() {
                   await loadDatabase();
                   showToast(t(lang, 'resetPasswordSuccessTitle'));
                 }}
+                onBulkImportEmployees={async (payload) => {
+                  const result = await api.employees.bulkUpsert(payload);
+                  await loadDatabase();
+                  showToast(
+                    `${t(lang, 'bulkImportSuccessToast')}: ${result.createdCount} ${t(lang, 'createdCountLabel').toLowerCase()}, ${result.updatedCount} ${t(lang, 'updatedCountLabel').toLowerCase()}${result.failedCount > 0 ? `, ${result.failedCount} ${t(lang, 'failedCountLabel').toLowerCase()}` : ''}.`
+                  );
+                  return result;
+                }}
                 onProposeShift={async (employeeId: string, schedule: ShiftSchedule) => {
                   await api.employees.proposeShift(employeeId, schedule, currentUser.fullName);
                   await loadDatabase();

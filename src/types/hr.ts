@@ -369,6 +369,46 @@ export type UpdateEmployeePayload = Partial<Employee> & {
   resetPassword?: string;
 };
 
+export interface BulkImportUserRow {
+  id?: string;
+  employeeCode?: string;
+  fullName?: string;
+  email?: string;
+  initialPassword?: string;
+  role?: UserRole | string;
+  phone?: string;
+  company?: string;
+  primaryCompanyId?: string;
+  section?: string;
+  sectionId?: string;
+  employeeType?: EmployeeType | string;
+  jobTitle?: string;
+  joinDate?: string;
+  baseSalary?: number;
+  housingAllowance?: number;
+  transportAllowance?: number;
+  otherAllowance?: number;
+  mohrePersonId?: string;
+  bankName?: string;
+  iban?: string;
+  bankRoutingCode?: string;
+}
+
+export interface BulkImportRowError {
+  rowNumber?: number;
+  employeeCode?: string;
+  email?: string;
+  fullName?: string;
+  error: string;
+}
+
+export interface BulkImportResult {
+  createdCount: number;
+  updatedCount: number;
+  failedCount: number;
+  errors: BulkImportRowError[];
+}
+
 export interface GeofenceZone {
   id: string;
   companyId: string;

@@ -13,6 +13,9 @@ import {
   AttendanceAuditEntry,
   AttendanceLog,
   AuthSession,
+  BulkImportResult,
+  BulkImportRowError,
+  BulkImportUserRow,
   ClockInPolicyMode,
   Company,
   CreateEmployeePayload,
@@ -70,6 +73,12 @@ import {
   stopPermanentPayrollEntry,
   validatePatchReleaseAllocations,
 } from '../utils/hrLogic';
+import {
+  normalizeEmployeeTypeValue,
+  parseBulkImportResponse,
+  resolveCompanyMatch,
+  resolveSectionMatch,
+} from '../utils/bulkImportLogic';
 import { createInitialSeedData } from './seedData';
 
 export const USE_MOCK_API =
@@ -1367,6 +1376,259 @@ export const api = {
       if (!updated) throw new Error('Employee not found.');
       writeDb(db);
       return updated;
+    },
+    async bulkUpsert(payload: {
+      users: BulkImportUserRow[];
+      defaultPassword?: string;
+    }): Promise<BulkImportResult> {
+      const cfg = getServerConfig();
+      const trimmedDefaultPwd = payload.defaultPassword?.trim();
+      if (!cfg.useMockApi) {
+        const body: Record<string, unknown> = {
+          users: payload.users,
+        };
+        if (trimmedDefaultPwd) {
+          body.defaultPassword = trimmedDefaultPwd;
+        }
+        const res = await restFetch<unknown>('/users/bulk', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        return parseBulkImportResponse(res);
+      }
+
+      const db = readDb();
+      let createdCount = 0;
+      let updatedCount = 0;
+      const errors: BulkImportRowError[] = [];
+
+      const findExistingIndex = (row: BulkImportUserRow): number => {
+        if (row.id) {
+          const byId = db.employees.findIndex(
+            (e) => e.id.trim().toLowerCase() === row.id!.trim().toLowerCase()
+          );
+          if (byId >= 0) return byId;
+        }
+        if (row.employeeCode) {
+          const byCode = db.employees.findIndex(
+            (e) => e.employeeCode.trim().toLowerCase() === row.employeeCode!.trim().toLowerCase()
+          );
+          if (byCode >= 0) return byCode;
+        }
+        return -1;
+      };
+
+      const defaultCompanyId = db.companies[0]?.id ?? 'comp-yaldi';
+      const defaultSectionId = db.sections[0]?.id ?? 'sec-ops';
+      const defaultModel = db.employeeModels[0];
+
+      payload.users.forEach((row, index) => {
+        const rowNumber = index + 2;
+        const emailClean = row.email?.trim().toLowerCase();
+        const existingIdx = findExistingIndex(row);
+
+        const matchedCompany = resolveCompanyMatch(row.primaryCompanyId || row.company, db.companies);
+        const matchedSection = resolveSectionMatch(row.sectionId || row.section, db.sections);
+
+        if (existingIdx >= 0) {
+          const existing = db.employees[existingIdx];
+          if (emailClean) {
+            const emailConflict = db.employees.find(
+              (e) => e.id !== existing.id && e.email.trim().toLowerCase() === emailClean
+            );
+            if (emailConflict) {
+              errors.push({
+                rowNumber,
+                employeeCode: row.employeeCode || existing.employeeCode,
+                email: emailClean,
+                fullName: row.fullName || existing.fullName,
+                error: `Email ${emailClean} already belongs to ${emailConflict.fullName}.`,
+              });
+              return;
+            }
+          }
+
+          if (row.initialPassword && row.initialPassword.trim().length < 6) {
+            errors.push({
+              rowNumber,
+              employeeCode: row.employeeCode || existing.employeeCode,
+              email: emailClean || existing.email,
+              fullName: row.fullName || existing.fullName,
+              error: 'Password must be at least 6 characters.',
+            });
+            return;
+          }
+
+          const nextRole = row.role ? normalizeUserRole(row.role) : existing.role;
+          const nextEmpType = row.employeeType
+            ? normalizeEmployeeTypeValue(row.employeeType) ?? existing.employeeType
+            : existing.employeeType;
+
+          const hasBankUpdate = Boolean(row.bankName || row.iban || row.bankRoutingCode);
+          const updatedEmp: Employee = {
+            ...existing,
+            employeeCode: row.employeeCode?.trim() || existing.employeeCode,
+            fullName: row.fullName?.trim() || existing.fullName,
+            email: emailClean || existing.email,
+            phone: row.phone?.trim() || existing.phone,
+            role: nextRole,
+            employeeType: nextEmpType,
+            primaryCompanyId: matchedCompany?.id ?? existing.primaryCompanyId,
+            sectionId: matchedSection?.id ?? existing.sectionId,
+            jobTitle: row.jobTitle?.trim() || existing.jobTitle,
+            joinDate: row.joinDate?.trim() || existing.joinDate,
+            mohrePersonId: row.mohrePersonId?.trim() || existing.mohrePersonId,
+            salary: {
+              baseSalary:
+                row.baseSalary !== undefined ? Number(row.baseSalary) : existing.salary.baseSalary,
+              housingAllowance:
+                row.housingAllowance !== undefined
+                  ? Number(row.housingAllowance)
+                  : existing.salary.housingAllowance,
+              transportAllowance:
+                row.transportAllowance !== undefined
+                  ? Number(row.transportAllowance)
+                  : existing.salary.transportAllowance,
+              otherAllowance:
+                row.otherAllowance !== undefined
+                  ? Number(row.otherAllowance)
+                  : existing.salary.otherAllowance,
+            },
+            bankDetails: hasBankUpdate
+              ? {
+                  bankName: row.bankName?.trim() || existing.bankDetails?.bankName || '',
+                  accountNumber: existing.bankDetails?.accountNumber || '',
+                  iban: row.iban?.trim() || existing.bankDetails?.iban || '',
+                  bankRoutingCode:
+                    row.bankRoutingCode?.trim() || existing.bankDetails?.bankRoutingCode || '',
+                }
+              : existing.bankDetails,
+            ...(row.initialPassword && row.initialPassword.trim().length >= 6
+              ? {
+                  passwordHash: row.initialPassword.trim(),
+                  mustChangePassword: true,
+                }
+              : {}),
+          };
+
+          db.employees[existingIdx] = updatedEmp;
+          updatedCount += 1;
+        } else {
+          // Create new employee
+          const fullName = row.fullName?.trim();
+          const effectivePwd = (row.initialPassword?.trim() || trimmedDefaultPwd || '').trim();
+
+          if (!fullName || !emailClean) {
+            errors.push({
+              rowNumber,
+              employeeCode: row.employeeCode,
+              email: emailClean,
+              fullName,
+              error: 'Full name and email are required for new employees.',
+            });
+            return;
+          }
+
+          if (effectivePwd.length < 6) {
+            errors.push({
+              rowNumber,
+              employeeCode: row.employeeCode,
+              email: emailClean,
+              fullName,
+              error: 'Temporary password must be at least 6 characters.',
+            });
+            return;
+          }
+
+          const emailConflict = db.employees.find(
+            (e) => e.email.trim().toLowerCase() === emailClean
+          );
+          if (emailConflict) {
+            errors.push({
+              rowNumber,
+              employeeCode: row.employeeCode,
+              email: emailClean,
+              fullName,
+              error: `Email ${emailClean} is already registered to ${emailConflict.fullName}.`,
+            });
+            return;
+          }
+
+          const resolvedRole = row.role ? normalizeUserRole(row.role) : UserRole.Employee;
+          const resolvedSectionId = matchedSection?.id ?? defaultSectionId;
+          const resolvedEmpType =
+            normalizeEmployeeTypeValue(row.employeeType) ??
+            inferDefaultEmployeeType({ role: resolvedRole, sectionId: resolvedSectionId });
+
+          const generatedCode =
+            row.employeeCode?.trim() ||
+            `EMP-${String(db.employees.length + 101).padStart(3, '0')}`;
+
+          const created: Employee = {
+            id: makeId('emp'),
+            employeeCode: generatedCode,
+            fullName,
+            email: emailClean,
+            phone: row.phone?.trim() || '',
+            passwordHash: effectivePwd,
+            mustChangePassword: true,
+            role: resolvedRole,
+            employeeType: resolvedEmpType,
+            deductionWorkflowOverride: 'inherit',
+            primaryCompanyId: matchedCompany?.id ?? defaultCompanyId,
+            sharedCompanyIds: [],
+            sectionId: resolvedSectionId,
+            managedSectionIds:
+              resolvedRole === UserRole.SectionManager ||
+              resolvedRole === UserRole.SectionCoManager
+                ? [resolvedSectionId]
+                : [],
+            labelIds: [],
+            modelId: defaultModel?.id ?? 'model-office',
+            jobTitle: row.jobTitle?.trim() || 'Employee',
+            joinDate: row.joinDate?.trim() || new Date().toISOString().slice(0, 10),
+            active: true,
+            assignedZoneIds: [],
+            clockInPolicyOverride: 'inherit',
+            salary: {
+              baseSalary: Number(row.baseSalary ?? 0),
+              housingAllowance: Number(row.housingAllowance ?? 0),
+              transportAllowance: Number(row.transportAllowance ?? 0),
+              otherAllowance: Number(row.otherAllowance ?? 0),
+            },
+            mohrePersonId: row.mohrePersonId?.trim() || undefined,
+            bankDetails:
+              row.bankName || row.iban || row.bankRoutingCode
+                ? {
+                    bankName: row.bankName?.trim() || '',
+                    accountNumber: '',
+                    iban: row.iban?.trim() || '',
+                    bankRoutingCode: row.bankRoutingCode?.trim() || '',
+                  }
+                : undefined,
+            leaveBalance: {
+              annualTotal: defaultModel?.leaveQuotas.annualTotal ?? 30,
+              annualUsed: 0,
+              sickTotal: defaultModel?.leaveQuotas.sickTotal ?? 15,
+              sickUsed: 0,
+              emergencyTotal: defaultModel?.leaveQuotas.emergencyTotal ?? 5,
+              emergencyUsed: 0,
+              unpaidUsed: 0,
+            },
+          };
+
+          db.employees = [...db.employees, created];
+          createdCount += 1;
+        }
+      });
+
+      writeDb(db);
+      return {
+        createdCount,
+        updatedCount,
+        failedCount: errors.length,
+        errors,
+      };
     },
     async bulkAssignZones(params: {
       companyId: string | 'all';

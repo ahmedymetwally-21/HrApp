@@ -15,6 +15,7 @@ interface PageBreadcrumbHeaderProps {
   title: string;
   subtitle?: string;
   onBack: () => void;
+  backLabel?: string;
   actions?: React.ReactNode;
 }
 
@@ -25,6 +26,7 @@ export const PageBreadcrumbHeader: React.FC<PageBreadcrumbHeaderProps> = ({
   title,
   subtitle,
   onBack,
+  backLabel,
   actions,
 }) => {
   const trail = breadcrumbs ?? crumbs ?? [];
@@ -39,7 +41,7 @@ export const PageBreadcrumbHeader: React.FC<PageBreadcrumbHeaderProps> = ({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
           >
             <ArrowLeft className="w-3.5 h-3.5 rtl:rotate-180" />
-            <span>{t(lang, 'back')}</span>
+            <span>{backLabel ?? t(lang, 'back')}</span>
           </button>
 
           <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 min-w-0 overflow-hidden">

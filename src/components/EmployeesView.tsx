@@ -20,6 +20,8 @@ import { nativeBridge } from '../services/nativeBridge';
 import {
   AttendanceLog,
   BuiltInDocumentType,
+  BulkImportResult,
+  BulkImportUserRow,
   Company,
   CreateEmployeePayload,
   DeductionApprovalRequest,
@@ -53,6 +55,7 @@ import {
 } from '../utils/hrLogic';
 import { useIsCompactOverlay } from '../hooks/useIsCompactOverlay';
 import { Avatar } from './Avatar';
+import { BulkImportEmployeesPage } from './BulkImportEmployeesPage';
 import { ConfirmDialog } from './ConfirmDialog';
 import { EmployeeFormPage } from './EmployeeFormPage';
 import { EmployeeProfilePage } from './EmployeeProfilePage';
@@ -97,6 +100,10 @@ interface EmployeesViewProps {
   ) => Promise<void>;
   onUpdateEmployee: (id: string, patch: UpdateEmployeePayload) => Promise<void>;
   onResetPassword?: (employeeId: string, newPassword: string) => Promise<void>;
+  onBulkImportEmployees?: (payload: {
+    users: BulkImportUserRow[];
+    defaultPassword?: string;
+  }) => Promise<BulkImportResult>;
   onProposeShift: (employeeId: string, schedule: ShiftSchedule) => Promise<void>;
   onDecideShiftProposal: (employeeId: string, approve: boolean) => Promise<void>;
   onUploadDocument: (doc: Omit<EmployeeDocument, 'id' | 'uploadedAt'>) => Promise<void>;
@@ -136,6 +143,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   onCreateEmployee,
   onUpdateEmployee,
   onResetPassword,
+  onBulkImportEmployees,
   onProposeShift,
   onDecideShiftProposal,
   onUploadDocument,
@@ -149,7 +157,9 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   const isPro = activeRole === UserRole.PRO;
 
   // Sub-page navigation within EmployeesView
-  const [subPage, setSubPage] = useState<'list' | 'profile' | 'create' | 'edit' | 'upload_doc'>('list');
+  const [subPage, setSubPage] = useState<
+    'list' | 'profile' | 'create' | 'edit' | 'bulk_import' | 'upload_doc'
+  >('list');
   const [selectedEmpId, setSelectedEmpId] = useState<string | null>(null);
   const [profileInitialTab, setProfileInitialTab] = useState<'profile' | 'salary' | 'documents' | 'attendance'>('profile');
   const [editingEmpId, setEditingEmpId] = useState<string | null>(null);
@@ -485,6 +495,19 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       );
     }
     return formNode;
+  }
+
+  if (subPage === 'bulk_import' && canManageStaff && onBulkImportEmployees) {
+    return (
+      <BulkImportEmployeesPage
+        lang={lang}
+        existingEmployees={poolEmployees}
+        companies={companies}
+        sections={sections}
+        onBack={() => setSubPage('list')}
+        onBulkImport={onBulkImportEmployees}
+      />
+    );
   }
 
   if (subPage === 'profile' && selectedEmp) {
@@ -1285,14 +1308,26 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         </div>
 
         {canManageStaff && (
-          <button
-            type="button"
-            onClick={openCreateEmployee}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            {t(lang, 'addEmployee')}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {onBulkImportEmployees && (
+              <button
+                type="button"
+                onClick={() => setSubPage('bulk_import')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                <UploadCloud className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+                <span>{t(lang, 'bulkImport')}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={openCreateEmployee}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              {t(lang, 'addEmployee')}
+            </button>
+          </div>
         )}
       </div>
 

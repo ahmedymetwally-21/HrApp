@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  AttendanceLog,
   BuiltInDocumentType,
   ClockInPolicyMode,
   Company,
@@ -38,6 +39,7 @@ import {
   computeTemporaryEndMonth,
   countUnpaidLeaveDaysInMonth,
   editPermanentPayrollEntry,
+  evaluateAttendanceLatenessPermissions,
   evaluateClockInEligibility,
   evaluateModelLateness,
   evaluateStartupEndpointResults,
@@ -1132,6 +1134,322 @@ test('Phase 1B split-bucket Patch Money Release updates pending balances and aut
   assert.equal(wps.edrRows[0].variableIncome, 2350);
   assert.equal(wps.scrRow.totalPayoutAed, 7150);
 });
+
+test('Strict No Self-Approval and Role-Based Routing for Deduction Approvals (Regular Employee, Section Manager, HR Admin)', () => {
+  const wfConfig: DeductionWorkflowConfig = {
+    office_employee: 'manager_then_hr',
+    driver: 'manager_then_hr',
+    management: 'main_manager_only',
+    autoEscalationHours: 48,
+  };
+
+  const regularEmp = makeEmp({
+    id: 'emp-reg',
+    role: UserRole.Employee,
+    employeeType: 'driver',
+    sectionId: 'sec-drivers',
+  });
+  const secMgr = makeEmp({
+    id: 'emp-sm',
+    role: UserRole.SectionManager,
+    employeeType: 'driver',
+    sectionId: 'sec-drivers',
+    managedSectionIds: ['sec-drivers'],
+  });
+  const hrAdmin = makeEmp({
+    id: 'emp-hr',
+    role: UserRole.HRAdmin,
+    employeeType: 'office_employee',
+    sectionId: 'sec-hr',
+    managedSectionIds: ['sec-hr'],
+  });
+
+  const now = new Date('2026-11-10T09:00:00Z');
+
+  // 1. Regular employee starts at pending_manager -> Section Manager forwards -> HR finalizes
+  const regReq = buildNewDeductionApprovalRequest({
+    id: 'da-reg',
+    employee: regularEmp,
+    month: '2026-11',
+    triggerType: 'latency',
+    date: '2026-11-10',
+    amountAED: 50,
+    targetBucket: 'additional_in_payroll',
+    reason: 'Late 25m',
+    createdBy: 'Engine',
+    createdByRole: UserRole.HRAdmin,
+    workflowConfig: wfConfig,
+    now,
+  });
+  assert.equal(regReq.status, 'pending_manager');
+
+  // Self cannot approve
+  const regSelf = canActOnDeductionApproval({
+    request: regReq,
+    actorUserId: regularEmp.id,
+    actorRole: UserRole.Employee,
+    actorManagedSectionIds: [],
+    targetRole: regularEmp.role,
+    now,
+  });
+  assert.equal(regSelf.isSelf, true);
+  assert.equal(regSelf.canManagerAct, false);
+  assert.equal(regSelf.canHrAct, false);
+
+  // Section Manager can forward (step 1), CANNOT finalize as HR
+  const smOnReg = canActOnDeductionApproval({
+    request: regReq,
+    actorUserId: secMgr.id,
+    actorRole: UserRole.SectionManager,
+    actorManagedSectionIds: ['sec-drivers'],
+    targetRole: regularEmp.role,
+    now,
+  });
+  assert.equal(smOnReg.canManagerAct, true);
+  assert.equal(smOnReg.canHrAct, false);
+
+  // HR cannot finalize before Section Manager reviews (unless escalated)
+  const hrBeforeMgr = canActOnDeductionApproval({
+    request: regReq,
+    actorUserId: hrAdmin.id,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+    targetRole: regularEmp.role,
+    now,
+  });
+  assert.equal(hrBeforeMgr.canManagerAct, false);
+  assert.equal(hrBeforeMgr.canHrAct, false);
+
+  // After Section Manager forwards, Section Manager loses buttons and HR gains final approval
+  const afterMgr = applyManagerDeductionDecision({
+    request: regReq,
+    decision: 'rejected',
+    actorName: 'Karim',
+    note: 'Recommend waive',
+    now,
+  });
+  assert.equal(afterMgr.status, 'pending_hr_decision');
+  const smAfterFwd = canActOnDeductionApproval({
+    request: afterMgr,
+    actorUserId: secMgr.id,
+    actorRole: UserRole.SectionManager,
+    actorManagedSectionIds: ['sec-drivers'],
+    targetRole: regularEmp.role,
+    now,
+  });
+  assert.equal(smAfterFwd.canManagerAct, false);
+  assert.equal(smAfterFwd.canHrAct, false);
+
+  const hrAfterMgr = canActOnDeductionApproval({
+    request: afterMgr,
+    actorUserId: hrAdmin.id,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+    targetRole: regularEmp.role,
+    now,
+  });
+  assert.equal(hrAfterMgr.canHrAct, true);
+
+  // 2. Section Manager's own deduction skips Section Manager -> pending_hr_approval
+  const smReq = buildNewDeductionApprovalRequest({
+    id: 'da-sm',
+    employee: secMgr,
+    month: '2026-11',
+    triggerType: 'latency',
+    date: '2026-11-10',
+    amountAED: 50,
+    targetBucket: 'additional_in_payroll',
+    reason: 'SM late',
+    createdBy: 'Engine',
+    createdByRole: UserRole.HRAdmin,
+    workflowConfig: wfConfig,
+    now,
+  });
+  assert.equal(smReq.status, 'pending_hr_approval');
+
+  const smSelf = canActOnDeductionApproval({
+    request: smReq,
+    actorUserId: secMgr.id,
+    actorRole: UserRole.SectionManager,
+    actorManagedSectionIds: ['sec-drivers'],
+    targetRole: secMgr.role,
+    now,
+  });
+  assert.equal(smSelf.isSelf, true);
+  assert.equal(smSelf.canManagerAct, false);
+  assert.equal(smSelf.canHrAct, false);
+  assert.equal(smSelf.pendingReviewerRole, 'hr_admin');
+
+  const hrOnSm = canActOnDeductionApproval({
+    request: smReq,
+    actorUserId: hrAdmin.id,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+    targetRole: secMgr.role,
+    now,
+  });
+  assert.equal(hrOnSm.canHrAct, true);
+
+  // 3. HR Admin's own deduction goes directly to pending_main_manager -> ONLY Main Manager can act
+  const hrReq = buildNewDeductionApprovalRequest({
+    id: 'da-hr',
+    employee: hrAdmin,
+    month: '2026-11',
+    triggerType: 'latency',
+    date: '2026-11-10',
+    amountAED: 100,
+    targetBucket: 'main_salary',
+    reason: 'HR late',
+    createdBy: 'Engine',
+    createdByRole: UserRole.MainManager,
+    workflowConfig: wfConfig,
+    now,
+  });
+  assert.equal(hrReq.status, 'pending_main_manager');
+
+  const hrSelf = canActOnDeductionApproval({
+    request: hrReq,
+    actorUserId: hrAdmin.id,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+    targetRole: hrAdmin.role,
+    now,
+  });
+  assert.equal(hrSelf.isSelf, true);
+  assert.equal(hrSelf.canManagerAct, false);
+  assert.equal(hrSelf.canHrAct, false);
+  assert.equal(hrSelf.pendingReviewerRole, 'main_manager');
+
+  // Another HR Admin also CANNOT approve an HR Admin's own deduction (must be Main Manager!)
+  const otherHrOnHr = canActOnDeductionApproval({
+    request: hrReq,
+    actorUserId: 'emp-hr-2',
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+    targetRole: hrAdmin.role,
+    now,
+  });
+  assert.equal(otherHrOnHr.canHrAct, false);
+
+  const mmOnHr = canActOnDeductionApproval({
+    request: hrReq,
+    actorUserId: 'emp-tariq',
+    actorRole: UserRole.MainManager,
+    actorManagedSectionIds: ['sec-hr', 'sec-drivers'],
+    targetRole: hrAdmin.role,
+    now,
+  });
+  assert.equal(mmOnHr.canHrAct, true);
+});
+
+test('Attendance lateness permissions strictly enforce No Self-Approval and Manager -> HR -> Main Manager routing', () => {
+  const regularEmp = makeEmp({
+    id: 'emp-omar',
+    role: UserRole.Employee,
+    employeeType: 'driver',
+    sectionId: 'sec-drivers',
+  });
+  const secMgr = makeEmp({
+    id: 'emp-karim',
+    role: UserRole.SectionManager,
+    employeeType: 'driver',
+    sectionId: 'sec-drivers',
+    managedSectionIds: ['sec-drivers'],
+  });
+  const hrAdmin = makeEmp({
+    id: 'emp-layla',
+    role: UserRole.HRAdmin,
+    employeeType: 'office_employee',
+    sectionId: 'sec-hr',
+    managedSectionIds: ['sec-hr'],
+  });
+
+  const makeLateLog = (id: string, employeeId: string): AttendanceLog => ({
+    id,
+    employeeId,
+    companyId: 'comp-yaldi',
+    date: '2026-11-10',
+    clockInTime: '2026-11-10T08:30:00Z',
+    clockOutTime: '2026-11-10T17:00:00Z',
+    zoneId: 'zone-hq',
+    zoneName: 'Yaldi HQ',
+    clockInLat: 25.18,
+    clockInLng: 55.27,
+    accuracyMeters: 12,
+    punchSource: 'Mobile App',
+    isLate: true,
+    lateMinutes: 30,
+    latenessPenaltyAED: 50,
+    latenessExcused: false,
+  });
+
+  // Regular employee late log: Section Manager can review/route to HR, CANNOT finalize directly
+  const omarLog = makeLateLog('att-omar', regularEmp.id);
+  const smOnOmar = evaluateAttendanceLatenessPermissions({
+    log: omarLog,
+    targetEmployee: regularEmp,
+    actorUserId: secMgr.id,
+    actorRole: UserRole.SectionManager,
+    actorManagedSectionIds: ['sec-drivers'],
+  });
+  assert.equal(smOnOmar.isSelf, false);
+  assert.equal(smOnOmar.stage, 'pending_manager');
+  assert.equal(smOnOmar.canManagerReview, true);
+  assert.equal(smOnOmar.canFinalizeExcuse, false);
+
+  // Section Manager's own late log: No self-approval, skips Manager -> HR/Main Manager only
+  const karimLog = makeLateLog('att-karim', secMgr.id);
+  const karimSelf = evaluateAttendanceLatenessPermissions({
+    log: karimLog,
+    targetEmployee: secMgr,
+    actorUserId: secMgr.id,
+    actorRole: UserRole.SectionManager,
+    actorManagedSectionIds: ['sec-drivers'],
+  });
+  assert.equal(karimSelf.isSelf, true);
+  assert.equal(karimSelf.stage, 'pending_hr_approval');
+  assert.equal(karimSelf.pendingReviewerRole, 'hr_admin');
+  assert.equal(karimSelf.canManagerReview, false);
+  assert.equal(karimSelf.canFinalizeExcuse, false);
+  assert.equal(karimSelf.canModifyPunch, false);
+
+  const hrOnKarim = evaluateAttendanceLatenessPermissions({
+    log: karimLog,
+    targetEmployee: secMgr,
+    actorUserId: hrAdmin.id,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+  });
+  assert.equal(hrOnKarim.canFinalizeExcuse, true);
+  assert.equal(hrOnKarim.canManagerReview, false);
+
+  // HR Admin's own late log: No self-approval, routes directly to Main Manager ONLY
+  const laylaLog = makeLateLog('att-layla', hrAdmin.id);
+  const laylaSelf = evaluateAttendanceLatenessPermissions({
+    log: laylaLog,
+    targetEmployee: hrAdmin,
+    actorUserId: hrAdmin.id,
+    actorRole: UserRole.HRAdmin,
+    actorManagedSectionIds: ['sec-hr'],
+  });
+  assert.equal(laylaSelf.isSelf, true);
+  assert.equal(laylaSelf.stage, 'pending_main_manager');
+  assert.equal(laylaSelf.pendingReviewerRole, 'main_manager');
+  assert.equal(laylaSelf.canManagerReview, false);
+  assert.equal(laylaSelf.canFinalizeExcuse, false);
+  assert.equal(laylaSelf.canModifyPunch, false);
+
+  const mmOnLayla = evaluateAttendanceLatenessPermissions({
+    log: laylaLog,
+    targetEmployee: hrAdmin,
+    actorUserId: 'emp-tariq',
+    actorRole: UserRole.MainManager,
+    actorManagedSectionIds: ['sec-hr', 'sec-drivers'],
+  });
+  assert.equal(mmOnLayla.isSelf, false);
+  assert.equal(mmOnLayla.canFinalizeExcuse, true);
+});
+
 
 
 

@@ -47,10 +47,10 @@ import {
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatAED,
   formatShortDate,
-  getEffectiveDeductionStatus,
   inferDefaultEmployeeType,
   isPayrollEligible,
   isPayrollEntryActiveInMonth,
+  PendingReviewerRole,
   resolveEmployeeDeductionWorkflow,
 } from '../utils/hrLogic';
 import { useIsCompactOverlay } from '../hooks/useIsCompactOverlay';
@@ -154,6 +154,16 @@ function getApprovalStatusTextColor(status: DeductionApprovalStatus): string {
     return 'text-teal-700 dark:text-teal-300';
   }
   return 'text-amber-700 dark:text-amber-400';
+}
+
+function getPendingReviewerBadgeLabel(
+  lang: Language,
+  reviewer: PendingReviewerRole | null
+): string {
+  if (reviewer === 'main_manager') return t(lang, 'pendingReviewerMainManager');
+  if (reviewer === 'hr_admin') return t(lang, 'pendingReviewerHr');
+  if (reviewer === 'section_manager') return t(lang, 'pendingReviewerManager');
+  return t(lang, 'pendingReviewer');
 }
 
 export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
@@ -314,21 +324,31 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
       .filter((req) => employeeMap.has(req.employeeId))
       .map((req) => {
         const emp = employeeMap.get(req.employeeId)!;
-        const effectiveStatus = getEffectiveDeductionStatus(req);
         const perm = canActOnDeductionApproval({
           request: req,
+          actorUserId: currentUser.id,
           actorRole: activeRole,
           actorManagedSectionIds: currentUser.managedSectionIds,
+          targetRole: emp.role,
         });
-        const actorStage: 'manager' | 'hr_final' | null = perm.canManagerAct
-          ? 'manager'
-          : perm.canHrAct
-            ? 'hr_final'
-            : null;
-        return { req, emp, effectiveStatus, actorStage };
+        const actorStage: 'manager' | 'hr_final' | null = perm.isSelf
+          ? null
+          : perm.canManagerAct
+            ? 'manager'
+            : perm.canHrAct
+              ? 'hr_final'
+              : null;
+        return {
+          req,
+          emp,
+          effectiveStatus: perm.effectiveStatus,
+          isSelf: perm.isSelf,
+          pendingReviewerRole: perm.pendingReviewerRole,
+          actorStage,
+        };
       })
       .sort((a, b) => b.req.createdAt.localeCompare(a.req.createdAt));
-  }, [deductionApprovals, employeeMap, activeRole, currentUser.managedSectionIds]);
+  }, [deductionApprovals, employeeMap, currentUser.id, currentUser.managedSectionIds, activeRole]);
 
   const approvalKpis = useMemo(() => {
     const actionNeeded = scopedApprovalsAll.filter((x) => x.actorStage !== null).length;
@@ -1301,16 +1321,18 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
           </div>
         ) : (
           <div className="space-y-3">
-            {filteredApprovals.map(({ req, emp, effectiveStatus, actorStage }) => {
-              const comp = companyMap.get(req.companyId);
-              const isFinalized = effectiveStatus === 'approved' || effectiveStatus === 'waived';
-              const noteVal = decisionNotes[req.id] ?? '';
+            {filteredApprovals.map(
+              ({ req, emp, effectiveStatus, isSelf, pendingReviewerRole, actorStage }) => {
+                const comp = companyMap.get(req.companyId);
+                const isFinalized = effectiveStatus === 'approved' || effectiveStatus === 'waived';
+                const noteVal = decisionNotes[req.id] ?? '';
 
-              return (
-                <div
-                  key={req.id}
-                  className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
-                >
+                return (
+                  <div
+                    key={req.id}
+                    data-testid={`deduction-approval-card-${req.id}`}
+                    className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5"
+                  >
                   <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
                     <div className="flex items-start gap-3 min-w-0">
                       <Avatar src={emp.avatarUrl} name={emp.fullName} size="sm" />
@@ -1429,8 +1451,8 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
                     </div>
                   )}
 
-                  {/* Reviewer Actions */}
-                  {actorStage && (
+                  {/* Reviewer Actions — STRICTLY HIDDEN when isSelf or not authorized stage */}
+                  {!isSelf && actorStage ? (
                     <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center gap-2.5">
                       <input
                         type="text"
@@ -1521,7 +1543,22 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
                         )}
                       </div>
                     </div>
-                  )}
+                  ) : !isFinalized ? (
+                    <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                      <span
+                        data-testid={`deduction-pending-reviewer-${req.id}`}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300"
+                      >
+                        <Clock className="w-3.5 h-3.5 text-slate-400" />
+                        {getPendingReviewerBadgeLabel(lang, pendingReviewerRole)}
+                      </span>
+                      {isSelf && (
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {t(lang, 'selfApprovalBlockedNote')}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}

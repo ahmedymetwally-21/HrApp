@@ -1306,28 +1306,80 @@ export function inferDefaultEmployeeType(employee: {
   return 'office_employee';
 }
 
+export type PendingReviewerRole = 'section_manager' | 'hr_admin' | 'main_manager';
+
 export function resolveEmployeeDeductionWorkflow(
-  employee: Pick<Employee, 'employeeType' | 'deductionWorkflowOverride'>,
+  employee: Pick<Employee, 'employeeType' | 'deductionWorkflowOverride'> & {
+    role?: UserRole | string;
+  },
   config: DeductionWorkflowConfig = DEFAULT_DEDUCTION_WORKFLOW_CONFIG
 ): DeductionWorkflowChain {
+  const normalizedRole = employee.role ? normalizeUserRole(employee.role) : null;
+  // HR Admin's own deductions/latency ALWAYS route directly to Main Manager
+  if (normalizedRole === UserRole.HRAdmin) {
+    return 'main_manager_only';
+  }
+
+  let baseChain: DeductionWorkflowChain;
   if (
     employee.deductionWorkflowOverride &&
     employee.deductionWorkflowOverride !== 'inherit'
   ) {
-    return employee.deductionWorkflowOverride;
+    baseChain = employee.deductionWorkflowOverride;
+  } else {
+    const type = employee.employeeType || 'office_employee';
+    baseChain = config[type] ?? 'manager_then_hr';
   }
-  const type = employee.employeeType || 'office_employee';
-  return config[type] ?? 'manager_then_hr';
+
+  // Section Manager's own deductions/latency ALWAYS skip Section Manager and go directly to HR
+  if (normalizedRole === UserRole.SectionManager && baseChain === 'manager_then_hr') {
+    return 'hr_only';
+  }
+
+  return baseChain;
+}
+
+export function resolveInitialDeductionStatus(params: {
+  targetRole?: UserRole | string;
+  workflowChain: DeductionWorkflowChain;
+}): DeductionApprovalStatus {
+  const normalizedRole = params.targetRole ? normalizeUserRole(params.targetRole) : null;
+  if (normalizedRole === UserRole.HRAdmin) {
+    return 'pending_main_manager';
+  }
+  if (normalizedRole === UserRole.SectionManager) {
+    return params.workflowChain === 'main_manager_only'
+      ? 'pending_main_manager'
+      : 'pending_hr_approval';
+  }
+  if (params.workflowChain === 'main_manager_only') return 'pending_main_manager';
+  if (params.workflowChain === 'hr_only') return 'pending_hr_approval';
+  return 'pending_manager';
 }
 
 /**
- * Evaluates auto-escalation dynamically: if a deduction request is still
- * `pending_manager` past its `escalationDeadline`, it resolves to `escalated_to_hr`.
+ * Evaluates auto-escalation and role-based routing dynamically:
+ * - HR Admin's own pending requests always resolve to `pending_main_manager`.
+ * - Section Manager's own `pending_manager` requests always skip to `pending_hr_approval`.
+ * - Regular employee `pending_manager` requests past `escalationDeadline` resolve to `escalated_to_hr`.
  */
 export function getEffectiveDeductionStatus(
   request: Pick<DeductionApprovalRequest, 'status' | 'escalationDeadline'>,
-  now: Date = new Date()
+  now: Date = new Date(),
+  targetRole?: UserRole | string
 ): DeductionApprovalStatus {
+  if (request.status === 'approved' || request.status === 'waived') {
+    return request.status;
+  }
+
+  const normalizedTarget = targetRole ? normalizeUserRole(targetRole) : null;
+  if (normalizedTarget === UserRole.HRAdmin) {
+    return 'pending_main_manager';
+  }
+  if (normalizedTarget === UserRole.SectionManager && request.status === 'pending_manager') {
+    return 'pending_hr_approval';
+  }
+
   if (request.status === 'pending_manager' && request.escalationDeadline) {
     const deadlineMs = new Date(request.escalationDeadline).getTime();
     if (!Number.isNaN(deadlineMs) && now.getTime() >= deadlineMs) {
@@ -1356,9 +1408,10 @@ export function buildNewDeductionApprovalRequest(params: {
   const timeoutHours = Math.max(1, Number(params.workflowConfig.autoEscalationHours) || 48);
   const escalationDeadline = new Date(now.getTime() + timeoutHours * 3_600_000).toISOString();
 
-  let initialStatus: DeductionApprovalStatus = 'pending_manager';
-  if (chain === 'hr_only') initialStatus = 'pending_hr_approval';
-  if (chain === 'main_manager_only') initialStatus = 'pending_main_manager';
+  const initialStatus = resolveInitialDeductionStatus({
+    targetRole: params.employee.role,
+    workflowChain: chain,
+  });
 
   return {
     id: params.id,
@@ -1380,35 +1433,275 @@ export function buildNewDeductionApprovalRequest(params: {
   };
 }
 
+export function getPendingReviewerForStatus(
+  status: DeductionApprovalStatus
+): PendingReviewerRole | null {
+  if (status === 'approved' || status === 'waived') return null;
+  if (status === 'pending_main_manager') return 'main_manager';
+  if (
+    status === 'pending_hr_approval' ||
+    status === 'pending_hr_decision' ||
+    status === 'escalated_to_hr'
+  ) {
+    return 'hr_admin';
+  }
+  return 'section_manager';
+}
+
 export function canActOnDeductionApproval(params: {
   request: DeductionApprovalRequest;
+  actorUserId?: string;
   actorRole: UserRole;
   actorManagedSectionIds: string[];
+  targetRole?: UserRole | string;
   now?: Date;
-}): { canManagerAct: boolean; canHrAct: boolean; effectiveStatus: DeductionApprovalStatus } {
-  const effectiveStatus = getEffectiveDeductionStatus(params.request, params.now);
-  const role = normalizeUserRole(params.actorRole);
+}): {
+  canManagerAct: boolean;
+  canHrAct: boolean;
+  effectiveStatus: DeductionApprovalStatus;
+  isSelf: boolean;
+  pendingReviewerRole: PendingReviewerRole | null;
+} {
+  const effectiveStatus = getEffectiveDeductionStatus(
+    params.request,
+    params.now,
+    params.targetRole
+  );
+  const pendingReviewerRole = getPendingReviewerForStatus(effectiveStatus);
+  const isSelf = Boolean(params.actorUserId && params.request.employeeId === params.actorUserId);
+  const isFinalized = effectiveStatus === 'approved' || effectiveStatus === 'waived';
 
+  // Rule 1: Strict No Self-Approval (never allow acting on own deduction row)
+  if (isSelf || isFinalized) {
+    return {
+      canManagerAct: false,
+      canHrAct: false,
+      effectiveStatus,
+      isSelf,
+      pendingReviewerRole,
+    };
+  }
+
+  const role = normalizeUserRole(params.actorRole);
+  const targetRole = params.targetRole ? normalizeUserRole(params.targetRole) : null;
+
+  // Rule 2: Role-Based Routing
+  // HR Admin's own latency/deduction -> Main Manager ONLY
+  if (effectiveStatus === 'pending_main_manager' || targetRole === UserRole.HRAdmin) {
+    return {
+      canManagerAct: false,
+      canHrAct: role === UserRole.MainManager,
+      effectiveStatus: targetRole === UserRole.HRAdmin ? 'pending_main_manager' : effectiveStatus,
+      isSelf: false,
+      pendingReviewerRole: 'main_manager',
+    };
+  }
+
+  // Section Manager's own latency/deduction OR regular employee awaiting HR final approval
+  if (
+    effectiveStatus === 'pending_hr_approval' ||
+    effectiveStatus === 'pending_hr_decision' ||
+    effectiveStatus === 'escalated_to_hr'
+  ) {
+    return {
+      canManagerAct: false,
+      canHrAct: role === UserRole.HRAdmin || role === UserRole.MainManager,
+      effectiveStatus,
+      isSelf: false,
+      pendingReviewerRole: 'hr_admin',
+    };
+  }
+
+  // Regular employee at Step 1 (`pending_manager`): Section Manager (of section) or Main Manager forwards to HR
   const managesSection =
     role === UserRole.MainManager ||
     (role === UserRole.SectionManager &&
       params.actorManagedSectionIds.includes(params.request.sectionId));
 
-  const canManagerAct = effectiveStatus === 'pending_manager' && managesSection;
-
-  const canHrAct =
-    (effectiveStatus === 'pending_hr_approval' ||
-      effectiveStatus === 'pending_hr_decision' ||
-      effectiveStatus === 'escalated_to_hr') &&
-    (role === UserRole.HRAdmin || role === UserRole.MainManager);
-
-  const canMainManagerAct =
-    effectiveStatus === 'pending_main_manager' && role === UserRole.MainManager;
+  const canManagerAct =
+    effectiveStatus === 'pending_manager' &&
+    targetRole !== UserRole.SectionManager &&
+    managesSection;
 
   return {
     canManagerAct,
-    canHrAct: canHrAct || canMainManagerAct,
+    canHrAct: false,
     effectiveStatus,
+    isSelf: false,
+    pendingReviewerRole,
+  };
+}
+
+export interface AttendanceLatenessPermissions {
+  isSelf: boolean;
+  isLatePending: boolean;
+  stage:
+    | 'on_time'
+    | 'excused'
+    | 'approved'
+    | 'pending_manager'
+    | 'pending_hr_approval'
+    | 'pending_hr_decision'
+    | 'escalated_to_hr'
+    | 'pending_main_manager';
+  pendingReviewerRole: PendingReviewerRole | null;
+  /** True ONLY when Section Manager (or Main Manager) reviews a regular employee's lateness and forwards to HR (cannot finalize). */
+  canManagerReview: boolean;
+  /** True ONLY when HR Admin (for Employee/Section Manager) or Main Manager (for HR Admin/Section Manager/Employee at HR stage) can finalize/excuse lateness. */
+  canFinalizeExcuse: boolean;
+  /** True when the actor is authorized to modify punch timestamps (strictly false for self). */
+  canModifyPunch: boolean;
+}
+
+/**
+ * Evaluates strict No Self-Approval and Role-Based Routing rules for Attendance lateness logs:
+ * 1. No Self-Approval: `log.employeeId === actorUserId` NEVER gets Accept/Excuse/Approve/Reject/Waive or punch-edit buttons.
+ * 2. Regular Employee: Section Manager reviews/recommends first (`pending_manager`) -> moves to HR (`pending_hr_approval`/`pending_hr_decision`) for final acceptance.
+ *    A Section Manager CANNOT finalize/excuse a regular employee's lateness without HR's final approval.
+ * 3. Section Manager's own latency: Skips Section Manager -> goes directly to HR (`pending_hr_approval`). Only HR Admin or Main Manager sees action buttons.
+ * 4. HR Admin's own latency: Goes directly to Main Manager (`pending_main_manager`). Only Main Manager sees action buttons.
+ */
+export function evaluateAttendanceLatenessPermissions(params: {
+  log: AttendanceLog;
+  targetEmployee?: Pick<Employee, 'id' | 'role' | 'sectionId' | 'employeeType' | 'deductionWorkflowOverride'> | null;
+  actorUserId: string;
+  actorRole: UserRole;
+  actorManagedSectionIds: string[];
+  linkedApproval?: DeductionApprovalRequest | null;
+  workflowConfig?: DeductionWorkflowConfig;
+  now?: Date;
+}): AttendanceLatenessPermissions {
+  const isSelf = params.log.employeeId === params.actorUserId;
+  const actor = normalizeUserRole(params.actorRole);
+  const targetRole = params.targetEmployee
+    ? normalizeUserRole(params.targetEmployee.role)
+    : UserRole.Employee;
+  const managesSection = params.targetEmployee
+    ? params.actorManagedSectionIds.includes(params.targetEmployee.sectionId)
+    : false;
+
+  const canModifyPunch =
+    !isSelf &&
+    (actor === UserRole.MainManager ||
+      (actor === UserRole.HRAdmin &&
+        targetRole !== UserRole.HRAdmin &&
+        targetRole !== UserRole.MainManager) ||
+      (actor === UserRole.SectionManager &&
+        managesSection &&
+        targetRole !== UserRole.SectionManager &&
+        targetRole !== UserRole.HRAdmin &&
+        targetRole !== UserRole.MainManager));
+
+  if (!params.log.isLate) {
+    return {
+      isSelf,
+      isLatePending: false,
+      stage: 'on_time',
+      pendingReviewerRole: null,
+      canManagerReview: false,
+      canFinalizeExcuse: false,
+      canModifyPunch,
+    };
+  }
+
+  if (params.log.latenessExcused) {
+    return {
+      isSelf,
+      isLatePending: false,
+      stage: 'excused',
+      pendingReviewerRole: null,
+      canManagerReview: false,
+      canFinalizeExcuse: false,
+      canModifyPunch,
+    };
+  }
+
+  // Determine effective stage from linked latency approval or role-based initial routing
+  let stage: Exclude<AttendanceLatenessPermissions['stage'], 'on_time'>;
+  if (params.linkedApproval) {
+    const eff = getEffectiveDeductionStatus(params.linkedApproval, params.now, targetRole);
+    stage = eff === 'waived' ? 'excused' : eff;
+  } else {
+    const chain = params.targetEmployee
+      ? resolveEmployeeDeductionWorkflow(
+          params.targetEmployee,
+          params.workflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
+        )
+      : 'manager_then_hr';
+    const initial = resolveInitialDeductionStatus({ targetRole, workflowChain: chain });
+    stage = initial === 'waived' ? 'excused' : initial;
+  }
+
+  if (stage === 'excused' || stage === 'approved') {
+    return {
+      isSelf,
+      isLatePending: false,
+      stage,
+      pendingReviewerRole: null,
+      canManagerReview: false,
+      canFinalizeExcuse: false,
+      canModifyPunch,
+    };
+  }
+
+  const pendingReviewerRole = getPendingReviewerForStatus(stage);
+
+  // Rule 1: Strict No Self-Approval
+  if (isSelf) {
+    return {
+      isSelf: true,
+      isLatePending: true,
+      stage,
+      pendingReviewerRole,
+      canManagerReview: false,
+      canFinalizeExcuse: false,
+      canModifyPunch: false,
+    };
+  }
+
+  // Rule 2a: HR Admin's own latency -> Main Manager ONLY
+  if (stage === 'pending_main_manager' || targetRole === UserRole.HRAdmin) {
+    return {
+      isSelf: false,
+      isLatePending: true,
+      stage: 'pending_main_manager',
+      pendingReviewerRole: 'main_manager',
+      canManagerReview: false,
+      canFinalizeExcuse: actor === UserRole.MainManager,
+      canModifyPunch,
+    };
+  }
+
+  // Rule 2b: Section Manager's own latency OR Regular Employee forwarded/escalated to HR
+  if (
+    stage === 'pending_hr_approval' ||
+    stage === 'pending_hr_decision' ||
+    stage === 'escalated_to_hr'
+  ) {
+    return {
+      isSelf: false,
+      isLatePending: true,
+      stage,
+      pendingReviewerRole: 'hr_admin',
+      canManagerReview: false,
+      canFinalizeExcuse: actor === UserRole.HRAdmin || actor === UserRole.MainManager,
+      canModifyPunch,
+    };
+  }
+
+  // Rule 2c: Regular Employee at Step 1 (`pending_manager`) -> Section Manager reviews & forwards to HR (CANNOT finalize!)
+  const canManagerReview =
+    targetRole !== UserRole.SectionManager &&
+    ((actor === UserRole.SectionManager && managesSection) || actor === UserRole.MainManager);
+
+  return {
+    isSelf: false,
+    isLatePending: true,
+    stage: 'pending_manager',
+    pendingReviewerRole: 'section_manager',
+    canManagerReview,
+    canFinalizeExcuse: false,
+    canModifyPunch,
   };
 }
 

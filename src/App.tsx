@@ -450,13 +450,17 @@ export function App() {
 
   const pendingDeductionCount = useMemo(() => {
     if (!db || !currentUser) return 0;
+    const empById = new Map(db.employees.map((e) => [e.id, e]));
     return scopedDeductionApprovals.filter((req) => {
+      const targetEmp = empById.get(req.employeeId);
       const perm = canActOnDeductionApproval({
         request: req,
+        actorUserId: currentUser.id,
         actorRole: activeRole,
         actorManagedSectionIds: currentUser.managedSectionIds,
+        targetRole: targetEmp?.role,
       });
-      return perm.canManagerAct || perm.canHrAct;
+      return !perm.isSelf && (perm.canManagerAct || perm.canHrAct);
     }).length;
   }, [db, currentUser, activeRole, scopedDeductionApprovals]);
 
@@ -539,10 +543,12 @@ export function App() {
         if (!emp) return;
         const perm = canActOnDeductionApproval({
           request: req,
+          actorUserId: currentUser.id,
           actorRole: activeRole,
           actorManagedSectionIds: currentUser.managedSectionIds,
+          targetRole: emp.role,
         });
-        if (perm.canManagerAct || perm.canHrAct) {
+        if (!perm.isSelf && (perm.canManagerAct || perm.canHrAct)) {
           items.push({
             id: `da-${req.id}`,
             title: `Deduction Approval: ${emp.fullName}`,
@@ -1088,20 +1094,91 @@ export function App() {
               geofences={db.geofences}
               attendance={scopedAttendance}
               attendanceAudit={db.attendanceAudit}
+              deductionApprovals={scopedDeductionApprovals}
               settings={db.settings}
               gpsReading={gpsReading}
               simulatedDevice={simulatedDevice}
               onClockIn={handleClockIn}
               onClockOut={handleClockOut}
-              onAcceptExcuse={async ({ logId, excuseNote }) => {
+              onAcceptExcuse={async ({ logId, excuseNote, linkedApprovalId }) => {
                 await api.attendance.acceptLatenessExcuse({
                   logId,
                   actorName: currentUser.fullName,
                   actorRole: activeRole,
                   excuseNote,
                 });
+                if (linkedApprovalId) {
+                  try {
+                    await api.deductionApprovals.hrDecide({
+                      id: linkedApprovalId,
+                      decision: 'waived',
+                      actorName: currentUser.fullName,
+                      note: excuseNote,
+                    });
+                  } catch {
+                    // Best-effort sync if already finalized
+                  }
+                }
                 await loadDatabase();
                 showToast('Lateness excuse accepted & logged in audit trail.');
+              }}
+              onManagerReviewLateness={async ({ log, linkedApproval, decision, note }) => {
+                let targetApprovalId = linkedApproval?.id ?? null;
+                if (!targetApprovalId) {
+                  const created = await api.deductionApprovals.create({
+                    employeeId: log.employeeId,
+                    month: log.date.slice(0, 7),
+                    triggerType: 'latency',
+                    date: log.date,
+                    amountAED: log.latenessPenaltyAED,
+                    targetBucket: 'additional_in_payroll',
+                    reason: `Late arrival (${log.lateMinutes} mins) at ${log.zoneName}.`,
+                    createdBy: currentUser.fullName,
+                    createdByRole: activeRole,
+                  });
+                  targetApprovalId = created.id;
+                }
+                await api.deductionApprovals.managerDecide({
+                  id: targetApprovalId,
+                  decision,
+                  actorName: currentUser.fullName,
+                  note:
+                    note ||
+                    (decision === 'approved'
+                      ? 'Manager confirmed late arrival — forwarded to HR.'
+                      : 'Manager recommended waiving lateness — forwarded to HR.'),
+                });
+                await loadDatabase();
+                showToast(
+                  decision === 'approved'
+                    ? 'Manager review recorded — routed to HR for final approval.'
+                    : 'Excuse recommendation sent to HR for final acceptance.'
+                );
+              }}
+              onHrConfirmLatenessDeduction={async ({ log, linkedApproval, note }) => {
+                let targetApprovalId = linkedApproval?.id ?? null;
+                if (!targetApprovalId) {
+                  const created = await api.deductionApprovals.create({
+                    employeeId: log.employeeId,
+                    month: log.date.slice(0, 7),
+                    triggerType: 'latency',
+                    date: log.date,
+                    amountAED: log.latenessPenaltyAED,
+                    targetBucket: 'additional_in_payroll',
+                    reason: `Late arrival (${log.lateMinutes} mins) at ${log.zoneName}.`,
+                    createdBy: currentUser.fullName,
+                    createdByRole: activeRole,
+                  });
+                  targetApprovalId = created.id;
+                }
+                await api.deductionApprovals.hrDecide({
+                  id: targetApprovalId,
+                  decision: 'approved',
+                  actorName: currentUser.fullName,
+                  note: note || 'Final latency deduction confirmed.',
+                });
+                await loadDatabase();
+                showToast('Lateness deduction finalized and applied to payroll.');
               }}
               onModifyRecord={async ({ logId, clockInHHmm, clockOutHHmm, reason }) => {
                 await api.attendance.modifyRecord({
@@ -1399,12 +1476,33 @@ export function App() {
                 );
               }}
               onHrDecideDeduction={async (id, decision, note) => {
-                await api.deductionApprovals.hrDecide({
+                const updatedReq = await api.deductionApprovals.hrDecide({
                   id,
                   decision,
                   actorName: currentUser.fullName,
                   note,
                 });
+                if (decision === 'waived' && updatedReq.triggerType === 'latency') {
+                  const matchingLog = db.attendance.find(
+                    (a) =>
+                      a.employeeId === updatedReq.employeeId &&
+                      a.date === updatedReq.date &&
+                      a.isLate &&
+                      !a.latenessExcused
+                  );
+                  if (matchingLog) {
+                    try {
+                      await api.attendance.acceptLatenessExcuse({
+                        logId: matchingLog.id,
+                        actorName: currentUser.fullName,
+                        actorRole: activeRole,
+                        excuseNote: note || 'Waived in Deduction Approvals.',
+                      });
+                    } catch {
+                      // Best-effort attendance sync
+                    }
+                  }
+                }
                 await loadDatabase();
                 showToast(
                   decision === 'approved'

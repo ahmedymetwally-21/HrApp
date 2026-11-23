@@ -2,8 +2,10 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
+  CalendarDays,
   CheckCircle2,
   ChevronRight,
+  ClipboardCheck,
   Clock,
   FileWarning,
   FolderOpen,
@@ -11,17 +13,22 @@ import {
   MapPin,
   Receipt,
   RefreshCw,
+  ShieldCheck,
   Users,
   Wallet,
+  Workflow,
+  Zap,
 } from 'lucide-react';
 import { getSalaryStatusLabel, getStepRoleLabel, t } from '../i18n/translations';
 import {
+  Announcement,
   AppSettings,
   AttendanceLog,
   Company,
   DeductionApprovalRequest,
   Employee,
   EmployeeDocument,
+  EmployeeGroup,
   EmployeeModel,
   GeofenceZone,
   GPSReading,
@@ -31,15 +38,20 @@ import {
   LeaveStatus,
   PatchMoneyRelease,
   PayrollAdjustment,
+  PayrollApprovalRun,
   PayrollEntry,
   ProAssignment,
+  Project,
+  QuickActionConfigItem,
   RosterTodayStatus,
   SalaryReleaseSchedule,
   Section,
+  UnifiedRequest,
   UserRole,
 } from '../types/hr';
 import {
   calculateEmployeePayroll,
+  canActOnDeductionApproval,
   canRoleActOnLeaveStep,
   evaluateClockInEligibility,
   formatAED,
@@ -48,17 +60,78 @@ import {
   getDocumentExpiryStatus,
   getEffectiveShiftEnd,
   getEffectiveShiftStart,
+  getPendingRequestsForApprover,
   isAttendanceTracked,
   isPayrollEligible,
   isProAssignmentActive,
   isSectionHidden,
   resolveClockInPolicy,
 } from '../utils/hrLogic';
+import { AnnouncementsCard } from './AnnouncementsCard';
 import { Avatar } from './Avatar';
 import { GeofenceMap } from './GeofenceMap';
 import type { NavSection } from '../types/nav';
 
 export type { NavSection };
+
+export const DEFAULT_QUICK_ACTIONS: QuickActionConfigItem[] = [
+  {
+    id: 'requests',
+    label: 'Approvals & Requests',
+    description: 'Review pending inbox items or submit a new request',
+    targetNav: 'requests',
+    enabled: true,
+    order: 0,
+  },
+  {
+    id: 'roster',
+    label: 'Monthly Roster',
+    description: 'Check shift schedules and bulk upload monthly rosters',
+    targetNav: 'roster',
+    enabled: true,
+    order: 1,
+  },
+  {
+    id: 'payroll',
+    label: 'Payroll & Salary Release',
+    description: 'Monthly AED payroll, approval gate & WPS export',
+    targetNav: 'payroll',
+    enabled: true,
+    order: 2,
+  },
+  {
+    id: 'deduction_approvals',
+    label: 'Deduction Approvals',
+    description: 'Review latency and off-day deduction workflows',
+    targetNav: 'deduction_approvals',
+    enabled: true,
+    order: 3,
+  },
+  {
+    id: 'leaves',
+    label: 'Leave Requests',
+    description: 'Manage annual, sick, and emergency leave requests',
+    targetNav: 'leaves',
+    enabled: true,
+    order: 4,
+  },
+  {
+    id: 'employees',
+    label: 'Employees Directory',
+    description: 'Browse workforce profiles, documents & assignments',
+    targetNav: 'employees',
+    enabled: true,
+    order: 5,
+  },
+  {
+    id: 'workflow_templates',
+    label: 'Named Workflows',
+    description: 'Configure multi-step approval templates & routing',
+    targetNav: 'settings_workflow_templates',
+    enabled: true,
+    order: 6,
+  },
+];
 
 interface DashboardViewProps {
   lang: Language;
@@ -68,6 +141,12 @@ interface DashboardViewProps {
   companies: Company[];
   sections: Section[];
   models: EmployeeModel[];
+  projects?: Project[];
+  groups?: EmployeeGroup[];
+  announcements?: Announcement[];
+  requests?: UnifiedRequest[];
+  payrollApprovalRuns?: PayrollApprovalRun[];
+  allowedNavIds?: NavSection[];
   scopedEmployees: Employee[];
   geofences: GeofenceZone[];
   documents: EmployeeDocument[];
@@ -89,6 +168,11 @@ interface DashboardViewProps {
   onClockOut: (logId: string) => Promise<void>;
   onDecideShiftProposal: (employeeId: string, approve: boolean) => Promise<void>;
   onRefresh: () => Promise<void>;
+  onCreateAnnouncement?: (input: Omit<Announcement, 'id' | 'createdAt'>) => Promise<void>;
+  onDeleteAnnouncement?: (id: string) => Promise<void>;
+  onUploadAnnouncementAttachment?: (
+    file: File
+  ) => Promise<{ url: string; fileName: string; fileType?: string }>;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -99,6 +183,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   companies,
   sections,
   models,
+  projects = [],
+  groups = [],
+  announcements = [],
+  requests = [],
+  payrollApprovalRuns = [],
+  allowedNavIds,
   scopedEmployees,
   geofences,
   documents,
@@ -120,6 +210,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onClockOut,
   onDecideShiftProposal,
   onRefresh,
+  onCreateAnnouncement,
+  onDeleteAnnouncement,
+  onUploadAnnouncementAttachment,
 }) => {
   const [showMapInfo, setShowMapInfo] = useState(false);
   const [busyPunch, setBusyPunch] = useState(false);
@@ -176,6 +269,170 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
   };
 
+  // HR-configured Quick Actions filtered by allowed routes + live pending badges
+  const configuredQuickActions = useMemo(() => {
+    const source =
+      settings.quickActions && settings.quickActions.length > 0
+        ? settings.quickActions
+        : DEFAULT_QUICK_ACTIONS;
+    return [...source]
+      .sort((a, b) => a.order - b.order)
+      .filter((item) => item.enabled)
+      .filter((item) =>
+        allowedNavIds ? allowedNavIds.includes(item.targetNav as NavSection) : true
+      );
+  }, [settings.quickActions, allowedNavIds]);
+
+  const quickActionBadges = useMemo(() => {
+    const pendingReqCount = getPendingRequestsForApprover({
+      requests,
+      currentUser,
+      activeRole,
+      projects,
+    }).length;
+
+    const empById = new Map(scopedEmployees.map((e) => [e.id, e]));
+    const pendingDeductionBadge = deductionApprovals.filter((req) => {
+      const targetEmp = empById.get(req.employeeId);
+      const perm = canActOnDeductionApproval({
+        request: req,
+        actorUserId: currentUser.id,
+        actorRole: activeRole,
+        actorManagedSectionIds: currentUser.managedSectionIds,
+        targetRole: targetEmp?.role,
+      });
+      return !perm.isSelf && (perm.canManagerAct || perm.canHrAct);
+    }).length;
+
+    const pendingLeavesBadge =
+      activeRole === UserRole.Employee
+        ? leaves.filter(
+            (l) => l.employeeId === currentUser.id && l.status === LeaveStatus.Pending
+          ).length
+        : leaves.filter(
+            (l) =>
+              scopedIds.has(l.employeeId) &&
+              l.status === LeaveStatus.Pending &&
+              (canRoleActOnLeaveStep({
+                leave: l,
+                actorRole: activeRole,
+                actorEmployee: currentUser,
+              }) ||
+                activeRole === UserRole.SectionCoManager)
+          ).length;
+
+    const pendingPayrollRunsBadge = payrollApprovalRuns.filter(
+      (r) => r.status === 'pending'
+    ).length;
+
+    const docAlertsBadge = documents.filter(
+      (d) => scopedIds.has(d.employeeId) && getDocumentExpiryStatus(d.expiryDate).status !== 'valid'
+    ).length;
+
+    return {
+      requests: pendingReqCount,
+      deduction_approvals: pendingDeductionBadge,
+      leaves: pendingLeavesBadge,
+      payroll: pendingPayrollRunsBadge,
+      release_schedules: pendingPayrollRunsBadge,
+      documents: docAlertsBadge,
+    } as Record<string, number>;
+  }, [
+    requests,
+    currentUser,
+    activeRole,
+    projects,
+    scopedEmployees,
+    deductionApprovals,
+    leaves,
+    scopedIds,
+    payrollApprovalRuns,
+    documents,
+  ]);
+
+  const getQuickActionIcon = (targetNav: string) => {
+    if (targetNav === 'requests') return ClipboardCheck;
+    if (targetNav === 'roster') return CalendarDays;
+    if (targetNav === 'payroll' || targetNav === 'release_schedules') return Wallet;
+    if (targetNav === 'deduction_approvals') return ShieldCheck;
+    if (targetNav === 'leaves') return CalendarClock;
+    if (targetNav === 'employees') return Users;
+    if (targetNav === 'settings_workflow_templates') return Workflow;
+    return Zap;
+  };
+
+  const renderAnnouncementsSection = () => {
+    if (!onCreateAnnouncement || !onDeleteAnnouncement || !onUploadAnnouncementAttachment) {
+      return null;
+    }
+    return (
+      <AnnouncementsCard
+        currentUser={currentUser}
+        activeRole={activeRole}
+        announcements={announcements}
+        companies={companies}
+        projects={projects}
+        groups={groups}
+        onCreateAnnouncement={onCreateAnnouncement}
+        onDeleteAnnouncement={onDeleteAnnouncement}
+        onUploadAttachment={onUploadAnnouncementAttachment}
+      />
+    );
+  };
+
+  const renderQuickActionsSection = () => {
+    if (configuredQuickActions.length === 0) return null;
+    return (
+      <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <Zap className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+            Quick Actions
+          </h3>
+          <span className="text-[11px] text-slate-400">
+            {configuredQuickActions.length} shortcut{configuredQuickActions.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {configuredQuickActions.map((qa) => {
+            const Icon = getQuickActionIcon(qa.targetNav);
+            const badgeCount = quickActionBadges[qa.targetNav] ?? 0;
+            return (
+              <button
+                key={qa.id}
+                type="button"
+                onClick={() => onNavigate(qa.targetNav as NavSection)}
+                className="group rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 p-3.5 text-start hover:border-teal-400 dark:hover:border-teal-600 hover:bg-white dark:hover:bg-slate-900 transition-colors cursor-pointer flex items-start justify-between gap-3"
+              >
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 flex items-center justify-center shrink-0">
+                    <Icon className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-900 dark:text-white truncate group-hover:text-teal-700 dark:group-hover:text-teal-300">
+                      {qa.label}
+                    </p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-1">
+                      {qa.description}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {badgeCount > 0 && (
+                    <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-rose-600 text-white text-[10px] font-bold font-mono inline-flex items-center justify-center">
+                      {badgeCount}
+                    </span>
+                  )}
+                  <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-teal-600 rtl:rotate-180" />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    );
+  };
+
   // ============================================================================
   // PRO HOME SCREEN (Strictly Time-Limited Assigned Documents Only — Zero Salary)
   // ============================================================================
@@ -207,6 +464,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             Open Assigned Docs
           </button>
         </div>
+
+        {renderAnnouncementsSection()}
 
         <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <button
@@ -511,6 +770,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
           )}
         </section>
+
+        {renderQuickActionsSection()}
+
+        {renderAnnouncementsSection()}
       </div>
     );
   }
@@ -597,6 +860,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {t(lang, 'refresh')}
         </button>
       </div>
+
+      {/* Company Announcements */}
+      {renderAnnouncementsSection()}
+
+      {/* HR-Configured Quick Actions with Live Pending Badges */}
+      {renderQuickActionsSection()}
 
       {/* Clean KPI Cards (respecting visibility rules) */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">

@@ -4,19 +4,25 @@ import {
   Banknote,
   Building2,
   CalendarClock,
+  CheckCircle2,
   Clock,
   Download,
   Eye,
   EyeOff,
   FileSpreadsheet,
+  FolderKanban,
   Landmark,
   Lock,
   Printer,
   Search,
+  Send,
   ShieldCheck,
   Sparkles,
   Trash2,
+  Users,
   Wallet,
+  XCircle,
+  Zap,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import {
@@ -43,7 +49,10 @@ import {
   PatchPaymentMethod,
   PatchReleaseAllocation,
   PayrollAdjustment,
+  PayrollApprovalRun,
   PayrollEntry,
+  PayrollReleaseScopeType,
+  Project,
   SalaryReleaseSchedule,
   SalaryReleaseStatus,
   Section,
@@ -77,6 +86,7 @@ interface PayrollViewProps {
   companies: Company[];
   sections: Section[];
   labels: EmployeeLabel[];
+  projects?: Project[];
   scopedEmployees: Employee[];
   attendance: AttendanceLog[];
   leaves: LeaveRequest[];
@@ -85,6 +95,7 @@ interface PayrollViewProps {
   deductionApprovals?: DeductionApprovalRequest[];
   patchReleases?: PatchMoneyRelease[];
   salaryReleases: SalaryReleaseSchedule[];
+  payrollApprovalRuns?: PayrollApprovalRun[];
   settings: AppSettings;
   hiddenSections?: HiddenSectionKey[];
   onAddAdjustment: (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => Promise<void>;
@@ -95,11 +106,29 @@ interface PayrollViewProps {
     scopeType: 'section' | 'employee';
     scopeId: string;
     companyId: string | 'all';
+    projectId?: string;
+    employeeIds?: string[];
+    approvalRunId?: string;
     releaseDate: string;
     status: SalaryReleaseStatus;
     delayedUntilDate?: string | null;
     delayReason?: string | null;
     updatedBy: string;
+  }) => Promise<void>;
+  onCreateApprovalRun?: (input: {
+    month: string;
+    scopeType: PayrollReleaseScopeType;
+    scopeId?: string | null;
+    scopeLabel: string;
+    employeeIds: string[];
+    employeeCount: number;
+    totalNetAED: number;
+    notes?: string;
+  }) => Promise<void>;
+  onActionApprovalRun?: (input: {
+    id: string;
+    action: 'approve' | 'reject' | 'bypass';
+    comment?: string;
   }) => Promise<void>;
   onCreatePatchRelease?: (input: {
     employeeId: string;
@@ -160,6 +189,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   companies,
   sections,
   labels,
+  projects = [],
   scopedEmployees,
   attendance,
   leaves,
@@ -168,10 +198,13 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   deductionApprovals = [],
   patchReleases = [],
   salaryReleases,
+  payrollApprovalRuns = [],
   settings,
   hiddenSections = [],
   onRemoveAdjustment,
   onUpsertReleaseSchedule,
+  onCreateApprovalRun,
+  onActionApprovalRun,
   onCreatePatchRelease,
   onDeletePatchRelease,
 }) => {
@@ -183,6 +216,10 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
   const canManageAdjustments = isAdminOrHRRole(activeRole);
   const canControlRelease = canControlSalaryRelease(activeRole);
+  const canSubmitPayrollApproval =
+    isAdminOrHRRole(activeRole) || activeRole === UserRole.Accounting;
+  const canBypassApprovalRun =
+    activeRole === UserRole.MainManager || activeRole === UserRole.HRManager;
   const canReleasePatch = isAdminOrHRRole(activeRole) || activeRole === UserRole.Accounting;
   const canExportExcel =
     isAdminOrHRRole(activeRole) ||
@@ -241,8 +278,40 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [releaseSaving, setReleaseSaving] = useState(false);
 
+  // Payroll Approval Gate state
+  const [approvalScopeType, setApprovalScopeType] = useState<PayrollReleaseScopeType>('all');
+  const [approvalCompanyId, setApprovalCompanyId] = useState<string>(companies[0]?.id ?? '');
+  const [approvalProjectId, setApprovalProjectId] = useState<string>(projects[0]?.id ?? '');
+  const [approvalEmployeeIds, setApprovalEmployeeIds] = useState<string[]>([]);
+  const [approvalEmpSearch, setApprovalEmpSearch] = useState('');
+  const [approvalNotes, setApprovalNotes] = useState('');
+  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+  const [approvalActionBusyId, setApprovalActionBusyId] = useState<string | null>(null);
+  const [approvalComments, setApprovalComments] = useState<Record<string, string>>({});
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
+  // Scoped Salary Release panel state
+  const [scopedReleaseMode, setScopedReleaseMode] = useState<'company' | 'project' | 'employees'>(
+    'company'
+  );
+  const [scopedReleaseCompanyId, setScopedReleaseCompanyId] = useState<string>(
+    companies[0]?.id ?? ''
+  );
+  const [scopedReleaseProjectId, setScopedReleaseProjectId] = useState<string>(
+    projects[0]?.id ?? ''
+  );
+  const [scopedReleaseEmployeeIds, setScopedReleaseEmployeeIds] = useState<string[]>([]);
+  const [scopedReleaseEmpSearch, setScopedReleaseEmpSearch] = useState('');
+  const [scopedReleaseDate, setScopedReleaseDate] = useState(() =>
+    new Date().toISOString().slice(0, 10)
+  );
+  const [scopedReleaseStatus, setScopedReleaseStatus] = useState<SalaryReleaseStatus>('Released');
+  const [scopedReleaseSaving, setScopedReleaseSaving] = useState(false);
+  const [scopedReleaseError, setScopedReleaseError] = useState<string | null>(null);
+
   const companyMap = useMemo(() => new Map(companies.map((c) => [c.id, c.name])), [companies]);
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s.name])), [sections]);
+  const projectMap = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   const labelNameMap = useMemo(() => new Map(labels.map((l) => [l.id, l.name])), [labels]);
   const employeeMap = useMemo(
     () => new Map(scopedEmployees.map((e) => [e.id, e])),
@@ -253,6 +322,152 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
     () => scopedEmployees.filter((emp) => isPayrollEligible(emp)),
     [scopedEmployees]
   );
+
+  const activeEligibleEmployees = useMemo(
+    () => eligibleScopedEmployees.filter((emp) => emp.active),
+    [eligibleScopedEmployees]
+  );
+
+  const fullMonthPayrollByEmpId = useMemo(() => {
+    const map = new Map<string, MonthlyPayrollRow>();
+    activeEligibleEmployees.forEach((emp) => {
+      map.set(
+        emp.id,
+        calculateEmployeePayroll(
+          emp,
+          selectedMonth,
+          adjustments,
+          attendance,
+          salaryReleases,
+          payrollEntries,
+          leaves,
+          deductionApprovals,
+          patchReleases
+        )
+      );
+    });
+    return map;
+  }, [
+    activeEligibleEmployees,
+    selectedMonth,
+    adjustments,
+    attendance,
+    salaryReleases,
+    payrollEntries,
+    leaves,
+    deductionApprovals,
+    patchReleases,
+  ]);
+
+  const monthApprovalRuns = useMemo(
+    () =>
+      payrollApprovalRuns
+        .filter((run) => run.month === selectedMonth)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [payrollApprovalRuns, selectedMonth]
+  );
+
+  const approvalScopeSelection = useMemo(() => {
+    let matched: Employee[] = [];
+    let scopeId: string | null = null;
+    let scopeLabel = 'All Eligible Employees';
+
+    if (approvalScopeType === 'all') {
+      matched = activeEligibleEmployees;
+      scopeId = null;
+      scopeLabel = 'All Eligible Employees';
+    } else if (approvalScopeType === 'company') {
+      const targetCompId = approvalCompanyId || companies[0]?.id || '';
+      matched = activeEligibleEmployees.filter((e) => e.primaryCompanyId === targetCompId);
+      scopeId = targetCompId || null;
+      scopeLabel = companyMap.get(targetCompId)
+        ? `Company: ${companyMap.get(targetCompId)}`
+        : 'Selected Company';
+    } else if (approvalScopeType === 'project') {
+      const targetProjId = approvalProjectId || projects[0]?.id || '';
+      matched = activeEligibleEmployees.filter((e) => (e.projectIds ?? []).includes(targetProjId));
+      scopeId = targetProjId || null;
+      const proj = projectMap.get(targetProjId);
+      scopeLabel = proj ? `Project: ${proj.name}` : 'Selected Project';
+    } else {
+      const idSet = new Set(approvalEmployeeIds);
+      matched = activeEligibleEmployees.filter((e) => idSet.has(e.id));
+      scopeId = null;
+      scopeLabel =
+        matched.length === 1
+          ? `Employee: ${matched[0].fullName}`
+          : `Specific Employees (${matched.length})`;
+    }
+
+    const totalNetAED = matched.reduce(
+      (sum, emp) => sum + (fullMonthPayrollByEmpId.get(emp.id)?.netSalary ?? 0),
+      0
+    );
+
+    return {
+      employees: matched,
+      employeeIds: matched.map((e) => e.id),
+      scopeId,
+      scopeLabel,
+      totalNetAED: Math.round(totalNetAED * 100) / 100,
+    };
+  }, [
+    approvalScopeType,
+    approvalCompanyId,
+    approvalProjectId,
+    approvalEmployeeIds,
+    activeEligibleEmployees,
+    companies,
+    projects,
+    companyMap,
+    projectMap,
+    fullMonthPayrollByEmpId,
+  ]);
+
+  const findApprovedRunForTarget = (params: {
+    targetEmployeeIds: string[];
+    companyId?: string | 'all';
+    projectId?: string;
+  }): PayrollApprovalRun | null => {
+    const approvedRuns = monthApprovalRuns.filter(
+      (r) => r.status === 'approved' || r.status === 'bypassed'
+    );
+    for (const run of approvedRuns) {
+      if (run.scopeType === 'all') return run;
+      if (
+        params.companyId &&
+        params.companyId !== 'all' &&
+        run.scopeType === 'company' &&
+        run.scopeId === params.companyId
+      ) {
+        return run;
+      }
+      if (params.projectId && run.scopeType === 'project' && run.scopeId === params.projectId) {
+        return run;
+      }
+      if (
+        params.targetEmployeeIds.length > 0 &&
+        params.targetEmployeeIds.every((id) => run.employeeIds.includes(id))
+      ) {
+        return run;
+      }
+    }
+    return null;
+  };
+
+  const canActOnApprovalRun = (run: PayrollApprovalRun): boolean => {
+    if (run.status !== 'pending') return false;
+    if (canBypassApprovalRun) return true;
+    const step = run.steps[run.currentStepIndex];
+    if (!step) return isAdminOrHRRole(activeRole);
+    if (step.approverId && String(step.approverId) === String(currentUser.id)) return true;
+    const role = step.role;
+    if (!role) return false;
+    if (role === activeRole) return true;
+    if (role === 'hr_admin' && activeRole === UserRole.HRAdmin) return true;
+    if (role === 'section_manager' && activeRole === UserRole.SectionManager) return true;
+    return false;
+  };
 
   const targetEmployees = useMemo(() => {
     return eligibleScopedEmployees.filter((emp) => {
@@ -707,6 +922,28 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
       setReleaseError('Select the new delayed release date.');
       return;
     }
+
+    const draftTargetEmployeeIds =
+      releaseDraft.scopeType === 'employee'
+        ? [releaseDraft.scopeId]
+        : activeEligibleEmployees
+            .filter(
+              (emp) =>
+                emp.sectionId === releaseDraft.scopeId &&
+                (releaseDraft.companyId === 'all' || emp.primaryCompanyId === releaseDraft.companyId)
+            )
+            .map((emp) => emp.id);
+
+    const matchedApprovedRun = findApprovedRunForTarget({
+      targetEmployeeIds: draftTargetEmployeeIds,
+      companyId: releaseDraft.companyId,
+    });
+
+    if (releaseDraft.status === 'Released' && !matchedApprovedRun) {
+      setReleaseError('Payroll approval is required before releasing salaries for this month/scope.');
+      return;
+    }
+
     setReleaseSaving(true);
     try {
       await onUpsertReleaseSchedule({
@@ -715,6 +952,8 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
         scopeType: releaseDraft.scopeType,
         scopeId: releaseDraft.scopeId,
         companyId: releaseDraft.companyId,
+        employeeIds: draftTargetEmployeeIds.length > 0 ? draftTargetEmployeeIds : undefined,
+        approvalRunId: releaseDraft.status === 'Released' ? matchedApprovedRun?.id : undefined,
         releaseDate: releaseDraft.releaseDate,
         status: releaseDraft.status,
         delayedUntilDate:
@@ -728,6 +967,403 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
     } finally {
       setReleaseSaving(false);
     }
+  };
+
+  const handleSubmitApprovalRun = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onCreateApprovalRun || !canSubmitPayrollApproval) return;
+    if (approvalScopeSelection.employeeIds.length === 0) {
+      setApprovalError('Select at least one eligible employee for this payroll approval run.');
+      return;
+    }
+    setApprovalError(null);
+    setApprovalSubmitting(true);
+    try {
+      await onCreateApprovalRun({
+        month: selectedMonth,
+        scopeType: approvalScopeType,
+        scopeId: approvalScopeSelection.scopeId,
+        scopeLabel: approvalScopeSelection.scopeLabel,
+        employeeIds: approvalScopeSelection.employeeIds,
+        employeeCount: approvalScopeSelection.employeeIds.length,
+        totalNetAED: approvalScopeSelection.totalNetAED,
+        notes: approvalNotes.trim() || undefined,
+      });
+      setApprovalNotes('');
+      setApprovalEmployeeIds([]);
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : 'Unable to submit payroll approval run.');
+    } finally {
+      setApprovalSubmitting(false);
+    }
+  };
+
+  const handleRunApprovalAction = async (
+    runId: string,
+    action: 'approve' | 'reject' | 'bypass'
+  ) => {
+    if (!onActionApprovalRun) return;
+    setApprovalActionBusyId(runId);
+    setApprovalError(null);
+    try {
+      await onActionApprovalRun({
+        id: runId,
+        action,
+        comment: approvalComments[runId]?.trim() || undefined,
+      });
+      setApprovalComments((prev) => ({ ...prev, [runId]: '' }));
+    } catch (err) {
+      setApprovalError(err instanceof Error ? err.message : 'Unable to update approval run.');
+    } finally {
+      setApprovalActionBusyId(null);
+    }
+  };
+
+  const renderPayrollApprovalGate = () => {
+    const approvedCount = monthApprovalRuns.filter(
+      (r) => r.status === 'approved' || r.status === 'bypassed'
+    ).length;
+    const pendingCount = monthApprovalRuns.filter((r) => r.status === 'pending').length;
+    const empSearchTerm = approvalEmpSearch.trim().toLowerCase();
+    const filteredApprovalCandidates = activeEligibleEmployees.filter((emp) => {
+      if (!empSearchTerm) return true;
+      return `${emp.fullName} ${emp.employeeCode} ${companyMap.get(emp.primaryCompanyId) ?? ''}`
+        .toLowerCase()
+        .includes(empSearchTerm);
+    });
+
+    return (
+      <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+              Payroll Release Approval Gate
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Submit {monthLabel} payroll for workflow approval before releasing salaries.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 font-semibold">
+              {approvedCount} Approved
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 font-semibold">
+              {pendingCount} Pending
+            </span>
+          </div>
+        </div>
+
+        {approvalError && (
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/40 px-3.5 py-2.5 text-xs text-rose-700 dark:text-rose-300"
+          >
+            {approvalError}
+          </p>
+        )}
+
+        {canSubmitPayrollApproval && onCreateApprovalRun && (
+          <form
+            onSubmit={handleSubmitApprovalRun}
+            className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 p-4 space-y-4"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              {(
+                [
+                  { id: 'all', label: 'All Employees' },
+                  { id: 'company', label: 'By Company' },
+                  { id: 'project', label: 'By Project' },
+                  { id: 'employees', label: 'Specific Employees' },
+                ] as { id: PayrollReleaseScopeType; label: string }[]
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    setApprovalScopeType(opt.id);
+                    setApprovalError(null);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
+                    approvalScopeType === opt.id
+                      ? 'border-teal-600 bg-teal-600 text-white'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {approvalScopeType === 'company' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Target Company
+                </label>
+                <select
+                  value={approvalCompanyId || companies[0]?.id || ''}
+                  onChange={(e) => setApprovalCompanyId(e.target.value)}
+                  className={INPUT_CLASS}
+                >
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {approvalScopeType === 'project' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Target Project
+                </label>
+                {projects.length === 0 ? (
+                  <p className="text-xs text-slate-500">
+                    No projects configured yet. Add projects under Settings → Projects.
+                  </p>
+                ) : (
+                  <select
+                    value={approvalProjectId || projects[0]?.id || ''}
+                    onChange={(e) => setApprovalProjectId(e.target.value)}
+                    className={INPUT_CLASS}
+                  >
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
+
+            {approvalScopeType === 'employees' && (
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="search"
+                    value={approvalEmpSearch}
+                    onChange={(e) => setApprovalEmpSearch(e.target.value)}
+                    placeholder="Search employees by name or code..."
+                    className="w-full ps-8 pe-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+                <div className="max-h-36 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredApprovalCandidates.map((emp) => {
+                    const checked = approvalEmployeeIds.includes(emp.id);
+                    const net = fullMonthPayrollByEmpId.get(emp.id)?.netSalary ?? 0;
+                    return (
+                      <label
+                        key={emp.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                      >
+                        <span className="flex items-center gap-2 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setApprovalEmployeeIds((prev) =>
+                                prev.includes(emp.id)
+                                  ? prev.filter((id) => id !== emp.id)
+                                  : [...prev, emp.id]
+                              )
+                            }
+                            className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                          />
+                          <span className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                            {emp.fullName}
+                          </span>
+                          <span className="font-mono text-[11px] text-slate-400">
+                            {emp.employeeCode}
+                          </span>
+                        </span>
+                        <span className="font-mono text-[11px] text-slate-600 dark:text-slate-300 shrink-0">
+                          {formatAED(net)}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <div className="md:col-span-2">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                  Approval Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={approvalNotes}
+                  onChange={(e) => setApprovalNotes(e.target.value)}
+                  placeholder="e.g., WPS batch verified and ready for management sign-off"
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div className="flex flex-col sm:flex-row md:flex-col items-stretch sm:items-center md:items-end justify-between gap-2">
+                <div className="text-xs text-slate-600 dark:text-slate-300 md:text-end">
+                  <span className="font-semibold text-slate-900 dark:text-white">
+                    {approvalScopeSelection.employeeIds.length}
+                  </span>{' '}
+                  employee{approvalScopeSelection.employeeIds.length === 1 ? '' : 's'} ·{' '}
+                  <span className="font-mono font-bold text-teal-700 dark:text-teal-300">
+                    {formatAED(approvalScopeSelection.totalNetAED)}
+                  </span>
+                </div>
+                <button
+                  type="submit"
+                  disabled={approvalSubmitting || approvalScopeSelection.employeeIds.length === 0}
+                  className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  Submit Payroll for Approval
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+
+        {/* Active Approval Runs for Selected Month */}
+        {monthApprovalRuns.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-800 p-5 text-center text-xs text-slate-500 dark:text-slate-400">
+            No payroll approval runs submitted for {monthLabel} yet. Submit a run above to unlock
+            salary release.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {monthApprovalRuns.map((run) => {
+              const canAct = canActOnApprovalRun(run) && Boolean(onActionApprovalRun);
+              const isBusy = approvalActionBusyId === run.id;
+              const statusBadgeClass =
+                run.status === 'approved' || run.status === 'bypassed'
+                  ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                  : run.status === 'rejected'
+                    ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+                    : 'bg-amber-50 dark:bg-amber-950/60 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300';
+
+              return (
+                <div
+                  key={run.id}
+                  className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">
+                          {run.scopeLabel}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md border text-[11px] font-semibold capitalize ${statusBadgeClass}`}
+                        >
+                          {run.status === 'bypassed' ? 'Bypassed & Approved' : run.status}
+                        </span>
+                        {run.workflowTemplateName && (
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            · {run.workflowTemplateName}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Submitted by {run.createdByName} on {formatShortDate(run.createdAt)}
+                        {run.notes ? ` · ${run.notes}` : ''}
+                      </p>
+                    </div>
+                    <div className="text-end shrink-0">
+                      <p className="text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                        {formatAED(run.totalNetAED)}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        {run.employeeCount} employee{run.employeeCount === 1 ? '' : 's'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Step-by-step approval chain */}
+                  {run.steps.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {run.steps.map((step, idx) => {
+                        const isActive =
+                          run.status === 'pending' && idx === run.currentStepIndex;
+                        const stepClass =
+                          step.status === 'approved' || step.status === 'bypassed'
+                            ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300'
+                            : step.status === 'rejected'
+                              ? 'border-rose-200 dark:border-rose-800 bg-rose-50/70 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300'
+                              : isActive
+                                ? 'border-teal-400 dark:border-teal-600 bg-teal-50/70 dark:bg-teal-950/40 text-teal-800 dark:text-teal-200'
+                                : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400';
+
+                        return (
+                          <span
+                            key={`${run.id}-step-${idx}`}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-medium ${stepClass}`}
+                          >
+                            <span className="font-mono text-[10px] opacity-70">{idx + 1}.</span>
+                            <span>
+                              {step.approverName || step.roleLabel || step.role || `Step ${idx + 1}`}
+                            </span>
+                            <span className="capitalize opacity-80">({step.status})</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Inline approver actions */}
+                  {canAct && (
+                    <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center gap-2">
+                      <input
+                        type="text"
+                        value={approvalComments[run.id] ?? ''}
+                        onChange={(e) =>
+                          setApprovalComments((prev) => ({ ...prev, [run.id]: e.target.value }))
+                        }
+                        placeholder="Optional comment for audit trail..."
+                        className="flex-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                      />
+                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleRunApprovalAction(run.id, 'approve')}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => void handleRunApprovalAction(run.id, 'reject')}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-semibold cursor-pointer disabled:opacity-50"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Reject
+                        </button>
+                        {canBypassApprovalRun && (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void handleRunApprovalAction(run.id, 'bypass')}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40 text-xs font-semibold cursor-pointer disabled:opacity-50"
+                          >
+                            <Zap className="w-3.5 h-3.5" />
+                            Bypass &amp; Approve
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    );
   };
 
   const selectedPayslip: MonthlyPayrollRow | null =
@@ -1156,6 +1792,22 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   // FULL-PAGE VIEW: EDIT RELEASE SCHEDULE
   // =========================================================================
   if (subPage === 'edit_release' && releaseDraft && canControlRelease) {
+    const draftTargetEmployeeIds =
+      releaseDraft.scopeType === 'employee'
+        ? [releaseDraft.scopeId]
+        : activeEligibleEmployees
+            .filter(
+              (emp) =>
+                emp.sectionId === releaseDraft.scopeId &&
+                (releaseDraft.companyId === 'all' || emp.primaryCompanyId === releaseDraft.companyId)
+            )
+            .map((emp) => emp.id);
+    const matchedApprovedRun = findApprovedRunForTarget({
+      targetEmployeeIds: draftTargetEmployeeIds,
+      companyId: releaseDraft.companyId,
+    });
+    const isReleaseUnlocked = Boolean(matchedApprovedRun);
+
     return wrapFullPage(
       <div className="max-w-xl mx-auto space-y-6">
         <PageBreadcrumbHeader
@@ -1183,25 +1835,44 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
             </p>
           )}
 
+          {!isReleaseUnlocked && (
+            <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+              <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                Payroll approval is required before releasing salaries for this month/scope.
+              </span>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-2">
               Release Status
             </label>
             <div className="grid grid-cols-2 gap-2">
-              {RELEASE_STATUSES.map((st) => (
-                <button
-                  key={st}
-                  type="button"
-                  onClick={() => setReleaseDraft((p) => (p ? { ...p, status: st } : null))}
-                  className={`py-2 px-3 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
-                    releaseDraft.status === st
-                      ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/50 text-teal-800 dark:text-teal-200'
-                      : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-                  }`}
-                >
-                  {getSalaryStatusLabel(lang, st)}
-                </button>
-              ))}
+              {RELEASE_STATUSES.map((st) => {
+                const blocked = st === 'Released' && !isReleaseUnlocked;
+                return (
+                  <button
+                    key={st}
+                    type="button"
+                    disabled={blocked}
+                    onClick={() => {
+                      setReleaseError(null);
+                      setReleaseDraft((p) => (p ? { ...p, status: st } : null));
+                    }}
+                    className={`py-2 px-3 rounded-lg border text-xs font-semibold transition-colors inline-flex items-center justify-center gap-1.5 ${
+                      blocked
+                        ? 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-400 cursor-not-allowed opacity-60'
+                        : releaseDraft.status === st
+                          ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/50 text-teal-800 dark:text-teal-200 cursor-pointer'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer'
+                    }`}
+                  >
+                    {blocked && <Lock className="w-3 h-3" />}
+                    {getSalaryStatusLabel(lang, st)}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -1808,6 +2479,259 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
           </div>
         </section>
 
+        {/* Payroll Approval Gate */}
+        {renderPayrollApprovalGate()}
+
+        {/* Scoped Salary Release (Company / Project / Specific Employees) */}
+        {canControlRelease && (() => {
+          const targetCompId = scopedReleaseCompanyId || companies[0]?.id || '';
+          const targetProjId = scopedReleaseProjectId || projects[0]?.id || '';
+          const targetEmps =
+            scopedReleaseMode === 'company'
+              ? activeEligibleEmployees.filter((e) => e.primaryCompanyId === targetCompId)
+              : scopedReleaseMode === 'project'
+                ? activeEligibleEmployees.filter((e) => (e.projectIds ?? []).includes(targetProjId))
+                : activeEligibleEmployees.filter((e) => scopedReleaseEmployeeIds.includes(e.id));
+          const targetEmpIds = targetEmps.map((e) => e.id);
+          const matchedScopedRun = findApprovedRunForTarget({
+            targetEmployeeIds: targetEmpIds,
+            companyId: scopedReleaseMode === 'company' ? targetCompId : undefined,
+            projectId: scopedReleaseMode === 'project' ? targetProjId : undefined,
+          });
+          const isScopedReleaseLocked = scopedReleaseStatus === 'Released' && !matchedScopedRun;
+          const scopedEmpFilter = scopedReleaseEmpSearch.trim().toLowerCase();
+          const scopedEmpCandidates = activeEligibleEmployees.filter((emp) => {
+            if (!scopedEmpFilter) return true;
+            return `${emp.fullName} ${emp.employeeCode}`.toLowerCase().includes(scopedEmpFilter);
+          });
+
+          const handleApplyScopedRelease = async (e: React.FormEvent) => {
+            e.preventDefault();
+            if (targetEmpIds.length === 0) {
+              setScopedReleaseError('No eligible employees matched the selected scope.');
+              return;
+            }
+            if (scopedReleaseStatus === 'Released' && !matchedScopedRun) {
+              setScopedReleaseError(
+                'Payroll approval is required before releasing salaries for this month/scope.'
+              );
+              return;
+            }
+            setScopedReleaseError(null);
+            setScopedReleaseSaving(true);
+            try {
+              for (const emp of targetEmps) {
+                await onUpsertReleaseSchedule({
+                  month: selectedMonth,
+                  payPeriod: selectedMonth,
+                  scopeType: 'employee',
+                  scopeId: emp.id,
+                  companyId:
+                    scopedReleaseMode === 'company' ? targetCompId : emp.primaryCompanyId,
+                  projectId: scopedReleaseMode === 'project' ? targetProjId : undefined,
+                  employeeIds: targetEmpIds,
+                  approvalRunId:
+                    scopedReleaseStatus === 'Released' ? matchedScopedRun?.id : undefined,
+                  releaseDate: scopedReleaseDate,
+                  status: scopedReleaseStatus,
+                  delayedUntilDate: null,
+                  delayReason: null,
+                  updatedBy: currentUser.fullName,
+                });
+              }
+              if (scopedReleaseMode === 'employees') {
+                setScopedReleaseEmployeeIds([]);
+              }
+            } finally {
+              setScopedReleaseSaving(false);
+            }
+          };
+
+          return (
+            <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <FolderKanban className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+                  Scoped Salary Release
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Update salary release status in bulk by Company, Project, or Specific Employees.
+                </p>
+              </div>
+
+              {scopedReleaseError && (
+                <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">
+                  {scopedReleaseError}
+                </p>
+              )}
+
+              {isScopedReleaseLocked && (
+                <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+                  <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <span>
+                    Payroll approval is required before releasing salaries for this month/scope.
+                  </span>
+                </div>
+              )}
+
+              <form onSubmit={handleApplyScopedRelease} className="space-y-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  {(
+                    [
+                      { id: 'company', label: 'By Company', icon: Building2 },
+                      { id: 'project', label: 'By Project', icon: FolderKanban },
+                      { id: 'employees', label: 'Specific Employees', icon: Users },
+                    ] as const
+                  ).map((modeOpt) => {
+                    const ModeIcon = modeOpt.icon;
+                    return (
+                      <button
+                        key={modeOpt.id}
+                        type="button"
+                        onClick={() => {
+                          setScopedReleaseMode(modeOpt.id);
+                          setScopedReleaseError(null);
+                        }}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
+                          scopedReleaseMode === modeOpt.id
+                            ? 'border-teal-600 bg-teal-600 text-white'
+                            : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        <ModeIcon className="w-3.5 h-3.5" />
+                        {modeOpt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {scopedReleaseMode === 'company' && (
+                  <select
+                    value={targetCompId}
+                    onChange={(e) => setScopedReleaseCompanyId(e.target.value)}
+                    aria-label="Release Company"
+                    className={INPUT_CLASS}
+                  >
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.code})
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {scopedReleaseMode === 'project' &&
+                  (projects.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      No projects available. Create projects under Settings → Projects.
+                    </p>
+                  ) : (
+                    <select
+                      value={targetProjId}
+                      onChange={(e) => setScopedReleaseProjectId(e.target.value)}
+                      aria-label="Release Project"
+                      className={INPUT_CLASS}
+                    >
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  ))}
+
+                {scopedReleaseMode === 'employees' && (
+                  <div className="space-y-2">
+                    <input
+                      type="search"
+                      value={scopedReleaseEmpSearch}
+                      onChange={(e) => setScopedReleaseEmpSearch(e.target.value)}
+                      placeholder="Filter employees by name or code..."
+                      className={INPUT_CLASS}
+                    />
+                    <div className="max-h-36 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
+                      {scopedEmpCandidates.map((emp) => (
+                        <label
+                          key={emp.id}
+                          className="flex items-center justify-between gap-2 px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                        >
+                          <span className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={scopedReleaseEmployeeIds.includes(emp.id)}
+                              onChange={() =>
+                                setScopedReleaseEmployeeIds((prev) =>
+                                  prev.includes(emp.id)
+                                    ? prev.filter((id) => id !== emp.id)
+                                    : [...prev, emp.id]
+                                )
+                              }
+                              className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                            />
+                            <span className="font-medium text-slate-800 dark:text-slate-200">
+                              {emp.fullName}
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-400">
+                              {emp.employeeCode}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      Release Status
+                    </label>
+                    <select
+                      value={scopedReleaseStatus}
+                      onChange={(e) => {
+                        setScopedReleaseStatus(e.target.value as SalaryReleaseStatus);
+                        setScopedReleaseError(null);
+                      }}
+                      className={INPUT_CLASS}
+                    >
+                      {RELEASE_STATUSES.map((st) => (
+                        <option key={st} value={st}>
+                          {getSalaryStatusLabel(lang, st)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                      Release Date
+                    </label>
+                    <input
+                      type="date"
+                      value={scopedReleaseDate}
+                      onChange={(e) => setScopedReleaseDate(e.target.value)}
+                      className={INPUT_CLASS}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={
+                      scopedReleaseSaving || targetEmpIds.length === 0 || isScopedReleaseLocked
+                    }
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isScopedReleaseLocked ? (
+                      <Lock className="w-3.5 h-3.5" />
+                    ) : (
+                      <CalendarClock className="w-3.5 h-3.5" />
+                    )}
+                    Apply to {targetEmpIds.length} Employee{targetEmpIds.length === 1 ? '' : 's'}
+                  </button>
+                </div>
+              </form>
+            </section>
+          );
+        })()}
+
         {/* Section-Level Release Schedules Table */}
         <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           {sectionGroups.length === 0 ? (
@@ -2159,6 +3083,9 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
         )}
       </section>
       )}
+
+      {/* Payroll Release Approval Gate */}
+      {renderPayrollApprovalGate()}
 
       {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2.5">

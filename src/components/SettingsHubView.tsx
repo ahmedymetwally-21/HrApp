@@ -23,6 +23,7 @@ import {
   Users,
   WifiOff,
   X,
+  Zap,
 } from 'lucide-react';
 import {
   getDeductionWorkflowChainLabel,
@@ -52,6 +53,7 @@ import {
   PayrollCategoryItem,
   PayrollEntryType,
   ProAssignment,
+  QuickActionConfigItem,
   Section,
   UserRole,
   Weekday,
@@ -62,6 +64,7 @@ import {
   isAdminOrHRRole,
   isProAssignmentActive,
 } from '../utils/hrLogic';
+import { DEFAULT_QUICK_ACTIONS } from './DashboardView';
 import { GeofenceMap } from './GeofenceMap';
 
 type SettingsSection =
@@ -338,6 +341,50 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   const [bulkZoneIds, setBulkZoneIds] = useState<string[]>([]);
   const [bulkReplace, setBulkReplace] = useState(true);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
+
+  // --- Dashboard Quick Actions configuration state ---
+  const [quickActionsDraft, setQuickActionsDraft] = useState<QuickActionConfigItem[]>(() => {
+    const source =
+      settings.quickActions && settings.quickActions.length > 0
+        ? settings.quickActions
+        : DEFAULT_QUICK_ACTIONS;
+    return [...source].sort((a, b) => a.order - b.order);
+  });
+
+  useEffect(() => {
+    const source =
+      settings.quickActions && settings.quickActions.length > 0
+        ? settings.quickActions
+        : DEFAULT_QUICK_ACTIONS;
+    setQuickActionsDraft([...source].sort((a, b) => a.order - b.order));
+  }, [settings.quickActions]);
+
+  const moveQuickAction = (index: number, dir: -1 | 1) => {
+    setQuickActionsDraft((prev) => {
+      const target = index + dir;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
+      return next.map((item, idx) => ({ ...item, order: idx }));
+    });
+  };
+
+  const toggleQuickAction = (id: string) => {
+    setQuickActionsDraft((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, enabled: !item.enabled } : item))
+    );
+  };
+
+  const handleSaveQuickActions = async () => {
+    setSaving(true);
+    try {
+      const normalized = quickActionsDraft.map((item, idx) => ({ ...item, order: idx }));
+      await onUpdateSettings({ quickActions: normalized });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const allDocTypes = useMemo(
     () => [...BUILT_IN_DOCS, ...settings.customDocumentTypes],
@@ -2785,6 +2832,86 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
             ))}
         </div>
       </div>
+
+      {/* Dashboard Quick Actions Configuration (HR / Main Manager) */}
+      {isAdminOrHRRole(activeRole) && (
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Zap className="w-4 h-4 text-teal-600" />
+                Dashboard Quick Actions
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Enable, disable, and reorder shortcuts shown on the Home dashboard with live
+                pending badges.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void handleSaveQuickActions()}
+              className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+            >
+              Save Quick Actions
+            </button>
+          </div>
+
+          <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+            {quickActionsDraft.map((item, idx) => (
+              <div
+                key={item.id}
+                className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked={item.enabled}
+                    onChange={() => toggleQuickAction(item.id)}
+                    aria-label={`Enable ${item.label}`}
+                    className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer"
+                  />
+                  <div className="min-w-0">
+                    <p
+                      className={`text-xs font-semibold truncate ${
+                        item.enabled
+                          ? 'text-slate-900 dark:text-white'
+                          : 'text-slate-400 line-through'
+                      }`}
+                    >
+                      {item.label}
+                    </p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                      {item.description} ·{' '}
+                      <span className="font-mono text-[10px]">{item.targetNav}</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={idx === 0}
+                    onClick={() => moveQuickAction(idx, -1)}
+                    aria-label={`Move ${item.label} up`}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={idx === quickActionsDraft.length - 1}
+                    onClick={() => moveQuickAction(idx, 1)}
+                    aria-label={`Move ${item.label} down`}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* App Resilience & Demo Data */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

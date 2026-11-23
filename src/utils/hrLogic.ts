@@ -170,6 +170,8 @@ export type StartupEndpointKey =
   | 'deductionApprovals'
   | 'patchReleases'
   | 'salaryReleases'
+  | 'payrollApprovalRuns'
+  | 'announcements'
   | 'settings';
 
 export interface StartupEndpointSpec {
@@ -203,6 +205,8 @@ export const ALL_STARTUP_ENDPOINTS: StartupEndpointSpec[] = [
   { key: 'deductionApprovals', path: '/payroll/deduction-approvals' },
   { key: 'patchReleases', path: '/payroll/patch-releases' },
   { key: 'salaryReleases', path: '/payroll/releases' },
+  { key: 'payrollApprovalRuns', path: '/payroll/approval-runs' },
+  { key: 'announcements', path: '/announcements' },
   { key: 'settings', path: '/settings' },
 ];
 
@@ -238,6 +242,8 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'deductionApprovals',
       'patchReleases',
       'salaryReleases',
+      'payrollApprovalRuns',
+      'announcements',
       'settings',
     ]);
   } else if (normalized === UserRole.PRO) {
@@ -255,6 +261,7 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'workflowTemplates',
       'workflowAssignments',
       'requests',
+      'announcements',
       'settings',
     ]);
   } else if (normalized === UserRole.SectionManager || normalized === UserRole.SectionCoManager) {
@@ -281,6 +288,8 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'deductionApprovals',
       'patchReleases',
       'salaryReleases',
+      'payrollApprovalRuns',
+      'announcements',
       'settings',
     ]);
   } else {
@@ -307,6 +316,8 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'deductionApprovals',
       'patchReleases',
       'salaryReleases',
+      'payrollApprovalRuns',
+      'announcements',
       'settings',
     ]);
   }

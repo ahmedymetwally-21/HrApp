@@ -522,6 +522,9 @@ export interface SalaryReleaseSchedule {
   scopeType: 'section' | 'employee';
   scopeId: string; // sectionId or employeeId
   companyId: string | 'all';
+  projectId?: string;
+  employeeIds?: string[];
+  approvalRunId?: string;
   releaseDate: string; // YYYY-MM-DD
   status: SalaryReleaseStatus;
   delayedUntilDate?: string | null; // YYYY-MM-DD
@@ -758,6 +761,7 @@ export interface AppSettings {
   customDocumentTypes: string[];
   apiBaseUrl: string;
   deductionWorkflowConfig: DeductionWorkflowConfig;
+  quickActions?: QuickActionConfigItem[];
 }
 
 export interface HRDatabase {
@@ -786,6 +790,8 @@ export interface HRDatabase {
   deductionApprovals: DeductionApprovalRequest[];
   patchReleases: PatchMoneyRelease[];
   salaryReleases: SalaryReleaseSchedule[];
+  payrollApprovalRuns?: PayrollApprovalRun[];
+  announcements?: Announcement[];
   settings: AppSettings;
 }
 
@@ -1139,5 +1145,57 @@ export interface RosterUploadBatch {
   errors: RosterUploadError[];
   failedRows: Record<string, unknown>[];
   createdAt: string;
+}
+
+/* ============================================================================
+ * Phase 4: Payroll Approval Gating, Announcements & Quick Actions
+ * ========================================================================== */
+
+export type PayrollReleaseScopeType = 'all' | 'company' | 'project' | 'employees';
+
+export interface PayrollApprovalRun {
+  id: string;
+  month: string;
+  scopeType: PayrollReleaseScopeType;
+  scopeId?: string | null;
+  scopeLabel: string;
+  employeeIds: string[];
+  employeeCount: number;
+  totalNetAED: number;
+  status: 'pending' | 'approved' | 'rejected' | 'bypassed';
+  workflowTemplateId?: string | null;
+  workflowTemplateName?: string;
+  currentStepIndex: number;
+  steps: RequestApprovalStep[];
+  auditLog: RequestAuditEntry[];
+  notes?: string;
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  priority: 'normal' | 'important' | 'urgent';
+  targetType: 'all' | 'company' | 'project' | 'group';
+  targetIds: string[];
+  attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentType?: string;
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+}
+
+export interface QuickActionConfigItem {
+  id: string;
+  label: string;
+  description: string;
+  targetNav: string;
+  enabled: boolean;
+  order: number;
 }
 

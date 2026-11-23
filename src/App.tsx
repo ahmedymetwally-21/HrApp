@@ -11,6 +11,7 @@ import {
   FolderOpen,
   LayoutDashboard,
   MapPin,
+  Search,
   Settings,
   SlidersHorizontal,
   Users,
@@ -25,6 +26,7 @@ import { DashboardView } from './components/DashboardView';
 import { EarningsDeductionsView } from './components/EarningsDeductionsView';
 import { EmployeesView } from './components/EmployeesView';
 import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScreen';
+import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { GroupsManagementPage } from './components/GroupsManagementPage';
 import { LeavesView } from './components/LeavesView';
 import { LoginView } from './components/LoginView';
@@ -50,6 +52,7 @@ import {
 } from './services/api';
 import { nativeBridge } from './services/nativeBridge';
 import {
+  Announcement,
   AppSettings,
   ApprovalWorkflow,
   AuthSession,
@@ -68,6 +71,7 @@ import {
   LeaveType,
   PayrollAdjustment,
   PayrollCategoryItem,
+  PayrollReleaseScopeType,
   ProAssignment,
   RosterTodayStatus,
   SalaryReleaseStatus,
@@ -177,6 +181,7 @@ export function App() {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
   const [simPreset, setSimPreset] = useState<SimPreset>('inside_primary');
@@ -193,6 +198,18 @@ export function App() {
     const timer = window.setTimeout(() => setToast(null), 3500);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  // Global Ctrl+K / Cmd+K shortcut for Global Search
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // Apply RTL/LTR and lang attribute automatically
   useEffect(() => {
@@ -1002,8 +1019,27 @@ export function App() {
           </div>
         </div>
 
-        {/* 3. Notification Bell & 4. User Profile Icon */}
+        {/* 3. Global Search, Notification Bell & 4. User Profile Icon */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Global Search Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setNotificationsOpen(false);
+              setSearchOpen(true);
+            }}
+            aria-label="Global Search"
+            className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-300 hover:border-teal-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer"
+          >
+            <Search className="w-4 h-4 shrink-0" />
+            <span className="hidden md:inline text-xs truncate max-w-[190px]">
+              Search employees, requests, pages...
+            </span>
+            <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+              Ctrl K
+            </kbd>
+          </button>
+
           {/* 3. Notification Bell */}
           <div className="relative">
             <button
@@ -1142,6 +1178,12 @@ export function App() {
               companies={db.companies}
               sections={db.sections}
               models={db.employeeModels}
+              projects={db.projects ?? []}
+              groups={db.groups ?? []}
+              announcements={db.announcements ?? []}
+              requests={scopedRequests}
+              payrollApprovalRuns={db.payrollApprovalRuns ?? []}
+              allowedNavIds={allowedNavIds}
               scopedEmployees={scopedEmployees}
               geofences={db.geofences}
               documents={scopedDocuments}
@@ -1167,6 +1209,17 @@ export function App() {
                 showToast(approve ? 'Shift proposal approved.' : 'Shift proposal rejected.');
               }}
               onRefresh={loadDatabase}
+              onCreateAnnouncement={async (input: Omit<Announcement, 'id' | 'createdAt'>) => {
+                await api.announcements.create(input);
+                await loadDatabase();
+                showToast('Announcement published.');
+              }}
+              onDeleteAnnouncement={async (id: string) => {
+                await api.announcements.remove(id);
+                await loadDatabase();
+                showToast('Announcement deleted.');
+              }}
+              onUploadAnnouncementAttachment={(file: File) => api.announcements.upload(file)}
             />
           )}
 
@@ -1501,6 +1554,7 @@ export function App() {
               companies={db.companies}
               sections={db.sections}
               labels={db.labels}
+              projects={db.projects ?? []}
               scopedEmployees={scopedEmployees}
               attendance={scopedAttendance}
               leaves={scopedLeaves}
@@ -1509,6 +1563,7 @@ export function App() {
               deductionApprovals={scopedDeductionApprovals}
               patchReleases={scopedPatchReleases}
               salaryReleases={db.salaryReleases}
+              payrollApprovalRuns={db.payrollApprovalRuns ?? []}
               settings={db.settings}
               hiddenSections={myHiddenSections}
               onAddAdjustment={async (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => {
@@ -1527,6 +1582,9 @@ export function App() {
                 scopeType: 'section' | 'employee';
                 scopeId: string;
                 companyId: string | 'all';
+                projectId?: string;
+                employeeIds?: string[];
+                approvalRunId?: string;
                 releaseDate: string;
                 status: SalaryReleaseStatus;
                 delayedUntilDate?: string | null;
@@ -1539,6 +1597,46 @@ export function App() {
                   input.status === 'Delayed'
                     ? 'Salary release delayed and employees notified.'
                     : 'Salary release schedule saved.'
+                );
+              }}
+              onCreateApprovalRun={async (input: {
+                month: string;
+                scopeType: PayrollReleaseScopeType;
+                scopeId?: string | null;
+                scopeLabel: string;
+                employeeIds: string[];
+                employeeCount: number;
+                totalNetAED: number;
+                notes?: string;
+              }) => {
+                await api.payrollApprovalRuns.create({
+                  ...input,
+                  createdById: currentUser.id,
+                  createdByName: currentUser.fullName,
+                });
+                await loadDatabase();
+                showToast('Payroll approval run submitted.');
+              }}
+              onActionApprovalRun={async (input: {
+                id: string;
+                action: 'approve' | 'reject' | 'bypass';
+                comment?: string;
+              }) => {
+                await api.payrollApprovalRuns.action({
+                  id: input.id,
+                  action: input.action,
+                  comment: input.comment,
+                  actorId: currentUser.id,
+                  actorName: currentUser.fullName,
+                  actorRole: activeRole,
+                });
+                await loadDatabase();
+                showToast(
+                  input.action === 'bypass'
+                    ? 'Payroll run bypassed and approved.'
+                    : input.action === 'approve'
+                      ? 'Payroll approval step recorded.'
+                      : 'Payroll approval run rejected.'
                 );
               }}
               onCreatePatchRelease={async (input) => {
@@ -2001,6 +2099,19 @@ export function App() {
           await loadDatabase();
           showToast('Password updated successfully.');
         }}
+      />
+
+      {/* Global Search Modal (Ctrl+K / Cmd+K) */}
+      <GlobalSearchModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        allowedNavIds={allowedNavIds}
+        employees={scopedEmployees}
+        requests={scopedRequests}
+        projects={db.projects ?? []}
+        groups={db.groups ?? []}
+        announcements={db.announcements ?? []}
+        onNavigate={setActiveNav}
       />
 
       {/* Toast Notification */}

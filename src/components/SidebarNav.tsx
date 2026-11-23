@@ -4,6 +4,7 @@ import {
   Building2,
   CalendarClock,
   ChevronDown,
+  ClipboardCheck,
   Clock,
   EyeOff,
   FileText,
@@ -20,6 +21,7 @@ import {
   SlidersHorizontal,
   Users,
   Wallet,
+  Workflow,
 } from 'lucide-react';
 import { t } from '../i18n/translations';
 import { Language, UserRole } from '../types/hr';
@@ -37,6 +39,7 @@ interface SidebarNavProps {
   allowedNavIds: NavSection[];
   collapsed: boolean;
   pendingDeductionCount?: number;
+  pendingRequestsCount?: number;
   onSelectNav: (nav: NavSection) => void;
   onToggleCollapse: () => void;
 }
@@ -50,6 +53,7 @@ const GROUP_ICONS: Record<SidebarGroupId, React.ComponentType<{ className?: stri
 
 const ITEM_ICONS: Record<NavSection, React.ComponentType<{ className?: string }>> = {
   dashboard: LayoutDashboard,
+  requests: ClipboardCheck,
   employees: Users,
   documents: FileText,
   pro_assignments: KeyRound,
@@ -64,6 +68,7 @@ const ITEM_ICONS: Record<NavSection, React.ComponentType<{ className?: string }>
   settings_groups: Layers,
   settings_projects: FolderKanban,
   settings_visibility_rules: EyeOff,
+  settings_workflow_templates: Workflow,
   settings_models: Users,
   settings_geofences: MapPin,
   settings_payroll_workflows: GitBranch,
@@ -77,6 +82,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
   allowedNavIds,
   collapsed,
   pendingDeductionCount = 0,
+  pendingRequestsCount = 0,
   onSelectNav,
   onToggleCollapse,
 }) => {
@@ -143,6 +149,41 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
           >
             <LayoutDashboard className="w-[18px] h-[18px] shrink-0" />
             {!collapsed && <span className="truncate">{t(lang, 'navDashboard')}</span>}
+          </button>
+        )}
+
+        {/* Top-level single item: Approvals & Requests (with live pending badge) */}
+        {allowedSet.has('requests') && (
+          <button
+            type="button"
+            onClick={() => onSelectNav('requests')}
+            title={
+              collapsed
+                ? pendingRequestsCount > 0
+                  ? `${t(lang, 'navRequests')} (${pendingRequestsCount})`
+                  : t(lang, 'navRequests')
+                : undefined
+            }
+            className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer ${
+              activeNav === 'requests'
+                ? 'bg-teal-50 dark:bg-teal-950/50 text-teal-700 dark:text-teal-300 font-semibold'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/70 hover:text-slate-900 dark:hover:text-white font-medium'
+            } ${collapsed ? 'justify-center px-2' : 'justify-between'}`}
+          >
+            <span className="flex items-center gap-3 min-w-0">
+              <ClipboardCheck className="w-[18px] h-[18px] shrink-0" />
+              {!collapsed && <span className="truncate">{t(lang, 'navRequests')}</span>}
+            </span>
+            {pendingRequestsCount > 0 && !collapsed && (
+              <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-rose-600 text-white text-[11px] font-mono tabular-nums font-semibold shrink-0">
+                {pendingRequestsCount > 99 ? '99+' : pendingRequestsCount}
+              </span>
+            )}
+            {pendingRequestsCount > 0 && collapsed && (
+              <span className="absolute top-1.5 end-1.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[10px] font-mono tabular-nums font-bold flex items-center justify-center">
+                {pendingRequestsCount > 9 ? '9+' : pendingRequestsCount}
+              </span>
+            )}
           </button>
         )}
 

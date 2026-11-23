@@ -3,6 +3,7 @@ import { normalizeUserRole } from '../utils/hrLogic';
 
 export type NavSection =
   | 'dashboard'
+  | 'requests'
   | 'employees'
   | 'documents'
   | 'pro_assignments'
@@ -17,6 +18,7 @@ export type NavSection =
   | 'settings_groups'
   | 'settings_projects'
   | 'settings_visibility_rules'
+  | 'settings_workflow_templates'
   | 'settings_models'
   | 'settings_geofences'
   | 'settings_payroll_workflows'
@@ -73,6 +75,11 @@ export const SIDEBAR_GROUPS: SidebarGroupSpec[] = [
       { id: 'settings_groups', labelKey: 'navSettingsGroups', groupId: 'settings' },
       { id: 'settings_projects', labelKey: 'navSettingsProjects', groupId: 'settings' },
       { id: 'settings_visibility_rules', labelKey: 'navSettingsVisibilityRules', groupId: 'settings' },
+      {
+        id: 'settings_workflow_templates',
+        labelKey: 'navSettingsWorkflowTemplates',
+        groupId: 'settings',
+      },
       { id: 'settings_models', labelKey: 'navSettingsModels', groupId: 'settings' },
       { id: 'settings_geofences', labelKey: 'navSettingsGeofences', groupId: 'settings' },
       {
@@ -95,6 +102,7 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
   ) {
     return [
       'dashboard',
+      'requests',
       'employees',
       'documents',
       'pro_assignments',
@@ -109,6 +117,7 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
       'settings_groups',
       'settings_projects',
       'settings_visibility_rules',
+      'settings_workflow_templates',
       'settings_models',
       'settings_geofences',
       'settings_payroll_workflows',
@@ -118,6 +127,7 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
 
   if (normalized === UserRole.Accounting) {
     return [
+      'requests',
       'payroll',
       'earnings_deductions',
       'deduction_approvals',
@@ -127,12 +137,13 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
   }
 
   if (normalized === UserRole.PRO) {
-    return ['dashboard', 'employees', 'documents', 'pro_assignments'];
+    return ['dashboard', 'requests', 'employees', 'documents', 'pro_assignments'];
   }
 
   if (normalized === UserRole.SectionManager) {
     return [
       'dashboard',
+      'requests',
       'employees',
       'documents',
       'attendance',
@@ -143,11 +154,11 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
   }
 
   if (normalized === UserRole.SectionCoManager) {
-    return ['dashboard', 'employees', 'documents', 'attendance', 'leaves', 'payroll'];
+    return ['dashboard', 'requests', 'employees', 'documents', 'attendance', 'leaves', 'payroll'];
   }
 
   // Employee
-  return ['dashboard', 'documents', 'attendance', 'leaves', 'payroll'];
+  return ['dashboard', 'requests', 'documents', 'attendance', 'leaves', 'payroll'];
 }
 
 export function getGroupForRoute(route: NavSection): SidebarGroupId | null {

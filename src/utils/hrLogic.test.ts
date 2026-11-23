@@ -18,15 +18,19 @@ import {
   PatchMoneyRelease,
   PayrollEntry,
   ProAssignment,
+  Project,
   SalaryReleaseSchedule,
+  UnifiedRequest,
   UserRole,
   VisibilityRule,
+  WorkflowTemplate,
 } from '../types/hr';
 import {
   addMonthsToYYYYMM,
   advanceLeaveApproval,
   applyHrDeductionDecision,
   applyManagerDeductionDecision,
+  applyUnifiedRequestAction,
   buildAdcbWpsExport,
   buildLeaveApprovalChain,
   buildNewDeductionApprovalRequest,
@@ -34,7 +38,9 @@ import {
   calculateEmployeePayroll,
   calculateEmployeePendingBalances,
   calculateHaversineDistanceMeters,
+  calculateLoanMonthlyDeduction,
   canActOnDeductionApproval,
+  canActOnUnifiedRequest,
   canControlSalaryRelease,
   canResetEmployeePassword,
   canRoleActOnLeaveStep,
@@ -52,10 +58,12 @@ import {
   getDocumentPreviewSource,
   getEffectiveDeductionStatus,
   getMissingModelDocuments,
+  getPendingRequestsForApprover,
   getScopedEmployees,
   getStartupEndpointsForRole,
   isAdminOrHRRole,
   isAttendanceTracked,
+  isBypassEligibleRole,
   isHRRole,
   isMainManagerRole,
   isPayrollEligible,
@@ -65,6 +73,8 @@ import {
   normalizeWorkType,
   resolveApprovalWorkflow,
   resolveEmployeeDeductionWorkflow,
+  resolveSalaryAdjustmentSteps,
+  resolveWorkflowStepsForEmployee,
   stopPermanentPayrollEntry,
   validatePatchReleaseAllocations,
 } from './hrLogic';
@@ -1619,6 +1629,301 @@ test('Phase 1 v4.0: workType normalization and employee visibility rules evaluat
   const hrHidden = evaluateUserHiddenSections(hrManager, rules);
   assert.deepEqual(hrHidden, []);
 });
+
+test('Phase 2 v4.0: Named approval workflow resolution by real employee names and project manager lookup', () => {
+  const mainMgr = makeEmp({
+    id: 'emp-tariq',
+    fullName: 'Tariq Al-Hashemi',
+    role: UserRole.MainManager,
+    sectionId: 'sec-exec',
+    managedSectionIds: ['sec-exec', 'sec-drivers'],
+  });
+  const hrMgr = makeEmp({
+    id: 'emp-alanood',
+    fullName: 'Alanood Al-Nuaimi',
+    role: UserRole.HRManager,
+    sectionId: 'sec-hr',
+    managedSectionIds: ['sec-hr'],
+  });
+  const hrAdmin = makeEmp({
+    id: 'emp-layla',
+    fullName: 'Layla Al-Mansoori',
+    role: UserRole.HRAdmin,
+    sectionId: 'sec-hr',
+    managedSectionIds: ['sec-hr'],
+  });
+  const secMgr = makeEmp({
+    id: 'emp-karim',
+    fullName: 'Karim Haddad',
+    role: UserRole.SectionManager,
+    sectionId: 'sec-drivers',
+    managedSectionIds: ['sec-drivers'],
+  });
+  const projMgr = makeEmp({
+    id: 'emp-pm',
+    fullName: 'Nasser Al-Maktoum',
+    role: UserRole.SectionCoManager,
+    sectionId: 'sec-drivers',
+    managedSectionIds: ['sec-drivers'],
+  });
+  const driver = makeEmp({
+    id: 'emp-omar',
+    fullName: 'Omar Khalid',
+    role: UserRole.Employee,
+    sectionId: 'sec-drivers',
+    projectIds: ['prj-airport'],
+  });
+
+  const projects: Project[] = [
+    {
+      id: 'prj-airport',
+      code: 'PRJ-DXB',
+      name: 'DXB Airport Fleet',
+      companyId: 'comp-yaldi',
+      managerId: 'emp-pm',
+      supervisorIds: [],
+      active: true,
+    },
+  ];
+  const allEmployees = [mainMgr, hrMgr, hrAdmin, secMgr, projMgr, driver];
+
+  const template: WorkflowTemplate = {
+    id: 'wt-1',
+    name: 'Driver Attendance Fix',
+    steps: [
+      { stepOrder: 1, type: 'role', role: 'project_manager' },
+      { stepOrder: 2, type: 'role', role: 'section_manager' },
+      { stepOrder: 3, type: 'role', role: 'hr_manager' },
+      { stepOrder: 4, type: 'employee', employeeId: 'emp-tariq' },
+    ],
+  };
+
+  const resolvedForDriver = resolveWorkflowStepsForEmployee({
+    steps: template.steps,
+    employee: driver,
+    employees: allEmployees,
+    projects,
+  });
+
+  assert.equal(resolvedForDriver.length, 4);
+  assert.equal(resolvedForDriver[0].approverId, 'emp-pm');
+  assert.equal(resolvedForDriver[0].approverName, 'Nasser Al-Maktoum');
+  assert.equal(resolvedForDriver[1].approverId, 'emp-karim');
+  assert.equal(resolvedForDriver[1].approverName, 'Karim Haddad');
+  assert.equal(resolvedForDriver[2].approverId, 'emp-alanood');
+  assert.equal(resolvedForDriver[2].approverName, 'Alanood Al-Nuaimi');
+  assert.equal(resolvedForDriver[3].approverId, 'emp-tariq');
+  assert.equal(resolvedForDriver[3].approverName, 'Tariq Al-Hashemi');
+
+  // If the target employee is the section manager themselves, step 1 is marked skipped!
+  const resolvedForSecMgr = resolveWorkflowStepsForEmployee({
+    steps: [
+      { stepOrder: 1, type: 'role', role: 'section_manager' },
+      { stepOrder: 2, type: 'role', role: 'hr_manager' },
+    ],
+    employee: secMgr,
+    employees: allEmployees,
+    projects,
+  });
+  assert.equal(resolvedForSecMgr.length, 2);
+  assert.equal(resolvedForSecMgr[0].skipped, true);
+  assert.equal(resolvedForSecMgr[1].approverId, 'emp-alanood');
+  assert.equal(resolvedForSecMgr[1].skipped, false);
+
+  // Salary Adjustment always resolves strictly to HR Manager only
+  const salarySteps = resolveSalaryAdjustmentSteps({
+    employees: allEmployees,
+    targetEmployee: driver,
+  });
+  assert.equal(salarySteps.length, 1);
+  assert.equal(salarySteps[0].role, 'hr_manager');
+  assert.equal(salarySteps[0].approverId, 'emp-alanood');
+});
+
+test('Phase 2 v4.0: Loan monthly deduction calculation and startup endpoints', () => {
+  assert.equal(calculateLoanMonthlyDeduction(3000, 6), 500);
+  assert.equal(calculateLoanMonthlyDeduction(1000, 3), 333.33);
+  assert.equal(calculateLoanMonthlyDeduction(0, 6), 0);
+
+  const empPaths = getStartupEndpointsForRole(UserRole.Employee).map((s) => s.path);
+  assert.ok(empPaths.includes('/requests'));
+  assert.ok(empPaths.includes('/workflow-templates'));
+  assert.ok(empPaths.includes('/workflow-assignments'));
+
+  const hrMgrPaths = getStartupEndpointsForRole(UserRole.HRManager).map((s) => s.path);
+  assert.ok(hrMgrPaths.includes('/requests'));
+  assert.ok(hrMgrPaths.includes('/workflow-templates'));
+  assert.ok(hrMgrPaths.includes('/workflow-assignments'));
+});
+
+test('Phase 2 v4.0: Strict No Self-Approval, HR Manager & Main Manager exclusive Bypass, and multi-step approval progression', () => {
+  const mainMgr = makeEmp({ id: 'emp-tariq', fullName: 'Tariq Al-Hashemi', role: UserRole.MainManager });
+  const hrMgr = makeEmp({ id: 'emp-alanood', fullName: 'Alanood Al-Nuaimi', role: UserRole.HRManager });
+  const hrAdmin = makeEmp({ id: 'emp-layla', fullName: 'Layla Al-Mansoori', role: UserRole.HRAdmin });
+  const secMgr = makeEmp({
+    id: 'emp-karim',
+    fullName: 'Karim Haddad',
+    role: UserRole.SectionManager,
+    managedSectionIds: ['sec-drivers'],
+  });
+  const driver = makeEmp({
+    id: 'emp-omar',
+    fullName: 'Omar Khalid',
+    role: UserRole.Employee,
+    sectionId: 'sec-drivers',
+  });
+
+  // Bypass eligibility strictly limited to HR Manager and Main Manager
+  assert.equal(isBypassEligibleRole(UserRole.HRManager), true);
+  assert.equal(isBypassEligibleRole(UserRole.MainManager), true);
+  assert.equal(isBypassEligibleRole(UserRole.HRAdmin), false);
+  assert.equal(isBypassEligibleRole(UserRole.SectionManager), false);
+  assert.equal(isBypassEligibleRole(UserRole.Employee), false);
+
+  const req: UnifiedRequest = {
+    id: 'req-test-1',
+    category: 'advance_loan',
+    employeeId: driver.id,
+    employeeName: driver.fullName,
+    companyId: driver.primaryCompanyId,
+    sectionId: driver.sectionId,
+    createdById: driver.id,
+    createdByName: driver.fullName,
+    status: 'pending',
+    currentStepIndex: 0,
+    reason: 'Housing deposit advance',
+    payload: { amountAED: 3000, repaymentMonths: 6, startMonth: '2026-12', monthlyDeductionAED: 500 },
+    steps: [
+      {
+        stepOrder: 1,
+        type: 'role',
+        role: 'section_manager',
+        roleLabel: 'Section Manager',
+        approverId: secMgr.id,
+        approverName: secMgr.fullName,
+        status: 'pending',
+      },
+      {
+        stepOrder: 2,
+        type: 'role',
+        role: 'hr_manager',
+        roleLabel: 'HR Manager',
+        approverId: hrMgr.id,
+        approverName: hrMgr.fullName,
+        status: 'pending',
+      },
+    ],
+    auditLog: [],
+    createdAt: '2026-11-15T09:00:00Z',
+    updatedAt: '2026-11-15T09:00:00Z',
+  };
+
+  // Self cannot approve, reject, or bypass
+  const selfPerm = canActOnUnifiedRequest({ request: req, currentUser: driver, activeRole: UserRole.Employee });
+  assert.equal(selfPerm.isSelf, true);
+  assert.equal(selfPerm.canApproveReject, false);
+  assert.equal(selfPerm.canBypass, false);
+
+  // Even if Main Manager submits their own request, strict No Self-Approval blocks approve & bypass
+  const selfMainMgrReq: UnifiedRequest = { ...req, employeeId: mainMgr.id, createdById: mainMgr.id };
+  const mainMgrSelfPerm = canActOnUnifiedRequest({
+    request: selfMainMgrReq,
+    currentUser: mainMgr,
+    activeRole: UserRole.MainManager,
+  });
+  assert.equal(mainMgrSelfPerm.isSelf, true);
+  assert.equal(mainMgrSelfPerm.canApproveReject, false);
+  assert.equal(mainMgrSelfPerm.canBypass, false);
+
+  // Step 1: Section Manager can approve/reject, cannot bypass
+  const smPerm = canActOnUnifiedRequest({ request: req, currentUser: secMgr, activeRole: UserRole.SectionManager });
+  assert.equal(smPerm.canApproveReject, true);
+  assert.equal(smPerm.canBypass, false);
+
+  // HR Admin is neither active approver nor bypass-eligible
+  const hrAdminPerm = canActOnUnifiedRequest({ request: req, currentUser: hrAdmin, activeRole: UserRole.HRAdmin });
+  assert.equal(hrAdminPerm.canApproveReject, false);
+  assert.equal(hrAdminPerm.canBypass, false);
+
+  // HR Manager is not Step 1 approver, but CAN Bypass & Approve!
+  const hrMgrStep1Perm = canActOnUnifiedRequest({ request: req, currentUser: hrMgr, activeRole: UserRole.HRManager });
+  assert.equal(hrMgrStep1Perm.canApproveReject, false);
+  assert.equal(hrMgrStep1Perm.canBypass, true);
+
+  // Pending queues reflect active approver & bypass eligibility
+  assert.equal(
+    getPendingRequestsForApprover({ requests: [req], currentUser: secMgr, activeRole: UserRole.SectionManager }).length,
+    1
+  );
+  assert.equal(
+    getPendingRequestsForApprover({ requests: [req], currentUser: hrMgr, activeRole: UserRole.HRManager }).length,
+    1
+  );
+  assert.equal(
+    getPendingRequestsForApprover({ requests: [req], currentUser: hrAdmin, activeRole: UserRole.HRAdmin }).length,
+    0
+  );
+
+  // Step 1 Approve -> advances to Step 2 (still pending overall)
+  const afterStep1 = applyUnifiedRequestAction({
+    request: req,
+    action: 'approve',
+    actorId: secMgr.id,
+    actorName: secMgr.fullName,
+    actorRole: UserRole.SectionManager,
+    comment: 'Verified driver attendance',
+    nowIso: '2026-11-15T10:00:00Z',
+  });
+  assert.equal(afterStep1.status, 'pending');
+  assert.equal(afterStep1.currentStepIndex, 1);
+  assert.equal(afterStep1.steps[0].status, 'approved');
+  assert.equal(afterStep1.steps[1].status, 'pending');
+
+  // Step 2 Approve by HR Manager -> completes request as approved
+  const afterStep2 = applyUnifiedRequestAction({
+    request: afterStep1,
+    action: 'approve',
+    actorId: hrMgr.id,
+    actorName: hrMgr.fullName,
+    actorRole: UserRole.HRManager,
+    comment: 'Final HR Manager sign-off',
+    nowIso: '2026-11-15T11:00:00Z',
+  });
+  assert.equal(afterStep2.status, 'approved');
+  assert.equal(afterStep2.currentStepIndex, -1);
+  assert.equal(afterStep2.steps[1].status, 'approved');
+  assert.equal(afterStep2.auditLog.length, 2);
+
+  // Bypass & Approve from Step 1 by HR Manager immediately finalizes request as 'bypassed'
+  const bypassed = applyUnifiedRequestAction({
+    request: req,
+    action: 'bypass',
+    actorId: hrMgr.id,
+    actorName: hrMgr.fullName,
+    actorRole: UserRole.HRManager,
+    comment: 'Urgent medical emergency advance',
+    nowIso: '2026-11-15T10:30:00Z',
+  });
+  assert.equal(bypassed.status, 'bypassed');
+  assert.equal(bypassed.currentStepIndex, -1);
+  assert.equal(bypassed.steps.every((s) => s.status === 'bypassed'), true);
+  assert.equal(bypassed.auditLog[bypassed.auditLog.length - 1].action, 'bypassed');
+
+  // Reject from Step 1 immediately closes request as 'rejected'
+  const rejected = applyUnifiedRequestAction({
+    request: req,
+    action: 'reject',
+    actorId: secMgr.id,
+    actorName: secMgr.fullName,
+    actorRole: UserRole.SectionManager,
+    comment: 'Exceeds policy cap',
+    nowIso: '2026-11-15T10:45:00Z',
+  });
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.currentStepIndex, -1);
+  assert.equal(rejected.steps[0].status, 'rejected');
+});
+
 
 
 

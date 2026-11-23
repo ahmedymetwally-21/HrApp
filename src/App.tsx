@@ -5,6 +5,7 @@ import {
   Building2,
   CalendarClock,
   CheckCircle2,
+  ClipboardCheck,
   Clock,
   FolderOpen,
   LayoutDashboard,
@@ -15,6 +16,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
+import { ApprovalsRequestsPage } from './components/ApprovalsRequestsPage';
 import { AttendanceView } from './components/AttendanceView';
 import { Avatar } from './components/Avatar';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
@@ -33,6 +35,7 @@ import { SettingsHubView, SettingsRouteSection } from './components/SettingsHubV
 import { SidebarNav } from './components/SidebarNav';
 import { StartupErrorScreen } from './components/StartupErrorScreen';
 import { VisibilityRulesPage } from './components/VisibilityRulesPage';
+import { WorkflowTemplatesPage } from './components/WorkflowTemplatesPage';
 import { getDirection, t } from './i18n/translations';
 import { getAllowedNavRoutesForRole, isSettingsRoute, NavSection } from './types/nav';
 import {
@@ -73,8 +76,10 @@ import {
   canActOnDeductionApproval,
   canRoleActOnLeaveStep,
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
+  DEFAULT_WORKFLOW_ASSIGNMENTS,
   evaluateClockInEligibility,
   getDocumentExpiryStatus,
+  getPendingRequestsForApprover,
   getScopedEmployees,
   getUserAttachedCompanyIds,
   inferDefaultEmployeeType,
@@ -465,6 +470,33 @@ export function App() {
     }).length;
   }, [db, currentUser, activeRole, scopedDeductionApprovals]);
 
+  const scopedRequests = useMemo(() => {
+    if (!db || !currentUser) return [];
+    const all = db.requests ?? [];
+    if (selectedCompanyId === 'all' && isAdminOrHRRole(activeRole)) {
+      return all;
+    }
+    return all.filter(
+      (req) =>
+        scopedEmployeeIds.has(req.employeeId) ||
+        req.employeeId === currentUser.id ||
+        req.createdById === currentUser.id ||
+        req.steps.some((step) => step.approverId === currentUser.id)
+    );
+  }, [db, currentUser, activeRole, selectedCompanyId, scopedEmployeeIds]);
+
+  const pendingRequestsForMe = useMemo(() => {
+    if (!db || !currentUser) return [];
+    return getPendingRequestsForApprover({
+      requests: db.requests ?? [],
+      currentUser,
+      activeRole,
+      projects: db.projects ?? [],
+    });
+  }, [db, currentUser, activeRole]);
+
+  const pendingRequestsCount = pendingRequestsForMe.length;
+
   // Compute simulated or live GPS reading for current user
   const gpsReading = useMemo<GPSReading | null>(() => {
     if (simPreset === 'live') return liveGps;
@@ -539,6 +571,16 @@ export function App() {
           });
       }
 
+      pendingRequestsForMe.forEach((req) => {
+        const emp = db.employees.find((e) => e.id === req.employeeId);
+        items.push({
+          id: `req-${req.id}`,
+          title: `Request Approval: ${req.employeeName || emp?.fullName || 'Employee'}`,
+          detail: req.reason || req.category.replace(/_/g, ' '),
+          target: 'requests',
+        });
+      });
+
       scopedDeductionApprovals.forEach((req) => {
         const emp = db.employees.find((e) => e.id === req.employeeId);
         if (!emp) return;
@@ -586,6 +628,7 @@ export function App() {
     scopedEmployees,
     scopedDocuments,
     scopedDeductionApprovals,
+    pendingRequestsForMe,
   ]);
 
   // --- Handlers ---
@@ -849,6 +892,7 @@ export function App() {
     icon: React.ComponentType<{ className?: string }>;
   }[] = [
     { id: 'dashboard', label: t(lang, 'navDashboard'), icon: LayoutDashboard },
+    { id: 'requests', label: t(lang, 'navRequests'), icon: ClipboardCheck },
     { id: 'attendance', label: t(lang, 'navAttendance'), icon: Clock },
     activeRole === UserRole.PRO || activeRole === UserRole.Employee
       ? {
@@ -857,12 +901,12 @@ export function App() {
           icon: FolderOpen,
         }
       : { id: 'employees', label: t(lang, 'navEmployees'), icon: Users },
-    { id: 'leaves', label: t(lang, 'navLeaves'), icon: CalendarClock },
     {
       id: 'payroll',
       label: activeRole === UserRole.Employee ? t(lang, 'navMySalary') : t(lang, 'navPayroll'),
       icon: Wallet,
     },
+    { id: 'leaves', label: t(lang, 'navLeaves'), icon: CalendarClock },
     {
       id: 'earnings_deductions',
       label: t(lang, 'navEarningsDeductions'),
@@ -1013,6 +1057,7 @@ export function App() {
           allowedNavIds={allowedNavIds}
           collapsed={sidebarCollapsed}
           pendingDeductionCount={pendingDeductionCount}
+          pendingRequestsCount={pendingRequestsCount}
           onSelectNav={setActiveNav}
           onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
         />
@@ -1622,10 +1667,84 @@ export function App() {
             />
           )}
 
+          {activeNav === 'requests' && (
+            <ApprovalsRequestsPage
+              lang={lang}
+              currentUser={currentUser}
+              activeRole={activeRole}
+              employees={db.employees}
+              projects={db.projects ?? []}
+              workflowTemplates={db.workflowTemplates ?? []}
+              workflowAssignments={db.workflowAssignments ?? DEFAULT_WORKFLOW_ASSIGNMENTS}
+              requests={scopedRequests}
+              onCreateRequest={async (input) => {
+                await api.requests.create(input);
+                await loadDatabase();
+                showToast(t(lang, 'requestSubmittedToast'));
+              }}
+              onActionRequest={async (params) => {
+                await api.requests.action({
+                  id: params.id,
+                  action: params.action,
+                  comment: params.comment,
+                  actorId: currentUser.id,
+                  actorName: currentUser.fullName,
+                  actorRole: activeRole,
+                });
+                await loadDatabase();
+                showToast(
+                  params.action === 'bypass'
+                    ? t(lang, 'requestBypassedToast')
+                    : params.action === 'approve'
+                      ? t(lang, 'requestApprovedToast')
+                      : t(lang, 'requestRejectedToast')
+                );
+              }}
+              onUploadAttachment={(file) => api.requests.upload(file)}
+              onResolveTemplate={(templateId, employeeId) =>
+                api.workflowTemplates.resolve(templateId, employeeId)
+              }
+            />
+          )}
+
+          {activeNav === 'settings_workflow_templates' && canAccessSettings && (
+            <WorkflowTemplatesPage
+              lang={lang}
+              templates={db.workflowTemplates ?? []}
+              assignments={db.workflowAssignments ?? DEFAULT_WORKFLOW_ASSIGNMENTS}
+              employees={db.employees}
+              projects={db.projects ?? []}
+              onCreateTemplate={async (input) => {
+                await api.workflowTemplates.create(input);
+                await loadDatabase();
+                showToast(`Workflow "${input.name}" created.`);
+              }}
+              onUpdateTemplate={async (id, patch) => {
+                await api.workflowTemplates.update(id, patch);
+                await loadDatabase();
+                showToast('Workflow template updated.');
+              }}
+              onDeleteTemplate={async (id) => {
+                await api.workflowTemplates.remove(id);
+                await loadDatabase();
+                showToast('Workflow template deleted.');
+              }}
+              onResolveTemplate={(id, employeeId) =>
+                api.workflowTemplates.resolve(id, employeeId)
+              }
+              onUpdateAssignments={async (nextAssignments) => {
+                await api.workflowAssignments.update(nextAssignments);
+                await loadDatabase();
+                showToast(t(lang, 'assignmentsSavedToast'));
+              }}
+            />
+          )}
+
           {isSettingsRoute(activeNav) &&
             activeNav !== 'settings_groups' &&
             activeNav !== 'settings_projects' &&
             activeNav !== 'settings_visibility_rules' &&
+            activeNav !== 'settings_workflow_templates' &&
             canAccessSettings && (
               <SettingsHubView
                 lang={lang}

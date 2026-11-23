@@ -19,6 +19,7 @@ import {
   ClockInPolicyMode,
   Company,
   CreateEmployeePayload,
+  CreateUnifiedRequestInput,
   DeductionApprovalRequest,
   DeductionApprovalStatus,
   DeductionApprovalTrigger,
@@ -38,6 +39,7 @@ import {
   HRDatabase,
   LeaveRequest,
   LeaveStatus,
+  LeaveType,
   PatchMoneyRelease,
   PatchPaymentMethod,
   PatchReleaseAllocation,
@@ -48,24 +50,45 @@ import {
   ProAssignment,
   Project,
   PunchSource,
+  RequestActionInput,
+  RequestApprovalStep,
+  RequestAuditEntry,
+  RequestCategory,
+  RequestPayload,
+  RequestStatus,
+  RequestStepStatus,
+  RequestUploadResult,
+  ResolvedWorkflowStep,
   SalaryReleaseSchedule,
   SalaryReleaseStatus,
   Section,
   ShiftSchedule,
+  TimeOffSubType,
+  UnifiedRequest,
   UpdateEmployeePayload,
   UserRole,
   VisibilityRule,
   VisibilityRuleTargetType,
+  WorkflowModuleAssignments,
+  WorkflowModuleKey,
+  WorkflowStepRoleKey,
+  WorkflowTemplate,
+  WorkflowTemplateStep,
 } from '../types/hr';
 import {
   adjustLeaveBalance,
   advanceLeaveApproval,
+  ALL_WORKFLOW_MODULES,
   applyHrDeductionDecision,
   applyManagerDeductionDecision,
+  applyUnifiedRequestAction,
   buildLeaveApprovalChain,
   buildNewDeductionApprovalRequest,
+  calculateInclusiveDays,
+  calculateLoanMonthlyDeduction,
   computeTemporaryEndMonth,
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
+  DEFAULT_WORKFLOW_ASSIGNMENTS,
   editPermanentPayrollEntry,
   evaluateModelLateness,
   evaluateStartupEndpointResults,
@@ -78,6 +101,8 @@ import {
   normalizeUserRole,
   normalizeWorkType,
   resolveApprovalWorkflow,
+  resolveSalaryAdjustmentSteps,
+  resolveWorkflowStepsForEmployee,
   SettledStartupItem,
   stopPermanentPayrollEntry,
   validatePatchReleaseAllocations,
@@ -557,6 +582,351 @@ export function normalizeMyHiddenSections(raw: unknown): HiddenSectionKey[] {
   return Array.from(unique);
 }
 
+const VALID_STEP_ROLES = new Set<WorkflowStepRoleKey>([
+  'section_manager',
+  'project_manager',
+  'supervisor',
+  'hr_admin',
+  'hr_manager',
+  'main_manager',
+]);
+
+function normalizeStepRole(raw: unknown): WorkflowStepRoleKey {
+  const s = asString(raw, 'section_manager').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (VALID_STEP_ROLES.has(s as WorkflowStepRoleKey)) {
+    return s as WorkflowStepRoleKey;
+  }
+  if (s === 'hr') return 'hr_admin';
+  if (s === 'admin' || s === 'gm' || s === 'general_manager') return 'main_manager';
+  return 'section_manager';
+}
+
+export function normalizeWorkflowTemplate(raw: unknown): WorkflowTemplate {
+  const obj = asRecord(raw);
+  let rawSteps: unknown[] = [];
+  const candidateSteps = obj.steps ?? obj.steps_json;
+  if (Array.isArray(candidateSteps)) {
+    rawSteps = candidateSteps;
+  } else if (typeof candidateSteps === 'string' && candidateSteps.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(candidateSteps);
+      if (Array.isArray(parsed)) rawSteps = parsed;
+    } catch {
+      rawSteps = [];
+    }
+  }
+
+  const steps: WorkflowTemplateStep[] = rawSteps.map((s, idx) => {
+    const rec = asRecord(s);
+    const employeeId =
+      asString(
+        rec.employeeId ??
+          rec.employee_id ??
+          rec.userId ??
+          rec.user_id ??
+          rec.approverUserId ??
+          rec.approver_user_id ??
+          ''
+      ) || undefined;
+    const rawType = asString(rec.type ?? rec.stepType ?? rec.step_type ?? rec.approverType ?? rec.approver_type ?? '').toLowerCase();
+    const isEmployee =
+      rawType === 'employee' ||
+      rawType === 'user' ||
+      rawType === 'specific_employee' ||
+      rawType === 'specific_user' ||
+      (!rawType && Boolean(employeeId));
+    return {
+      stepOrder: asNumber(rec.stepOrder ?? rec.step_order ?? rec.order, idx + 1),
+      type: isEmployee ? 'employee' : 'role',
+      role: isEmployee
+        ? undefined
+        : normalizeStepRole(rec.role ?? rec.approverRole ?? rec.approver_role),
+      employeeId: isEmployee ? employeeId : undefined,
+    };
+  });
+
+  return {
+    id: asString(obj.id ?? ''),
+    name: asString(obj.name ?? ''),
+    description: asString(obj.description ?? '') || undefined,
+    steps,
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? '') || undefined,
+    updatedAt: asString(obj.updatedAt ?? obj.updated_at ?? '') || undefined,
+  };
+}
+
+export function normalizeWorkflowAssignments(raw: unknown): WorkflowModuleAssignments {
+  const result: WorkflowModuleAssignments = { ...DEFAULT_WORKFLOW_ASSIGNMENTS };
+  if (!raw) return result;
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const rec = asRecord(item);
+      const mod = asString(rec.module ?? rec.moduleKey ?? rec.module_key ?? rec.category ?? '').trim() as WorkflowModuleKey;
+      if (ALL_WORKFLOW_MODULES.includes(mod)) {
+        const wfId = asString(
+          rec.workflowTemplateId ??
+            rec.workflow_template_id ??
+            rec.templateId ??
+            rec.template_id ??
+            rec.workflowId ??
+            rec.workflow_id ??
+            ''
+        );
+        result[mod] = wfId || null;
+      }
+    }
+    return result;
+  }
+
+  if (typeof raw === 'object') {
+    const obj = asRecord(raw);
+    const source =
+      obj.assignments && typeof obj.assignments === 'object'
+        ? obj.assignments
+        : obj;
+    if (Array.isArray(source)) {
+      return normalizeWorkflowAssignments(source);
+    }
+    const mapRec = asRecord(source);
+    for (const mod of ALL_WORKFLOW_MODULES) {
+      const val = mapRec[mod];
+      if (typeof val === 'string' && val.trim()) {
+        result[mod] = val.trim();
+      } else if (val && typeof val === 'object') {
+        const inner = asRecord(val);
+        const id = asString(
+          inner.workflowTemplateId ?? inner.workflow_template_id ?? inner.id ?? ''
+        );
+        result[mod] = id || null;
+      } else if (val === null) {
+        result[mod] = null;
+      }
+    }
+  }
+  return result;
+}
+
+export function normalizeResolvedWorkflowSteps(raw: unknown): ResolvedWorkflowStep[] {
+  let list: unknown[] = [];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (raw && typeof raw === 'object') {
+    const obj = asRecord(raw);
+    const candidate = obj.steps ?? obj.resolvedSteps ?? obj.resolved_steps ?? obj.chain ?? [];
+    if (Array.isArray(candidate)) list = candidate;
+  }
+  return list.map((item, idx) => {
+    const rec = asRecord(item);
+    const rawType = asString(
+      rec.approverType ?? rec.approver_type ?? rec.type ?? rec.stepType ?? rec.step_type ?? 'role'
+    ).toLowerCase();
+    const isEmployee =
+      rawType === 'employee' ||
+      rawType === 'user' ||
+      rawType === 'specific_employee' ||
+      rawType === 'specific_user';
+    const role = isEmployee
+      ? undefined
+      : normalizeStepRole(rec.role ?? rec.approverRole ?? rec.approver_role);
+    return {
+      stepOrder: asNumber(rec.stepOrder ?? rec.step_order ?? rec.order, idx + 1),
+      type: isEmployee ? 'employee' : 'role',
+      role,
+      roleLabel: asString(
+        rec.roleLabel ?? rec.role_label ?? rec.label ?? (role ? role.replace(/_/g, ' ') : 'Approver')
+      ),
+      approverId:
+        asString(
+          rec.approverId ??
+            rec.approver_id ??
+            rec.employeeId ??
+            rec.employee_id ??
+            rec.userId ??
+            rec.user_id ??
+            ''
+        ) || null,
+      approverName: asString(
+        rec.approverName ??
+          rec.approver_name ??
+          rec.employeeName ??
+          rec.employee_name ??
+          rec.name ??
+          'Unassigned'
+      ),
+      skipped: asBoolean(rec.skipped, false),
+      skipReason: asString(rec.skipReason ?? rec.skip_reason ?? '') || undefined,
+    };
+  });
+}
+
+export function normalizeUnifiedRequest(raw: unknown): UnifiedRequest {
+  const obj = asRecord(raw);
+  const rawCat = asString(obj.category ?? obj.requestType ?? obj.request_type ?? 'general').trim().toLowerCase();
+  const category: RequestCategory =
+    rawCat === 'custom_clock' ||
+    rawCat === 'time_off' ||
+    rawCat === 'advance_loan' ||
+    rawCat === 'salary_adjustment' ||
+    rawCat === 'general'
+      ? rawCat
+      : 'general';
+
+  const rawStatus = asString(obj.status ?? 'pending').trim().toLowerCase();
+  const status: RequestStatus =
+    rawStatus === 'approved' ||
+    rawStatus === 'rejected' ||
+    rawStatus === 'bypassed' ||
+    rawStatus === 'pending'
+      ? rawStatus
+      : 'pending';
+
+  const rawStepsCandidate = obj.steps ?? obj.approvalSteps ?? obj.approval_steps ?? [];
+  const rawSteps = Array.isArray(rawStepsCandidate) ? rawStepsCandidate : [];
+  const steps: RequestApprovalStep[] = rawSteps.map((s, idx) => {
+    const rec = asRecord(s);
+    const rawStepType = asString(rec.type ?? rec.stepType ?? rec.step_type ?? 'role').toLowerCase();
+    const isEmp = rawStepType === 'employee' || rawStepType === 'user';
+    const rawStepStatus = asString(rec.status ?? 'pending').toLowerCase();
+    const stepStatus: RequestStepStatus =
+      rawStepStatus === 'approved' ||
+      rawStepStatus === 'rejected' ||
+      rawStepStatus === 'bypassed' ||
+      rawStepStatus === 'skipped'
+        ? rawStepStatus
+        : 'pending';
+    return {
+      stepOrder: asNumber(rec.stepOrder ?? rec.step_order, idx + 1),
+      type: isEmp ? 'employee' : 'role',
+      role: isEmp ? undefined : normalizeStepRole(rec.role ?? rec.approverRole ?? rec.approver_role),
+      roleLabel: asString(rec.roleLabel ?? rec.role_label ?? rec.label ?? '') || undefined,
+      approverId:
+        asString(rec.approverId ?? rec.approver_id ?? rec.employeeId ?? rec.employee_id ?? '') || null,
+      approverName: asString(rec.approverName ?? rec.approver_name ?? '') || undefined,
+      status: stepStatus,
+      actorId: asString(rec.actorId ?? rec.actor_id ?? '') || undefined,
+      actorName: asString(rec.actorName ?? rec.actor_name ?? '') || undefined,
+      actorRole: rec.actorRole ?? rec.actor_role ? normalizeUserRole(rec.actorRole ?? rec.actor_role) : undefined,
+      comment: asString(rec.comment ?? rec.remark ?? rec.reason ?? '') || undefined,
+      decidedAt: asString(rec.decidedAt ?? rec.decided_at ?? '') || undefined,
+    };
+  });
+
+  const rawAuditCandidate = obj.auditLog ?? obj.audit_log ?? obj.history ?? [];
+  const rawAudit = Array.isArray(rawAuditCandidate) ? rawAuditCandidate : [];
+  const auditLog: RequestAuditEntry[] = rawAudit.map((a, idx) => {
+    const rec = asRecord(a);
+    const rawAct = asString(rec.action ?? 'submitted').toLowerCase();
+    const act: RequestAuditEntry['action'] =
+      rawAct === 'approved' || rawAct === 'approve'
+        ? 'approved'
+        : rawAct === 'rejected' || rawAct === 'reject'
+          ? 'rejected'
+          : rawAct === 'bypassed' || rawAct === 'bypass'
+            ? 'bypassed'
+            : 'submitted';
+    return {
+      id: asString(rec.id ?? `aud-${idx}`),
+      action: act,
+      actorId: asString(rec.actorId ?? rec.actor_id ?? '') || undefined,
+      actorName: asString(rec.actorName ?? rec.actor_name ?? 'User'),
+      actorRole: rec.actorRole ?? rec.actor_role ? normalizeUserRole(rec.actorRole ?? rec.actor_role) : undefined,
+      stepOrder: rec.stepOrder !== undefined || rec.step_order !== undefined
+        ? asNumber(rec.stepOrder ?? rec.step_order, 1)
+        : undefined,
+      comment: asString(rec.comment ?? rec.reason ?? rec.note ?? '') || undefined,
+      timestamp: asString(rec.timestamp ?? rec.createdAt ?? rec.created_at ?? new Date().toISOString()),
+    };
+  });
+
+  let rawPayloadObj = asRecord(obj.payload ?? obj.details ?? obj.data);
+  if (typeof obj.payload === 'string' && obj.payload.trim().startsWith('{')) {
+    try {
+      rawPayloadObj = asRecord(JSON.parse(obj.payload));
+    } catch {
+      rawPayloadObj = {};
+    }
+  }
+
+  const amountAED =
+    rawPayloadObj.amountAED ?? rawPayloadObj.amount_aed ?? obj.amountAED ?? obj.amount_aed;
+  const repaymentMonths =
+    rawPayloadObj.repaymentMonths ?? rawPayloadObj.repayment_months ?? obj.repaymentMonths ?? obj.repayment_months;
+
+  const payload: RequestPayload = {
+    date: asString(rawPayloadObj.date ?? obj.date ?? '') || undefined,
+    clockInTime: asString(rawPayloadObj.clockInTime ?? rawPayloadObj.clock_in_time ?? obj.clockInTime ?? obj.clock_in_time ?? '') || undefined,
+    clockOutTime: asString(rawPayloadObj.clockOutTime ?? rawPayloadObj.clock_out_time ?? obj.clockOutTime ?? obj.clock_out_time ?? '') || undefined,
+    leaveSubType:
+      (asString(rawPayloadObj.leaveSubType ?? rawPayloadObj.leave_sub_type ?? rawPayloadObj.subType ?? rawPayloadObj.sub_type ?? '') ||
+        undefined) as TimeOffSubType | undefined,
+    startDate: asString(rawPayloadObj.startDate ?? rawPayloadObj.start_date ?? obj.startDate ?? obj.start_date ?? '') || undefined,
+    endDate: asString(rawPayloadObj.endDate ?? rawPayloadObj.end_date ?? obj.endDate ?? obj.end_date ?? '') || undefined,
+    days:
+      rawPayloadObj.days !== undefined || obj.days !== undefined
+        ? asNumber(rawPayloadObj.days ?? obj.days, 0)
+        : undefined,
+    amountAED: amountAED !== undefined ? asNumber(amountAED, 0) : undefined,
+    repaymentMonths: repaymentMonths !== undefined ? asNumber(repaymentMonths, 1) : undefined,
+    startMonth: asString(rawPayloadObj.startMonth ?? rawPayloadObj.start_month ?? obj.startMonth ?? obj.start_month ?? '') || undefined,
+    monthlyDeductionAED:
+      rawPayloadObj.monthlyDeductionAED !== undefined || rawPayloadObj.monthly_deduction_aed !== undefined
+        ? asNumber(rawPayloadObj.monthlyDeductionAED ?? rawPayloadObj.monthly_deduction_aed, 0)
+        : amountAED !== undefined && repaymentMonths !== undefined
+          ? calculateLoanMonthlyDeduction(asNumber(amountAED, 0), asNumber(repaymentMonths, 1))
+          : undefined,
+    targetEmployeeId:
+      asString(rawPayloadObj.targetEmployeeId ?? rawPayloadObj.target_employee_id ?? '') || undefined,
+    targetEmployeeName:
+      asString(rawPayloadObj.targetEmployeeName ?? rawPayloadObj.target_employee_name ?? '') || undefined,
+    currentBaseSalaryAED:
+      rawPayloadObj.currentBaseSalaryAED !== undefined || rawPayloadObj.current_base_salary_aed !== undefined
+        ? asNumber(rawPayloadObj.currentBaseSalaryAED ?? rawPayloadObj.current_base_salary_aed, 0)
+        : undefined,
+    newBaseSalaryAED:
+      rawPayloadObj.newBaseSalaryAED !== undefined || rawPayloadObj.new_base_salary_aed !== undefined
+        ? asNumber(rawPayloadObj.newBaseSalaryAED ?? rawPayloadObj.new_base_salary_aed, 0)
+        : undefined,
+    subject: asString(rawPayloadObj.subject ?? obj.subject ?? '') || undefined,
+    message: asString(rawPayloadObj.message ?? obj.message ?? '') || undefined,
+    attachmentUrl:
+      asString(rawPayloadObj.attachmentUrl ?? rawPayloadObj.attachment_url ?? obj.attachmentUrl ?? obj.attachment_url ?? '') || undefined,
+    attachmentName:
+      asString(rawPayloadObj.attachmentName ?? rawPayloadObj.attachment_name ?? obj.attachmentName ?? obj.attachment_name ?? '') || undefined,
+  };
+
+  const rawStepIdx = obj.currentStepIndex ?? obj.current_step_index;
+  const derivedStepIdx =
+    status !== 'pending'
+      ? -1
+      : rawStepIdx !== undefined && rawStepIdx !== null
+        ? asNumber(rawStepIdx, 0)
+        : steps.findIndex((s) => s.status === 'pending');
+
+  return {
+    id: asString(obj.id ?? ''),
+    category,
+    employeeId: asString(obj.employeeId ?? obj.employee_id ?? obj.userId ?? obj.user_id ?? ''),
+    employeeName: asString(obj.employeeName ?? obj.employee_name ?? '') || undefined,
+    companyId: asString(obj.companyId ?? obj.company_id ?? ''),
+    sectionId: asString(obj.sectionId ?? obj.section_id ?? ''),
+    workflowTemplateId:
+      asString(obj.workflowTemplateId ?? obj.workflow_template_id ?? '') || null,
+    workflowTemplateName:
+      asString(obj.workflowTemplateName ?? obj.workflow_template_name ?? '') || undefined,
+    status,
+    currentStepIndex: derivedStepIdx,
+    steps,
+    auditLog,
+    reason: asString(obj.reason ?? payload.message ?? ''),
+    payload,
+    createdById: asString(obj.createdById ?? obj.created_by_id ?? obj.employeeId ?? obj.employee_id ?? ''),
+    createdByName: asString(obj.createdByName ?? obj.created_by_name ?? obj.employeeName ?? obj.employee_name ?? ''),
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? new Date().toISOString()),
+    updatedAt: asString(obj.updatedAt ?? obj.updated_at ?? '') || undefined,
+  };
+}
+
 export function normalizeEmployee(raw: unknown): Employee {
   const obj = asRecord(raw);
   const salaryObj = asRecord(obj.salary);
@@ -786,16 +1156,20 @@ function readDb(): HRDatabase {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<HRDatabase>;
       if (parsed && Array.isArray(parsed.companies) && Array.isArray(parsed.employees)) {
-        // Non-destructive Phase 1A + 1B + v4.0 migration for previously cached local demo databases
+        // Non-destructive Phase 1A + 1B + v4.0 Phase 1 & 2 migration for previously cached local demo databases
         const needsMigration =
           !Array.isArray(parsed.groups) ||
           !Array.isArray(parsed.projects) ||
           !Array.isArray(parsed.visibilityRules) ||
+          !Array.isArray(parsed.workflowTemplates) ||
+          !parsed.workflowAssignments ||
+          !Array.isArray(parsed.requests) ||
           !Array.isArray(parsed.payrollCategories) ||
           !Array.isArray(parsed.payrollEntries) ||
           !Array.isArray(parsed.deductionApprovals) ||
           !Array.isArray(parsed.patchReleases) ||
           !parsed.settings?.deductionWorkflowConfig ||
+          !parsed.employees.some((e) => e.id === 'emp-alanood') ||
           parsed.companies.some((c) => !c.molEstablishmentId) ||
           parsed.employees.some(
             (e) => !e.employeeType || !e.workType || !Array.isArray(e.groupIds) || !Array.isArray(e.projectIds)
@@ -805,6 +1179,40 @@ function readDb(): HRDatabase {
           const fresh = createInitialSeedData();
           const freshCompById = new Map(fresh.companies.map((c) => [c.id, c]));
           const freshEmpById = new Map(fresh.employees.map((e) => [e.id, e]));
+          const existingEmpIds = new Set(parsed.employees.map((e) => e.id));
+          const mergedEmployees: Employee[] = parsed.employees.map((e) => {
+            const seedEmp = freshEmpById.get(e.id);
+            return {
+              ...e,
+              workType: normalizeWorkType(e.workType ?? seedEmp?.workType ?? 'office'),
+              groupIds: Array.isArray(e.groupIds) ? e.groupIds : (seedEmp?.groupIds ?? []),
+              projectIds: Array.isArray(e.projectIds) ? e.projectIds : (seedEmp?.projectIds ?? []),
+              employeeType:
+                e.employeeType ??
+                seedEmp?.employeeType ??
+                inferDefaultEmployeeType({
+                  role: e.role,
+                  sectionId: e.sectionId,
+                  modelId: e.modelId,
+                }),
+              deductionWorkflowOverride:
+                e.deductionWorkflowOverride ?? seedEmp?.deductionWorkflowOverride ?? 'inherit',
+              mohrePersonId: e.mohrePersonId ?? seedEmp?.mohrePersonId,
+              bankDetails: e.bankDetails
+                ? {
+                    ...e.bankDetails,
+                    bankRoutingCode:
+                      e.bankDetails.bankRoutingCode ?? seedEmp?.bankDetails?.bankRoutingCode,
+                  }
+                : seedEmp?.bankDetails,
+            };
+          });
+          // Ensure seeded HR Manager account exists for Phase 2 Demo Mode
+          const seedHrMgr = fresh.employees.find((e) => e.id === 'emp-alanood');
+          if (seedHrMgr && !existingEmpIds.has(seedHrMgr.id)) {
+            mergedEmployees.splice(2, 0, seedHrMgr);
+          }
+
           const migrated: HRDatabase = {
             ...(parsed as HRDatabase),
             companies: parsed.companies.map((c) => {
@@ -821,33 +1229,14 @@ function readDb(): HRDatabase {
             visibilityRules: Array.isArray(parsed.visibilityRules)
               ? parsed.visibilityRules
               : fresh.visibilityRules,
-            employees: parsed.employees.map((e) => {
-              const seedEmp = freshEmpById.get(e.id);
-              return {
-                ...e,
-                workType: normalizeWorkType(e.workType ?? seedEmp?.workType ?? 'office'),
-                groupIds: Array.isArray(e.groupIds) ? e.groupIds : (seedEmp?.groupIds ?? []),
-                projectIds: Array.isArray(e.projectIds) ? e.projectIds : (seedEmp?.projectIds ?? []),
-                employeeType:
-                  e.employeeType ??
-                  seedEmp?.employeeType ??
-                  inferDefaultEmployeeType({
-                    role: e.role,
-                    sectionId: e.sectionId,
-                    modelId: e.modelId,
-                  }),
-                deductionWorkflowOverride:
-                  e.deductionWorkflowOverride ?? seedEmp?.deductionWorkflowOverride ?? 'inherit',
-                mohrePersonId: e.mohrePersonId ?? seedEmp?.mohrePersonId,
-                bankDetails: e.bankDetails
-                  ? {
-                      ...e.bankDetails,
-                      bankRoutingCode:
-                        e.bankDetails.bankRoutingCode ?? seedEmp?.bankDetails?.bankRoutingCode,
-                    }
-                  : seedEmp?.bankDetails,
-              };
-            }),
+            workflowTemplates: Array.isArray(parsed.workflowTemplates)
+              ? parsed.workflowTemplates
+              : fresh.workflowTemplates,
+            workflowAssignments: parsed.workflowAssignments
+              ? normalizeWorkflowAssignments(parsed.workflowAssignments)
+              : fresh.workflowAssignments,
+            requests: Array.isArray(parsed.requests) ? parsed.requests : fresh.requests,
+            employees: mergedEmployees,
             payrollCategories:
               Array.isArray(parsed.payrollCategories) && parsed.payrollCategories.length > 0
                 ? parsed.payrollCategories
@@ -897,7 +1286,7 @@ function makeId(prefix: string): string {
 
 const ROLE_DEFAULT_DEMO_USER: Record<UserRole, string> = {
   [UserRole.MainManager]: 'emp-tariq',
-  [UserRole.HRManager]: 'emp-layla',
+  [UserRole.HRManager]: 'emp-alanood',
   [UserRole.HRAdmin]: 'emp-layla',
   [UserRole.SectionManager]: 'emp-karim',
   [UserRole.SectionCoManager]: 'emp-priya',
@@ -1083,9 +1472,17 @@ export const api = {
               spec.key === 'groups' ||
               spec.key === 'projects' ||
               spec.key === 'visibilityRules' ||
-              spec.key === 'myVisibility')
+              spec.key === 'myVisibility' ||
+              spec.key === 'workflowTemplates' ||
+              spec.key === 'workflowAssignments' ||
+              spec.key === 'requests')
           ) {
-            return { key: spec.key, path: spec.path, ok: true, value: [] };
+            return {
+              key: spec.key,
+              path: spec.path,
+              ok: true,
+              value: spec.key === 'workflowAssignments' ? { ...DEFAULT_WORKFLOW_ASSIGNMENTS } : [],
+            };
           }
           failure = reason.toEndpointFailure();
         } else if (reason instanceof ServerUnreachableError) {
@@ -1120,6 +1517,11 @@ export const api = {
         ? rawValues.visibilityRules
         : [];
       const myHiddenSections = normalizeMyHiddenSections(rawValues.myVisibility);
+      const rawWorkflowTemplates = Array.isArray(rawValues.workflowTemplates)
+        ? rawValues.workflowTemplates
+        : [];
+      const workflowAssignments = normalizeWorkflowAssignments(rawValues.workflowAssignments);
+      const rawRequests = Array.isArray(rawValues.requests) ? rawValues.requests : [];
       const rawCategories = Array.isArray(rawValues.payrollCategories)
         ? rawValues.payrollCategories
         : [];
@@ -1166,6 +1568,9 @@ export const api = {
           : [],
         leaves: Array.isArray(rawValues.leaves) ? (rawValues.leaves as LeaveRequest[]) : [],
         workflows: Array.isArray(rawValues.workflows) ? (rawValues.workflows as ApprovalWorkflow[]) : [],
+        workflowTemplates: rawWorkflowTemplates.map(normalizeWorkflowTemplate),
+        workflowAssignments,
+        requests: rawRequests.map(normalizeUnifiedRequest),
         payrollAdjustments: Array.isArray(rawValues.payrollAdjustments)
           ? (rawValues.payrollAdjustments as PayrollAdjustment[])
           : [],
@@ -1208,6 +1613,9 @@ export const api = {
       projects: db.projects ?? [],
       visibilityRules: db.visibilityRules ?? [],
       myHiddenSections,
+      workflowTemplates: db.workflowTemplates ?? [],
+      workflowAssignments: normalizeWorkflowAssignments(db.workflowAssignments),
+      requests: db.requests ?? [],
       proAssignments: db.proAssignments ?? [],
       payrollCategories: db.payrollCategories ?? [],
       payrollEntries: db.payrollEntries ?? [],
@@ -3109,6 +3517,587 @@ export const api = {
       const db = readDb();
       db.visibilityRules = (db.visibilityRules ?? []).filter((r) => r.id !== id);
       writeDb(db);
+    },
+  },
+
+  workflowTemplates: {
+    async list(): Promise<WorkflowTemplate[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown[]>('/workflow-templates');
+        return Array.isArray(res) ? res.map(normalizeWorkflowTemplate) : [];
+      }
+      const db = readDb();
+      return db.workflowTemplates ?? [];
+    },
+
+    async create(
+      input: Omit<WorkflowTemplate, 'id' | 'createdAt' | 'updatedAt'>
+    ): Promise<WorkflowTemplate> {
+      const cfg = getServerConfig();
+      const normalizedSteps = input.steps.map((s, idx) => {
+        const backendApproverType = s.type === 'employee' ? 'specific_user' : 'role';
+        return {
+          stepOrder: idx + 1,
+          step_order: idx + 1,
+          approverType: backendApproverType,
+          approver_type: backendApproverType,
+          type: s.type,
+          step_type: s.type,
+          role: s.type === 'role' ? s.role : null,
+          approverRole: s.type === 'role' ? s.role : null,
+          approver_role: s.type === 'role' ? s.role : null,
+          employeeId: s.type === 'employee' ? s.employeeId : null,
+          employee_id: s.type === 'employee' ? s.employeeId : null,
+          approverUserId: s.type === 'employee' ? s.employeeId : null,
+          approver_user_id: s.type === 'employee' ? s.employeeId : null,
+        };
+      });
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/workflow-templates', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: input.name.trim(),
+            description: input.description?.trim() || null,
+            steps: normalizedSteps,
+          }),
+        });
+        return normalizeWorkflowTemplate(res);
+      }
+      const db = readDb();
+      const now = new Date().toISOString();
+      const created: WorkflowTemplate = {
+        id: makeId('wt'),
+        name: input.name.trim(),
+        description: input.description?.trim() || undefined,
+        steps: input.steps.map((s, idx) => ({
+          stepOrder: idx + 1,
+          type: s.type,
+          role: s.type === 'role' ? s.role : undefined,
+          employeeId: s.type === 'employee' ? s.employeeId : undefined,
+        })),
+        createdAt: now,
+        updatedAt: now,
+      };
+      db.workflowTemplates = [...(db.workflowTemplates ?? []), created];
+      writeDb(db);
+      return created;
+    },
+
+    async update(
+      id: string,
+      patch: Partial<Omit<WorkflowTemplate, 'id'>>
+    ): Promise<WorkflowTemplate> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const payload: Record<string, unknown> = {};
+        if (patch.name !== undefined) payload.name = patch.name.trim();
+        if (patch.description !== undefined) payload.description = patch.description?.trim() || null;
+        if (patch.steps !== undefined) {
+          payload.steps = patch.steps.map((s, idx) => {
+            const backendApproverType = s.type === 'employee' ? 'specific_user' : 'role';
+            return {
+              stepOrder: idx + 1,
+              step_order: idx + 1,
+              approverType: backendApproverType,
+              approver_type: backendApproverType,
+              type: s.type,
+              step_type: s.type,
+              role: s.type === 'role' ? s.role : null,
+              approverRole: s.type === 'role' ? s.role : null,
+              approver_role: s.type === 'role' ? s.role : null,
+              employeeId: s.type === 'employee' ? s.employeeId : null,
+              employee_id: s.type === 'employee' ? s.employeeId : null,
+              approverUserId: s.type === 'employee' ? s.employeeId : null,
+              approver_user_id: s.type === 'employee' ? s.employeeId : null,
+            };
+          });
+        }
+        const res = await restFetch<unknown>(`/workflow-templates/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        return normalizeWorkflowTemplate(res);
+      }
+      const db = readDb();
+      let updated: WorkflowTemplate | null = null;
+      db.workflowTemplates = (db.workflowTemplates ?? []).map((t) => {
+        if (t.id === id) {
+          updated = {
+            ...t,
+            ...patch,
+            steps: patch.steps
+              ? patch.steps.map((s, idx) => ({
+                  stepOrder: idx + 1,
+                  type: s.type,
+                  role: s.type === 'role' ? s.role : undefined,
+                  employeeId: s.type === 'employee' ? s.employeeId : undefined,
+                }))
+              : t.steps,
+            updatedAt: new Date().toISOString(),
+          };
+          return updated;
+        }
+        return t;
+      });
+      if (!updated) throw new Error('Workflow template not found.');
+      writeDb(db);
+      return updated;
+    },
+
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/workflow-templates/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.workflowTemplates = (db.workflowTemplates ?? []).filter((t) => t.id !== id);
+      const nextAssign = { ...normalizeWorkflowAssignments(db.workflowAssignments) };
+      for (const mod of ALL_WORKFLOW_MODULES) {
+        if (nextAssign[mod] === id) {
+          nextAssign[mod] = null;
+        }
+      }
+      db.workflowAssignments = nextAssign;
+      writeDb(db);
+    },
+
+    async resolve(id: string, employeeId: string): Promise<ResolvedWorkflowStep[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(
+          `/workflow-templates/${encodeURIComponent(id)}/resolve?employeeId=${encodeURIComponent(employeeId)}`
+        );
+        return normalizeResolvedWorkflowSteps(res);
+      }
+      const db = readDb();
+      const tpl = (db.workflowTemplates ?? []).find((t) => t.id === id);
+      const emp = db.employees.find((e) => e.id === employeeId);
+      if (!tpl) return [];
+      return resolveWorkflowStepsForEmployee({
+        steps: tpl.steps,
+        employee: emp,
+        employees: db.employees,
+        projects: db.projects ?? [],
+      });
+    },
+  },
+
+  workflowAssignments: {
+    async get(): Promise<WorkflowModuleAssignments> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/workflow-assignments');
+        return normalizeWorkflowAssignments(res);
+      }
+      const db = readDb();
+      return normalizeWorkflowAssignments(db.workflowAssignments);
+    },
+
+    async update(assignments: WorkflowModuleAssignments): Promise<WorkflowModuleAssignments> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/workflow-assignments', {
+          method: 'PUT',
+          body: JSON.stringify({
+            assignments,
+            ...assignments,
+          }),
+        });
+        return normalizeWorkflowAssignments(res);
+      }
+      const db = readDb();
+      db.workflowAssignments = normalizeWorkflowAssignments(assignments);
+      writeDb(db);
+      return db.workflowAssignments;
+    },
+  },
+
+  requests: {
+    async list(): Promise<UnifiedRequest[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown[]>('/requests');
+        return Array.isArray(res) ? res.map(normalizeUnifiedRequest) : [];
+      }
+      const db = readDb();
+      return db.requests ?? [];
+    },
+
+    async upload(file: File): Promise<RequestUploadResult> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const session = getStoredSession();
+        const formData = new FormData();
+        formData.append('file', file);
+        const headers: Record<string, string> = {};
+        if (session?.token) {
+          headers.Authorization = `Bearer ${session.token}`;
+        }
+        const controller = new AbortController();
+        const timerId = globalThis.setTimeout(
+          () => controller.abort(),
+          DEFAULT_REQUEST_TIMEOUT_MS * 2
+        );
+        try {
+          const res = await fetch(`${cfg.apiBaseUrl}/requests/upload`, {
+            method: 'POST',
+            headers,
+            body: formData,
+            signal: controller.signal,
+          });
+          globalThis.clearTimeout(timerId);
+          if (!res.ok) {
+            const rawBody = await res.text().catch(() => '');
+            const statusText = res.statusText || getDefaultStatusText(res.status);
+            throw new ApiHttpError({
+              endpoint: '/requests/upload',
+              status: res.status,
+              statusText,
+              message: extractErrorMessage(rawBody, res.status, statusText),
+            });
+          }
+          const data = asRecord(await res.json());
+          return {
+            url: asString(data.url ?? data.fileUrl ?? data.file_url ?? data.path ?? ''),
+            fileName: asString(data.fileName ?? data.file_name ?? file.name),
+            fileType: asString(data.fileType ?? data.file_type ?? file.type) || undefined,
+          };
+        } catch (err) {
+          globalThis.clearTimeout(timerId);
+          throw err;
+        }
+      }
+
+      // Demo Mode: convert to local Data URL
+      return new Promise<RequestUploadResult>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve({
+            url: typeof reader.result === 'string' ? reader.result : '',
+            fileName: file.name,
+            fileType: file.type || undefined,
+          });
+        };
+        reader.onerror = () => reject(new Error('Unable to read selected file.'));
+        reader.readAsDataURL(file);
+      });
+    },
+
+    async create(input: CreateUnifiedRequestInput): Promise<UnifiedRequest> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const payload = input.payload;
+        const res = await restFetch<unknown>('/requests', {
+          method: 'POST',
+          body: JSON.stringify({
+            category: input.category,
+            request_type: input.category,
+            employeeId: input.employeeId,
+            employee_id: input.employeeId,
+            companyId: input.companyId,
+            company_id: input.companyId,
+            sectionId: input.sectionId,
+            section_id: input.sectionId,
+            reason: input.reason.trim(),
+            payload: {
+              ...payload,
+              clock_in_time: payload.clockInTime,
+              clock_out_time: payload.clockOutTime,
+              leave_sub_type: payload.leaveSubType,
+              start_date: payload.startDate,
+              end_date: payload.endDate,
+              amount_aed: payload.amountAED,
+              repayment_months: payload.repaymentMonths,
+              start_month: payload.startMonth,
+              monthly_deduction_aed: payload.monthlyDeductionAED,
+              target_employee_id: payload.targetEmployeeId,
+              current_base_salary_aed: payload.currentBaseSalaryAED,
+              new_base_salary_aed: payload.newBaseSalaryAED,
+              attachment_url: payload.attachmentUrl,
+              attachment_name: payload.attachmentName,
+            },
+          }),
+        });
+        return normalizeUnifiedRequest(res);
+      }
+
+      // Demo Mode creation + workflow resolution
+      const db = readDb();
+      const targetEmp = db.employees.find((e) => e.id === input.employeeId);
+      const nowIso = new Date().toISOString();
+
+      let workflowTemplateId: string | null = null;
+      let workflowTemplateName = 'Default Approval Chain';
+      let resolved: ResolvedWorkflowStep[] = [];
+
+      if (input.category === 'salary_adjustment') {
+        workflowTemplateName = 'HR Manager Direct Approval';
+        resolved = resolveSalaryAdjustmentSteps({
+          employees: db.employees,
+          targetEmployee: targetEmp,
+        });
+      } else {
+        const assignments = normalizeWorkflowAssignments(db.workflowAssignments);
+        const assignedTplId = assignments[input.category as WorkflowModuleKey] ?? null;
+        const tpl = (db.workflowTemplates ?? []).find((t) => t.id === assignedTplId);
+        if (tpl) {
+          workflowTemplateId = tpl.id;
+          workflowTemplateName = tpl.name;
+          resolved = resolveWorkflowStepsForEmployee({
+            steps: tpl.steps,
+            employee: targetEmp,
+            employees: db.employees,
+            projects: db.projects ?? [],
+          });
+        } else {
+          resolved = resolveWorkflowStepsForEmployee({
+            steps: [
+              { stepOrder: 1, type: 'role', role: 'section_manager' },
+              { stepOrder: 2, type: 'role', role: 'hr_admin' },
+              { stepOrder: 3, type: 'role', role: 'main_manager' },
+            ],
+            employee: targetEmp,
+            employees: db.employees,
+            projects: db.projects ?? [],
+          });
+        }
+      }
+
+      const steps: RequestApprovalStep[] = resolved.map((r) => ({
+        stepOrder: r.stepOrder,
+        type: r.type,
+        role: r.role,
+        roleLabel: r.roleLabel,
+        approverId: r.approverId ?? null,
+        approverName: r.approverName,
+        status: r.skipped ? 'skipped' : 'pending',
+        comment: r.skipReason,
+        decidedAt: r.skipped ? nowIso : undefined,
+      }));
+
+      const firstPendingIdx = steps.findIndex((s) => s.status === 'pending');
+
+      const enrichedPayload: RequestPayload = { ...input.payload };
+      if (input.category === 'time_off' && enrichedPayload.startDate && enrichedPayload.endDate) {
+        enrichedPayload.days = calculateInclusiveDays(
+          enrichedPayload.startDate,
+          enrichedPayload.endDate
+        );
+      }
+      if (
+        input.category === 'advance_loan' &&
+        enrichedPayload.amountAED &&
+        enrichedPayload.repaymentMonths
+      ) {
+        enrichedPayload.monthlyDeductionAED = calculateLoanMonthlyDeduction(
+          enrichedPayload.amountAED,
+          enrichedPayload.repaymentMonths
+        );
+      }
+
+      const created: UnifiedRequest = {
+        id: makeId('req'),
+        category: input.category,
+        employeeId: input.employeeId,
+        employeeName: targetEmp?.fullName ?? input.createdByName,
+        companyId: input.companyId,
+        sectionId: input.sectionId,
+        workflowTemplateId,
+        workflowTemplateName,
+        status: firstPendingIdx === -1 ? 'approved' : 'pending',
+        currentStepIndex: firstPendingIdx,
+        steps,
+        auditLog: [
+          {
+            id: makeId('aud'),
+            action: 'submitted',
+            actorId: input.createdById,
+            actorName: input.createdByName,
+            actorRole: input.createdByRole,
+            comment: input.reason.trim(),
+            timestamp: nowIso,
+          },
+        ],
+        reason: input.reason.trim(),
+        payload: enrichedPayload,
+        createdById: input.createdById,
+        createdByName: input.createdByName,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      db.requests = [created, ...(db.requests ?? [])];
+      writeDb(db);
+      return created;
+    },
+
+    async action(input: RequestActionInput): Promise<UnifiedRequest> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(`/requests/${encodeURIComponent(input.id)}/action`, {
+          method: 'POST',
+          body: JSON.stringify({
+            action: input.action,
+            comment: input.comment?.trim() || null,
+            reason: input.comment?.trim() || null,
+          }),
+        });
+        return normalizeUnifiedRequest(res);
+      }
+
+      const db = readDb();
+      const target = (db.requests ?? []).find((r) => r.id === input.id);
+      if (!target) throw new Error('Request not found.');
+
+      const updated = applyUnifiedRequestAction({
+        request: target,
+        action: input.action,
+        actorId: input.actorId,
+        actorName: input.actorName,
+        actorRole: input.actorRole,
+        comment: input.comment,
+      });
+
+      db.requests = (db.requests ?? []).map((r) => (r.id === input.id ? updated : r));
+
+      // Demo Mode automated side-effects upon final approval / bypass
+      if (updated.status === 'approved' || updated.status === 'bypassed') {
+        const emp = db.employees.find((e) => e.id === updated.employeeId);
+        if (
+          updated.category === 'advance_loan' &&
+          emp &&
+          updated.payload.amountAED &&
+          updated.payload.repaymentMonths &&
+          updated.payload.startMonth
+        ) {
+          const monthly = calculateLoanMonthlyDeduction(
+            updated.payload.amountAED,
+            updated.payload.repaymentMonths
+          );
+          const loanCat =
+            (db.payrollCategories ?? []).find(
+              (c) =>
+                c.type === 'deduction_in_payroll' &&
+                c.name.toLowerCase().includes('advance')
+            ) ?? (db.payrollCategories ?? []).find((c) => c.type === 'deduction_in_payroll');
+
+          const newEntry: PayrollEntry = {
+            id: makeId('pe'),
+            employeeId: emp.id,
+            companyId: emp.primaryCompanyId,
+            type: 'deduction_in_payroll',
+            categoryId: loanCat?.id ?? 'cat-ded-in-advance',
+            categoryName: loanCat?.name ?? 'Salary Advance Repayment',
+            amountAED: monthly,
+            isPermanent: false,
+            effectiveFrom: updated.payload.startMonth,
+            effectiveTo: computeTemporaryEndMonth(
+              updated.payload.startMonth,
+              updated.payload.repaymentMonths
+            ),
+            durationMonths: updated.payload.repaymentMonths,
+            targetBucket: 'main_salary',
+            reason: `Approved Loan/Advance (${updated.id}): AED ${updated.payload.amountAED} over ${updated.payload.repaymentMonths} mo — ${updated.reason}`,
+            createdBy: input.actorName,
+            createdByRole: input.actorRole,
+            createdAt: new Date().toISOString(),
+          };
+          db.payrollEntries = [newEntry, ...(db.payrollEntries ?? [])];
+        } else if (
+          updated.category === 'salary_adjustment' &&
+          emp &&
+          updated.payload.newBaseSalaryAED !== undefined &&
+          updated.payload.newBaseSalaryAED > 0
+        ) {
+          db.employees = db.employees.map((e) =>
+            e.id === emp.id
+              ? {
+                  ...e,
+                  salary: {
+                    ...e.salary,
+                    baseSalary: Number(updated.payload.newBaseSalaryAED),
+                  },
+                }
+              : e
+          );
+        } else if (
+          updated.category === 'time_off' &&
+          emp &&
+          updated.payload.startDate &&
+          updated.payload.endDate
+        ) {
+          const sub = updated.payload.leaveSubType ?? 'annual';
+          const leaveTypeMap: Record<TimeOffSubType, LeaveType> = {
+            annual: LeaveType.Annual,
+            sick: LeaveType.Sick,
+            emergency: LeaveType.Emergency,
+            unpaid: LeaveType.Unpaid,
+          };
+          const days =
+            updated.payload.days ??
+            calculateInclusiveDays(updated.payload.startDate, updated.payload.endDate);
+          const leaveType = leaveTypeMap[sub];
+          db.employees = db.employees.map((e) =>
+            e.id === emp.id
+              ? { ...e, leaveBalance: adjustLeaveBalance(e.leaveBalance, leaveType, days) }
+              : e
+          );
+        } else if (
+          updated.category === 'custom_clock' &&
+          emp &&
+          updated.payload.date &&
+          updated.payload.clockInTime
+        ) {
+          const clockInIso = `${updated.payload.date}T${updated.payload.clockInTime}:00`;
+          const clockOutIso = updated.payload.clockOutTime
+            ? `${updated.payload.date}T${updated.payload.clockOutTime}:00`
+            : null;
+          const existingLog = db.attendance.find(
+            (a) => a.employeeId === emp.id && a.date === updated.payload.date
+          );
+          if (existingLog) {
+            db.attendance = db.attendance.map((a) =>
+              a.id === existingLog.id
+                ? {
+                    ...a,
+                    clockInTime: clockInIso,
+                    clockOutTime: clockOutIso,
+                    modifiedBy: `${input.actorName} (Request ${updated.id})`,
+                  }
+                : a
+            );
+          } else {
+            db.attendance = [
+              {
+                id: makeId('att'),
+                employeeId: emp.id,
+                companyId: emp.primaryCompanyId,
+                date: updated.payload.date,
+                clockInTime: clockInIso,
+                clockOutTime: clockOutIso,
+                zoneId: 'custom-request',
+                zoneName: 'Approved Custom Clock-In',
+                clockInLat: 25.1885,
+                clockInLng: 55.2632,
+                accuracyMeters: 0,
+                punchSource: 'PC Web',
+                isLate: false,
+                lateMinutes: 0,
+                latenessPenaltyAED: 0,
+                latenessExcused: false,
+                modifiedBy: `${input.actorName} (Request ${updated.id})`,
+                notes: updated.reason,
+              },
+              ...db.attendance,
+            ];
+          }
+        }
+      }
+
+      writeDb(db);
+      return updated;
     },
   },
 };

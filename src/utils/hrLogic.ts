@@ -39,10 +39,19 @@ import {
   ProAssignment,
   Project,
   PunchSource,
+  RequestApprovalStep,
+  RequestAuditEntry,
+  RequestCategory,
   ResolvedSalaryRelease,
+  ResolvedWorkflowStep,
   SalaryReleaseSchedule,
+  UnifiedRequest,
   UserRole,
   VisibilityRule,
+  WorkflowModuleAssignments,
+  WorkflowModuleKey,
+  WorkflowStepRoleKey,
+  WorkflowTemplateStep,
   WorkType,
 } from '../types/hr';
 
@@ -152,6 +161,9 @@ export type StartupEndpointKey =
   | 'attendanceAudit'
   | 'leaves'
   | 'workflows'
+  | 'workflowTemplates'
+  | 'workflowAssignments'
+  | 'requests'
   | 'payrollAdjustments'
   | 'payrollCategories'
   | 'payrollEntries'
@@ -182,6 +194,9 @@ export const ALL_STARTUP_ENDPOINTS: StartupEndpointSpec[] = [
   { key: 'attendanceAudit', path: '/attendance/audit' },
   { key: 'leaves', path: '/leaves' },
   { key: 'workflows', path: '/approval-workflows' },
+  { key: 'workflowTemplates', path: '/workflow-templates' },
+  { key: 'workflowAssignments', path: '/workflow-assignments' },
+  { key: 'requests', path: '/requests' },
   { key: 'payrollAdjustments', path: '/payroll/deductions' },
   { key: 'payrollCategories', path: '/payroll/categories' },
   { key: 'payrollEntries', path: '/payroll/entries' },
@@ -214,6 +229,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'employees',
       'attendance',
       'leaves',
+      'workflowTemplates',
+      'workflowAssignments',
+      'requests',
       'payrollAdjustments',
       'payrollCategories',
       'payrollEntries',
@@ -234,6 +252,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'employees',
       'proAssignments',
       'documents',
+      'workflowTemplates',
+      'workflowAssignments',
+      'requests',
       'settings',
     ]);
   } else if (normalized === UserRole.SectionManager || normalized === UserRole.SectionCoManager) {
@@ -251,6 +272,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'attendance',
       'attendanceAudit',
       'leaves',
+      'workflowTemplates',
+      'workflowAssignments',
+      'requests',
       'payrollAdjustments',
       'payrollCategories',
       'payrollEntries',
@@ -274,6 +298,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'documents',
       'attendance',
       'leaves',
+      'workflowTemplates',
+      'workflowAssignments',
+      'requests',
       'payrollAdjustments',
       'payrollCategories',
       'payrollEntries',
@@ -2627,5 +2654,435 @@ export function isSectionHidden(
   if (!hiddenSections || hiddenSections.length === 0) return false;
   return hiddenSections.includes(section);
 }
+
+/* ============================================================================
+ * Phase 2 (Yaldi HR v4.0) — Named Approval Workflows & Unified Requests
+ * ========================================================================== */
+
+export const ALL_WORKFLOW_STEP_ROLES: WorkflowStepRoleKey[] = [
+  'section_manager',
+  'project_manager',
+  'supervisor',
+  'hr_admin',
+  'hr_manager',
+  'main_manager',
+];
+
+export const ALL_WORKFLOW_MODULES: WorkflowModuleKey[] = [
+  'custom_clock',
+  'time_off',
+  'advance_loan',
+  'general',
+  'payroll',
+];
+
+export const ALL_REQUEST_CATEGORIES: RequestCategory[] = [
+  'custom_clock',
+  'time_off',
+  'advance_loan',
+  'salary_adjustment',
+  'general',
+];
+
+export const DEFAULT_WORKFLOW_ASSIGNMENTS: WorkflowModuleAssignments = {
+  custom_clock: null,
+  time_off: null,
+  advance_loan: null,
+  general: null,
+  payroll: null,
+};
+
+export function isBypassEligibleRole(role: UserRole | string): boolean {
+  const normalized = normalizeUserRole(role);
+  return normalized === UserRole.HRManager || normalized === UserRole.MainManager;
+}
+
+export function calculateLoanMonthlyDeduction(
+  amountAED: number,
+  repaymentMonths: number
+): number {
+  const amt = Number(amountAED);
+  const months = Math.max(1, Math.floor(Number(repaymentMonths) || 1));
+  if (!Number.isFinite(amt) || amt <= 0) return 0;
+  return Number((amt / months).toFixed(2));
+}
+
+const DEFAULT_STEP_ROLE_LABELS: Record<WorkflowStepRoleKey, string> = {
+  section_manager: 'Section Manager',
+  project_manager: 'Project Manager',
+  supervisor: 'Supervisor',
+  hr_admin: 'HR Admin',
+  hr_manager: 'HR Manager',
+  main_manager: 'Main Manager',
+};
+
+/**
+ * Resolves a Named Workflow's ordered steps into real approver names & IDs
+ * for a specific employee using section managers, project managers, project
+ * supervisors, HR admins/managers, main managers, or specific employees.
+ */
+export function resolveWorkflowStepsForEmployee(params: {
+  steps: WorkflowTemplateStep[];
+  employee: Employee | null | undefined;
+  employees: Employee[];
+  projects: Project[];
+}): ResolvedWorkflowStep[] {
+  const { steps, employee, employees, projects } = params;
+  const activeEmployees = employees.filter((e) => e.active);
+  const empById = new Map(employees.map((e) => [e.id, e]));
+
+  const findRoleEmployee = (roleKey: WorkflowStepRoleKey): Employee | undefined => {
+    if (roleKey === 'section_manager') {
+      if (!employee) return activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.SectionManager);
+      return (
+        activeEmployees.find(
+          (e) =>
+            normalizeUserRole(e.role) === UserRole.SectionManager &&
+            (e.managedSectionIds.includes(employee.sectionId) || e.sectionId === employee.sectionId)
+        ) ?? activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.SectionManager)
+      );
+    }
+
+    if (roleKey === 'project_manager') {
+      const empProjects = employee?.projectIds?.length
+        ? projects.filter((p) => employee.projectIds!.includes(p.id) && p.active)
+        : projects.filter((p) => p.active && (!employee || p.companyId === employee.primaryCompanyId));
+      for (const proj of empProjects) {
+        if (proj.managerId) {
+          const mgr = empById.get(proj.managerId);
+          if (mgr && mgr.active) return mgr;
+        }
+      }
+      return undefined;
+    }
+
+    if (roleKey === 'supervisor') {
+      const empProjects = employee?.projectIds?.length
+        ? projects.filter((p) => employee.projectIds!.includes(p.id) && p.active)
+        : projects.filter((p) => p.active && (!employee || p.companyId === employee.primaryCompanyId));
+      for (const proj of empProjects) {
+        for (const supId of proj.supervisorIds ?? []) {
+          const sup = empById.get(supId);
+          if (sup && sup.active && sup.id !== employee?.id) return sup;
+        }
+      }
+      return undefined;
+    }
+
+    if (roleKey === 'hr_admin') {
+      return (
+        activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.HRAdmin) ??
+        activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.HRManager)
+      );
+    }
+
+    if (roleKey === 'hr_manager') {
+      return (
+        activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.HRManager) ??
+        activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.HRAdmin)
+      );
+    }
+
+    if (roleKey === 'main_manager') {
+      return activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.MainManager);
+    }
+
+    return undefined;
+  };
+
+  return steps.map((step, index) => {
+    const stepOrder = index + 1;
+    if (step.type === 'employee') {
+      const target = step.employeeId ? empById.get(step.employeeId) : undefined;
+      const isSelf = Boolean(employee && target && target.id === employee.id);
+      return {
+        stepOrder,
+        type: 'employee',
+        roleLabel: target?.jobTitle || 'Specific Employee',
+        approverId: target?.id ?? null,
+        approverName: target?.fullName ?? 'Unassigned',
+        skipped: isSelf,
+        skipReason: isSelf ? 'Auto-skipped (applicant is this approver)' : undefined,
+      };
+    }
+
+    const roleKey: WorkflowStepRoleKey = step.role ?? 'section_manager';
+    const matched = findRoleEmployee(roleKey);
+    const isSelf = Boolean(employee && matched && matched.id === employee.id);
+    return {
+      stepOrder,
+      type: 'role',
+      role: roleKey,
+      roleLabel: DEFAULT_STEP_ROLE_LABELS[roleKey] ?? roleKey,
+      approverId: matched?.id ?? null,
+      approverName: matched?.fullName ?? 'Unassigned',
+      skipped: isSelf,
+      skipReason: isSelf ? 'Auto-skipped (applicant holds this role)' : undefined,
+    };
+  });
+}
+
+/**
+ * Salary Adjustment requests ALWAYS require HR Manager approval only.
+ */
+export function resolveSalaryAdjustmentSteps(params: {
+  employees: Employee[];
+  targetEmployee?: Employee | null;
+}): ResolvedWorkflowStep[] {
+  const { employees, targetEmployee } = params;
+  const activeEmployees = employees.filter((e) => e.active);
+  const hrManager =
+    activeEmployees.find(
+      (e) =>
+        normalizeUserRole(e.role) === UserRole.HRManager &&
+        e.id !== targetEmployee?.id
+    ) ??
+    activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.HRManager) ??
+    activeEmployees.find((e) => normalizeUserRole(e.role) === UserRole.MainManager);
+
+  return [
+    {
+      stepOrder: 1,
+      type: 'role',
+      role: 'hr_manager',
+      roleLabel: 'HR Manager',
+      approverId: hrManager?.id ?? null,
+      approverName: hrManager?.fullName ?? 'Unassigned',
+    },
+  ];
+}
+
+/**
+ * Evaluates whether the logged-in user can Approve/Reject or Bypass & Approve a UnifiedRequest.
+ * Enforces strict No Self-Approval and HR Manager / Main Manager exclusive bypass.
+ */
+export function canActOnUnifiedRequest(params: {
+  request: UnifiedRequest;
+  currentUser: Employee;
+  activeRole: UserRole | string;
+  projects?: Project[];
+}): {
+  isSelf: boolean;
+  canApproveReject: boolean;
+  canBypass: boolean;
+  activeStep: RequestApprovalStep | null;
+} {
+  const { request, currentUser, projects = [] } = params;
+  const role = normalizeUserRole(params.activeRole);
+
+  // Strict No Self-Approval: never allow approving/bypassing own request
+  const isSelf =
+    request.employeeId === currentUser.id ||
+    (request.category !== 'salary_adjustment' && request.createdById === currentUser.id);
+
+  const activeStep =
+    request.status === 'pending' &&
+    request.currentStepIndex >= 0 &&
+    request.currentStepIndex < request.steps.length
+      ? request.steps[request.currentStepIndex]
+      : null;
+
+  if (request.status !== 'pending' || isSelf) {
+    return { isSelf, canApproveReject: false, canBypass: false, activeStep };
+  }
+
+  const canBypass = isBypassEligibleRole(role);
+
+  if (!activeStep || activeStep.status !== 'pending') {
+    return { isSelf, canApproveReject: false, canBypass, activeStep };
+  }
+
+  // Salary adjustments require HR Manager approval strictly (or Main Manager bypass)
+  if (request.category === 'salary_adjustment') {
+    const isHrMgr = role === UserRole.HRManager;
+    return {
+      isSelf,
+      canApproveReject: isHrMgr,
+      canBypass,
+      activeStep,
+    };
+  }
+
+  // Specific Employee step
+  if (activeStep.type === 'employee') {
+    return {
+      isSelf,
+      canApproveReject: activeStep.approverId === currentUser.id,
+      canBypass,
+      activeStep,
+    };
+  }
+
+  // If step resolved to a concrete approverId that matches currentUser
+  if (activeStep.approverId && activeStep.approverId === currentUser.id) {
+    return { isSelf, canApproveReject: true, canBypass, activeStep };
+  }
+
+  // Role-based matching
+  const stepRole = activeStep.role;
+  let roleMatches = false;
+  if (stepRole === 'section_manager') {
+    const managed =
+      currentUser.managedSectionIds.length > 0
+        ? currentUser.managedSectionIds
+        : [currentUser.sectionId];
+    roleMatches = role === UserRole.SectionManager && managed.includes(request.sectionId);
+  } else if (stepRole === 'project_manager') {
+    roleMatches = projects.some(
+      (p) => p.active && p.managerId === currentUser.id
+    );
+  } else if (stepRole === 'supervisor') {
+    roleMatches = projects.some(
+      (p) => p.active && (p.supervisorIds ?? []).includes(currentUser.id)
+    );
+  } else if (stepRole === 'hr_admin') {
+    roleMatches = role === UserRole.HRAdmin || role === UserRole.HRManager;
+  } else if (stepRole === 'hr_manager') {
+    roleMatches = role === UserRole.HRManager;
+  } else if (stepRole === 'main_manager') {
+    roleMatches = role === UserRole.MainManager;
+  }
+
+  return { isSelf, canApproveReject: roleMatches, canBypass, activeStep };
+}
+
+/**
+ * Returns the requests belonging to the "Pending My Approval" tab and live badge count:
+ * - For HR Manager & Main Manager: all pending requests (excluding their own).
+ * - For all other roles: pending requests where they are the active step's approver (excluding their own).
+ */
+export function getPendingRequestsForApprover(params: {
+  requests: UnifiedRequest[];
+  currentUser: Employee;
+  activeRole: UserRole | string;
+  projects?: Project[];
+}): UnifiedRequest[] {
+  const { requests, currentUser, activeRole, projects = [] } = params;
+  return requests.filter((req) => {
+    if (req.status !== 'pending') return false;
+    const perm = canActOnUnifiedRequest({
+      request: req,
+      currentUser,
+      activeRole,
+      projects,
+    });
+    return !perm.isSelf && (perm.canApproveReject || perm.canBypass);
+  });
+}
+
+/**
+ * Pure state-transition helper for Approve / Reject / Bypass actions on a UnifiedRequest.
+ */
+export function applyUnifiedRequestAction(params: {
+  request: UnifiedRequest;
+  action: 'approve' | 'reject' | 'bypass';
+  actorId: string;
+  actorName: string;
+  actorRole: UserRole;
+  comment?: string;
+  nowIso?: string;
+}): UnifiedRequest {
+  const {
+    request,
+    action,
+    actorId,
+    actorName,
+    actorRole,
+    comment,
+    nowIso = new Date().toISOString(),
+  } = params;
+
+  if (request.status !== 'pending') return request;
+  const trimmedComment = comment?.trim() || undefined;
+  const auditId = `aud-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  if (action === 'bypass') {
+    const nextSteps: RequestApprovalStep[] = request.steps.map((s, idx) => {
+      if (s.status === 'pending' || idx >= request.currentStepIndex) {
+        return {
+          ...s,
+          status: 'bypassed',
+          actorId,
+          actorName,
+          actorRole,
+          comment: trimmedComment,
+          decidedAt: nowIso,
+        };
+      }
+      return s;
+    });
+
+    const auditEntry: RequestAuditEntry = {
+      id: auditId,
+      action: 'bypassed',
+      actorId,
+      actorName,
+      actorRole,
+      stepOrder: request.steps[request.currentStepIndex]?.stepOrder,
+      comment: trimmedComment,
+      timestamp: nowIso,
+    };
+
+    return {
+      ...request,
+      status: 'bypassed',
+      currentStepIndex: -1,
+      steps: nextSteps,
+      auditLog: [...request.auditLog, auditEntry],
+      updatedAt: nowIso,
+    };
+  }
+
+  const idx = request.currentStepIndex;
+  if (idx < 0 || idx >= request.steps.length) return request;
+
+  const stepOrder = request.steps[idx].stepOrder;
+  const nextSteps: RequestApprovalStep[] = request.steps.map((s, i) =>
+    i === idx
+      ? {
+          ...s,
+          status: action === 'approve' ? 'approved' : 'rejected',
+          actorId,
+          actorName,
+          actorRole,
+          comment: trimmedComment,
+          decidedAt: nowIso,
+        }
+      : s
+  );
+
+  const auditEntry: RequestAuditEntry = {
+    id: auditId,
+    action: action === 'approve' ? 'approved' : 'rejected',
+    actorId,
+    actorName,
+    actorRole,
+    stepOrder,
+    comment: trimmedComment,
+    timestamp: nowIso,
+  };
+
+  if (action === 'reject') {
+    return {
+      ...request,
+      status: 'rejected',
+      currentStepIndex: -1,
+      steps: nextSteps,
+      auditLog: [...request.auditLog, auditEntry],
+      updatedAt: nowIso,
+    };
+  }
+
+  const nextPendingIdx = nextSteps.findIndex((s, i) => i > idx && s.status === 'pending');
+  return {
+    ...request,
+    status: nextPendingIdx === -1 ? 'approved' : 'pending',
+    currentStepIndex: nextPendingIdx,
+    steps: nextSteps,
+    auditLog: [...request.auditLog, auditEntry],
+    updatedAt: nowIso,
+  };
+}
+
 
 

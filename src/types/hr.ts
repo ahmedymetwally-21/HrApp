@@ -76,6 +76,171 @@ export interface EmployeeOrgUpdatePayload {
   projectIds: string[];
 }
 
+export type WorkflowStepRoleKey =
+  | 'section_manager'
+  | 'project_manager'
+  | 'supervisor'
+  | 'hr_admin'
+  | 'hr_manager'
+  | 'main_manager';
+
+export type WorkflowStepType = 'role' | 'employee';
+
+export interface WorkflowTemplateStep {
+  stepOrder: number;
+  type: WorkflowStepType;
+  role?: WorkflowStepRoleKey;
+  employeeId?: string;
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  steps: WorkflowTemplateStep[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type WorkflowModuleKey =
+  | 'custom_clock'
+  | 'time_off'
+  | 'advance_loan'
+  | 'general'
+  | 'payroll';
+
+export type WorkflowModuleAssignments = Record<WorkflowModuleKey, string | null>;
+
+export interface ResolvedWorkflowStep {
+  stepOrder: number;
+  type: WorkflowStepType;
+  role?: WorkflowStepRoleKey;
+  roleLabel: string;
+  approverId?: string | null;
+  approverName: string;
+  skipped?: boolean;
+  skipReason?: string;
+}
+
+export type RequestCategory =
+  | 'custom_clock'
+  | 'time_off'
+  | 'advance_loan'
+  | 'salary_adjustment'
+  | 'general';
+
+export type RequestStatus = 'pending' | 'approved' | 'rejected' | 'bypassed';
+
+export type RequestStepStatus =
+  | 'pending'
+  | 'approved'
+  | 'rejected'
+  | 'bypassed'
+  | 'skipped';
+
+export interface RequestApprovalStep {
+  stepOrder: number;
+  type: WorkflowStepType;
+  role?: WorkflowStepRoleKey;
+  roleLabel?: string;
+  approverId?: string | null;
+  approverName?: string;
+  status: RequestStepStatus;
+  actorId?: string;
+  actorName?: string;
+  actorRole?: UserRole;
+  comment?: string;
+  decidedAt?: string;
+}
+
+export interface RequestAuditEntry {
+  id: string;
+  action: 'submitted' | 'approved' | 'rejected' | 'bypassed';
+  actorId?: string;
+  actorName: string;
+  actorRole?: UserRole;
+  stepOrder?: number;
+  comment?: string;
+  timestamp: string;
+}
+
+export type TimeOffSubType = 'annual' | 'sick' | 'emergency' | 'unpaid';
+
+export interface RequestPayload {
+  // custom_clock
+  date?: string;
+  clockInTime?: string; // HH:mm
+  clockOutTime?: string; // HH:mm
+  // time_off
+  leaveSubType?: TimeOffSubType;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  // advance_loan
+  amountAED?: number;
+  repaymentMonths?: number;
+  startMonth?: string; // YYYY-MM
+  monthlyDeductionAED?: number;
+  // salary_adjustment
+  targetEmployeeId?: string;
+  targetEmployeeName?: string;
+  currentBaseSalaryAED?: number;
+  newBaseSalaryAED?: number;
+  // general
+  subject?: string;
+  message?: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+}
+
+export interface UnifiedRequest {
+  id: string;
+  category: RequestCategory;
+  employeeId: string;
+  employeeName?: string;
+  companyId: string;
+  sectionId: string;
+  workflowTemplateId?: string | null;
+  workflowTemplateName?: string;
+  status: RequestStatus;
+  currentStepIndex: number;
+  steps: RequestApprovalStep[];
+  auditLog: RequestAuditEntry[];
+  reason: string;
+  payload: RequestPayload;
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface CreateUnifiedRequestInput {
+  category: RequestCategory;
+  employeeId: string;
+  companyId: string;
+  sectionId: string;
+  reason: string;
+  payload: RequestPayload;
+  createdById: string;
+  createdByName: string;
+  createdByRole: UserRole;
+}
+
+export interface RequestActionInput {
+  id: string;
+  action: 'approve' | 'reject' | 'bypass';
+  comment?: string;
+  actorId: string;
+  actorName: string;
+  actorRole: UserRole;
+}
+
+export interface RequestUploadResult {
+  url: string;
+  fileName: string;
+  fileType?: string;
+}
+
 export enum ClockInPolicyMode {
   StrictMobileGPS = 'strict_mobile_gps',
   AllowOfficePC = 'allow_office_pc',
@@ -612,6 +777,9 @@ export interface HRDatabase {
   attendanceAudit: AttendanceAuditEntry[];
   leaves: LeaveRequest[];
   workflows: ApprovalWorkflow[];
+  workflowTemplates: WorkflowTemplate[];
+  workflowAssignments: WorkflowModuleAssignments;
+  requests: UnifiedRequest[];
   payrollAdjustments: PayrollAdjustment[];
   payrollCategories: PayrollCategoryItem[];
   payrollEntries: PayrollEntry[];

@@ -11,9 +11,14 @@ import {
   PatchPaymentMethod,
   PatchReleaseBucket,
   PayrollEntryType,
+  RequestCategory,
+  RequestStatus,
   SalaryReleaseStatus,
+  TimeOffSubType,
   UserRole,
   VisibilityRuleTargetType,
+  WorkflowModuleKey,
+  WorkflowStepRoleKey,
   WorkType,
 } from '../types/hr';
 import { normalizeUserRole } from '../utils/hrLogic';
@@ -471,6 +476,102 @@ const EN: Dict = {
   assignedProjects: 'Assigned Projects',
   noGroupsAssigned: 'No groups assigned',
   noProjectsAssigned: 'No projects assigned',
+  // Phase 2 (v4.0) — Named Approval Workflows & Unified Requests
+  navApprovalsRequests: 'Approvals & Requests',
+  navSettingsWorkflowTemplates: 'Named Workflows',
+  namedWorkflowsTitle: 'Named Approval Workflows',
+  namedWorkflowsSubtitle: 'Create reusable multi-step approval chains and assign them to request categories.',
+  addWorkflowTemplate: 'New Workflow',
+  editWorkflowTemplate: 'Edit Workflow',
+  workflowName: 'Workflow Name',
+  workflowDescription: 'Description',
+  workflowSteps: 'Approval Steps',
+  addWorkflowStep: 'Add Step',
+  stepTypeRole: 'By Role',
+  stepTypeEmployee: 'Specific Employee',
+  stepRoleSectionManager: 'Section Manager',
+  stepRoleProjectManager: 'Project Manager',
+  stepRoleSupervisor: 'Supervisor',
+  stepRoleHrAdmin: 'HR Admin',
+  stepRoleHrManager: 'HR Manager',
+  stepRoleMainManager: 'Main Manager',
+  livePreviewTitle: 'Live Example Preview by Name',
+  livePreviewSubtitle: 'Pick any employee to see the exact resolved approval chain.',
+  previewForEmployee: 'Example for',
+  unassignedRole: 'Unassigned',
+  moduleAssignmentsTitle: 'Module Workflow Assignments',
+  moduleAssignmentsSubtitle: 'Assign a saved Named Workflow to each request category.',
+  saveAssignments: 'Save Assignments',
+  assignmentsSaved: 'Module workflow assignments saved.',
+  noWorkflowTemplatesYet: 'No named approval workflows created yet.',
+  selectWorkflowPlaceholder: 'Select workflow...',
+  approvalsRequestsTitle: 'Approvals & Requests',
+  approvalsRequestsSubtitle: 'Submit categorized requests and track multi-step approvals with live audit logs.',
+  newRequestBtn: 'New Request',
+  tabPendingMyApproval: 'Pending My Approval',
+  tabMyAllRequests: 'My / All Requests',
+  tabMyRequestsOnly: 'My Requests',
+  tabAllRequests: 'All Requests',
+  filterAllCategories: 'All Categories',
+  filterAllStatuses: 'All Statuses',
+  reqCatCustomClock: 'Custom Clock-In / Clock-Out',
+  reqCatTimeOff: 'Time-Off',
+  reqCatAdvanceLoan: 'Advance Salary / Loan',
+  reqCatSalaryAdjustment: 'Salary Adjustment',
+  reqCatGeneral: 'General Request',
+  reqModulePayroll: 'Payroll',
+  reqStatusPending: 'Pending',
+  reqStatusApproved: 'Approved',
+  reqStatusRejected: 'Rejected',
+  reqStatusBypassed: 'Bypassed',
+  reqStatusSkipped: 'Skipped',
+  clockDate: 'Date',
+  exactClockIn: 'Clock-In Time',
+  exactClockOut: 'Clock-Out Time',
+  leaveSubType: 'Leave Type',
+  subTypeAnnual: 'Annual Leave',
+  subTypeSick: 'Sick Leave',
+  subTypeEmergency: 'Emergency Leave',
+  subTypeUnpaid: 'Unpaid Leave',
+  loanAmountAed: 'Loan / Advance Amount (AED)',
+  repaymentMonths: 'Repayment Months',
+  repaymentStartMonth: 'Start Month',
+  loanDeductionPreviewPrefix: 'Will deduct',
+  loanDeductionPreviewSuffix: 'AED/month in Payroll Deductions',
+  selectEmployee: 'Select Employee',
+  currentBaseSalary: 'Current Base Salary',
+  newBaseSalaryAed: 'New Base Salary (AED)',
+  salaryAdjustmentPolicyNote: 'Requires HR Manager approval only.',
+  requestSubject: 'Subject',
+  requestMessage: 'Message',
+  fileAttachment: 'File Attachment',
+  uploadAttachment: 'Upload File',
+  uploadingFile: 'Uploading...',
+  removeAttachment: 'Remove',
+  approvalChainPreview: 'Approval Chain Preview',
+  submitRequest: 'Submit Request',
+  approveRequest: 'Approve',
+  rejectRequest: 'Reject',
+  bypassAndApprove: 'Bypass & Approve',
+  optionalCommentPlaceholder: 'Optional comment or note...',
+  bypassReasonPlaceholder: 'Optional bypass reason...',
+  approvalTimelineTitle: 'Approval Timeline',
+  auditLogTitle: 'Audit Log',
+  pendingReviewerBadge: 'Pending Reviewer',
+  noRequestsFound: 'No requests match your current filters.',
+  backToRequests: 'Back to Approvals & Requests',
+  viewDetails: 'View Details',
+  submittedBy: 'Submitted by',
+  stepLabel: 'Step',
+  actionSubmitted: 'Submitted request',
+  actionApproved: 'Approved step',
+  actionRejected: 'Rejected request',
+  actionBypassed: 'Bypassed & approved',
+  requestSubmittedToast: 'Request submitted into approval workflow.',
+  requestApprovedToast: 'Request step approved.',
+  requestRejectedToast: 'Request rejected.',
+  requestBypassedToast: 'Request bypassed and approved.',
+  assignmentsSavedToast: 'Module workflow assignments saved.',
 };
 
 const AR: Dict = {
@@ -911,6 +1012,102 @@ const AR: Dict = {
   assignedProjects: 'المشاريع المعيّنة',
   noGroupsAssigned: 'لا توجد مجموعات معيّنة',
   noProjectsAssigned: 'لا توجد مشاريع معيّنة',
+  // Phase 2 (v4.0) — Named Approval Workflows & Unified Requests
+  navApprovalsRequests: 'الموافقات والطلبات',
+  navSettingsWorkflowTemplates: 'مسارات الموافقة المسماة',
+  namedWorkflowsTitle: 'مسارات الموافقة المسماة',
+  namedWorkflowsSubtitle: 'أنشئ سلاسل موافقة متعددة الخطوات وربطها بفئات الطلبات.',
+  addWorkflowTemplate: 'مسار موافقة جديد',
+  editWorkflowTemplate: 'تعديل مسار الموافقة',
+  workflowName: 'اسم المسار',
+  workflowDescription: 'الوصف',
+  workflowSteps: 'خطوات الموافقة',
+  addWorkflowStep: 'إضافة خطوة',
+  stepTypeRole: 'حسب الدور الوظيفي',
+  stepTypeEmployee: 'موظف محدد',
+  stepRoleSectionManager: 'مدير القسم',
+  stepRoleProjectManager: 'مدير المشروع',
+  stepRoleSupervisor: 'المشرف',
+  stepRoleHrAdmin: 'مسؤول الموارد البشرية',
+  stepRoleHrManager: 'مدير الموارد البشرية',
+  stepRoleMainManager: 'المدير العام',
+  livePreviewTitle: 'معاينة فورية بالأسماء الحقيقية',
+  livePreviewSubtitle: 'اختر أي موظف لمعاينة سلسلة الموافقة الفعلية بالأسماء.',
+  previewForEmployee: 'مثال للموظف',
+  unassignedRole: 'غير معيّن',
+  moduleAssignmentsTitle: 'ربط المسارات بفئات الطلبات',
+  moduleAssignmentsSubtitle: 'اختر مسار الموافقة المسمى لكل فئة طلب.',
+  saveAssignments: 'حفظ التعيينات',
+  assignmentsSaved: 'تم حفظ تعيينات مسارات الموافقة.',
+  noWorkflowTemplatesYet: 'لم يتم إنشاء مسارات موافقة مسماة بعد.',
+  selectWorkflowPlaceholder: 'اختر مساراً...',
+  approvalsRequestsTitle: 'الموافقات والطلبات',
+  approvalsRequestsSubtitle: 'قدّم الطلبات المصنّفة وتابع الموافقات متعددة الخطوات وسجل التدقيق.',
+  newRequestBtn: 'طلب جديد',
+  tabPendingMyApproval: 'بانتظار موافقتي',
+  tabMyAllRequests: 'طلباتي / جميع الطلبات',
+  tabMyRequestsOnly: 'طلباتي',
+  tabAllRequests: 'جميع الطلبات',
+  filterAllCategories: 'جميع الفئات',
+  filterAllStatuses: 'جميع الحالات',
+  reqCatCustomClock: 'تعديل وقت الحضور والانصراف',
+  reqCatTimeOff: 'إجازة',
+  reqCatAdvanceLoan: 'سلفة / قرض راتب',
+  reqCatSalaryAdjustment: 'تعديل الراتب',
+  reqCatGeneral: 'طلب عام',
+  reqModulePayroll: 'الرواتب',
+  reqStatusPending: 'قيد الانتظار',
+  reqStatusApproved: 'مقبول',
+  reqStatusRejected: 'مرفوض',
+  reqStatusBypassed: 'موافقة بالتجاوز',
+  reqStatusSkipped: 'تم التخطي',
+  clockDate: 'التاريخ',
+  exactClockIn: 'وقت الحضور',
+  exactClockOut: 'وقت الانصراف',
+  leaveSubType: 'نوع الإجازة',
+  subTypeAnnual: 'إجازة سنوية',
+  subTypeSick: 'إجازة مرضية',
+  subTypeEmergency: 'إجازة طارئة',
+  subTypeUnpaid: 'إجازة بدون راتب',
+  loanAmountAed: 'مبلغ السلفة / القرض (درهم)',
+  repaymentMonths: 'أشهر السداد',
+  repaymentStartMonth: 'شهر البدء',
+  loanDeductionPreviewPrefix: 'سيتم خصم',
+  loanDeductionPreviewSuffix: 'درهم/شهرياً في خصومات الرواتب',
+  selectEmployee: 'اختر الموظف',
+  currentBaseSalary: 'الراتب الأساسي الحالي',
+  newBaseSalaryAed: 'الراتب الأساسي الجديد (درهم)',
+  salaryAdjustmentPolicyNote: 'يتطلب موافقة مدير الموارد البشرية فقط.',
+  requestSubject: 'الموضوع',
+  requestMessage: 'الرسالة',
+  fileAttachment: 'مرفق ملف',
+  uploadAttachment: 'رفع ملف',
+  uploadingFile: 'جاري الرفع...',
+  removeAttachment: 'إزالة',
+  approvalChainPreview: 'معاينة سلسلة الموافقة',
+  submitRequest: 'إرسال الطلب',
+  approveRequest: 'موافقة',
+  rejectRequest: 'رفض',
+  bypassAndApprove: 'تجاوز وموافقة',
+  optionalCommentPlaceholder: 'ملاحظة أو تعليق اختياري...',
+  bypassReasonPlaceholder: 'سبب التجاوز (اختياري)...',
+  approvalTimelineTitle: 'الجدول الزمني للموافقات',
+  auditLogTitle: 'سجل التدقيق',
+  pendingReviewerBadge: 'بانتظار المراجع',
+  noRequestsFound: 'لا توجد طلبات مطابقة للفلاتر الحالية.',
+  backToRequests: 'العودة إلى الموافقات والطلبات',
+  viewDetails: 'عرض التفاصيل',
+  submittedBy: 'مقدّم من',
+  stepLabel: 'خطوة',
+  actionSubmitted: 'تم تقديم الطلب',
+  actionApproved: 'تمت الموافقة على الخطوة',
+  actionRejected: 'تم رفض الطلب',
+  actionBypassed: 'تم التجاوز والموافقة',
+  requestSubmittedToast: 'تم إرسال الطلب إلى سلسلة الموافقة.',
+  requestApprovedToast: 'تمت الموافقة على خطوة الطلب.',
+  requestRejectedToast: 'تم رفض الطلب.',
+  requestBypassedToast: 'تم تجاوز المسار والموافقة على الطلب.',
+  assignmentsSavedToast: 'تم حفظ تعيينات مسارات الوحدات.',
 };
 
 const UR: Dict = {
@@ -1351,6 +1548,102 @@ const UR: Dict = {
   assignedProjects: 'تفویض کردہ پروجیکٹس',
   noGroupsAssigned: 'کوئی گروپ تفویض نہیں',
   noProjectsAssigned: 'کوئی پروجیکٹ تفویض نہیں',
+  // Phase 2 (v4.0) — Named Approval Workflows & Unified Requests
+  navApprovalsRequests: 'منظوریاں اور درخواستیں',
+  navSettingsWorkflowTemplates: 'نامزد ورک فلوز',
+  namedWorkflowsTitle: 'نامزد منظوری ورک فلوز',
+  namedWorkflowsSubtitle: 'دوبارہ قابل استعمال کثیر مرحلہ منظوری سلسلے بنائیں اور انہیں درخواست کی اقسام سے جوڑیں۔',
+  addWorkflowTemplate: 'نیا ورک فلو',
+  editWorkflowTemplate: 'ورک فلو میں ترمیم',
+  workflowName: 'ورک فلو کا نام',
+  workflowDescription: 'تفصیل',
+  workflowSteps: 'منظوری کے مراحل',
+  addWorkflowStep: 'مرحلہ شامل کریں',
+  stepTypeRole: 'عہدے کے مطابق',
+  stepTypeEmployee: 'مخصوص ملازم',
+  stepRoleSectionManager: 'سیکشن مینیجر',
+  stepRoleProjectManager: 'پروجیکٹ مینیجر',
+  stepRoleSupervisor: 'سپروائزر',
+  stepRoleHrAdmin: 'HR ایڈمن',
+  stepRoleHrManager: 'HR مینیجر',
+  stepRoleMainManager: 'مین مینیجر',
+  livePreviewTitle: 'اصلی ناموں کے ساتھ فوری پیش منظر',
+  livePreviewSubtitle: 'منظوری کا حقیقی سلسلہ دیکھنے کے لیے کسی بھی ملازم کو منتخب کریں۔',
+  previewForEmployee: 'مثال برائے',
+  unassignedRole: 'غیر تفویض شدہ',
+  moduleAssignmentsTitle: 'ماڈیول ورک فلو تفویضات',
+  moduleAssignmentsSubtitle: 'ہر درخواست کے زمرے کے لیے محفوظ کردہ نامزد ورک فلو منتخب کریں۔',
+  saveAssignments: 'تفویضات محفوظ کریں',
+  assignmentsSaved: 'ماڈیول ورک فلو تفویضات محفوظ ہو گئیں۔',
+  noWorkflowTemplatesYet: 'ابھی تک کوئی نامزد منظوری ورک فلو نہیں بنایا گیا۔',
+  selectWorkflowPlaceholder: 'ورک فلو منتخب کریں...',
+  approvalsRequestsTitle: 'منظوریاں اور درخواستیں',
+  approvalsRequestsSubtitle: 'درخواستیں جمع کروائیں اور کثیر مرحلہ منظوریوں اور آڈٹ لاگ کو ٹریک کریں۔',
+  newRequestBtn: 'نئی درخواست',
+  tabPendingMyApproval: 'میری منظوری کے منتظر',
+  tabMyAllRequests: 'میری / تمام درخواستیں',
+  tabMyRequestsOnly: 'میری درخواستیں',
+  tabAllRequests: 'تمام درخواستیں',
+  filterAllCategories: 'تمام اقسام',
+  filterAllStatuses: 'تمام حیثیتیں',
+  reqCatCustomClock: 'کسٹم کلاک اِن / کلاک آؤٹ',
+  reqCatTimeOff: 'چھٹی کی درخواست',
+  reqCatAdvanceLoan: 'ایڈوانس تنخواہ / قرض',
+  reqCatSalaryAdjustment: 'تنخواہ میں ترمیم',
+  reqCatGeneral: 'عمومی درخواست',
+  reqModulePayroll: 'پے رول',
+  reqStatusPending: 'زیر التواء',
+  reqStatusApproved: 'منظور شدہ',
+  reqStatusRejected: 'مسترد',
+  reqStatusBypassed: 'بائی پاس منظور شدہ',
+  reqStatusSkipped: 'چھوڑ دیا گیا',
+  clockDate: 'تاریخ',
+  exactClockIn: 'کلاک اِن وقت',
+  exactClockOut: 'کلاک آؤٹ وقت',
+  leaveSubType: 'چھٹی کی قسم',
+  subTypeAnnual: 'سالانہ چھٹی',
+  subTypeSick: 'بیماری کی چھٹی',
+  subTypeEmergency: 'ہنگامی چھٹی',
+  subTypeUnpaid: 'بغیر تنخواہ چھٹی',
+  loanAmountAed: 'قرض / ایڈوانس رقم (AED)',
+  repaymentMonths: 'واپسی کے مہینے',
+  repaymentStartMonth: 'شروع کا مہینہ',
+  loanDeductionPreviewPrefix: 'پے رول کٹوتیوں میں ماہانہ',
+  loanDeductionPreviewSuffix: 'AED کٹوتی ہوگی',
+  selectEmployee: 'ملازم منتخب کریں',
+  currentBaseSalary: 'موجودہ بنیادی تنخواہ',
+  newBaseSalaryAed: 'نئی بنیادی تنخواہ (AED)',
+  salaryAdjustmentPolicyNote: 'صرف HR مینیجر کی منظوری درکار ہے۔',
+  requestSubject: 'عنوان',
+  requestMessage: 'پیغام',
+  fileAttachment: 'فائل منسلک کریں',
+  uploadAttachment: 'فائل اپ لوڈ کریں',
+  uploadingFile: 'اپ لوڈ ہو رہا ہے...',
+  removeAttachment: 'ہٹائیں',
+  approvalChainPreview: 'منظوری کے سلسلے کا پیش منظر',
+  submitRequest: 'درخواست جمع کروائیں',
+  approveRequest: 'منظور کریں',
+  rejectRequest: 'مسترد کریں',
+  bypassAndApprove: 'بائی پاس اور منظور کریں',
+  optionalCommentPlaceholder: 'اختیاری تبصرہ یا نوٹ...',
+  bypassReasonPlaceholder: 'بائی پاس کی وجہ (اختیاری)...',
+  approvalTimelineTitle: 'منظوری کی ٹائم لائن',
+  auditLogTitle: 'آڈٹ لاگ',
+  pendingReviewerBadge: 'جائزہ کار کے منتظر',
+  noRequestsFound: 'موجودہ فلٹرز سے مطابقت رکھنے والی کوئی درخواست نہیں ملی۔',
+  backToRequests: 'منظوریوں اور درخواستوں پر واپس جائیں',
+  viewDetails: 'تفصیلات دیکھیں',
+  submittedBy: 'جمع کنندہ',
+  stepLabel: 'مرحلہ',
+  actionSubmitted: 'درخواست جمع کروائی گئی',
+  actionApproved: 'مرحلہ منظور کیا گیا',
+  actionRejected: 'درخواست مسترد کی گئی',
+  actionBypassed: 'بائی پاس کر کے منظور کیا گیا',
+  requestSubmittedToast: 'درخواست منظوری کے ورک فلو میں جمع کروا دی گئی۔',
+  requestApprovedToast: 'درخواست کا مرحلہ منظور کر لیا گیا۔',
+  requestRejectedToast: 'درخواست مسترد کر دی گئی۔',
+  requestBypassedToast: 'درخواست کو بائی پاس کر کے منظور کر لیا گیا۔',
+  assignmentsSavedToast: 'ماڈیول ورک فلو تفویضات محفوظ ہو گئیں۔',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };
@@ -1535,4 +1828,80 @@ export function getPaymentMethodLabel(lang: Language, method: PatchPaymentMethod
   if (method === 'Bank Transfer') return t(lang, 'methodBankTransfer');
   return t(lang, 'methodWps');
 }
+
+export function getWorkflowStepRoleLabel(lang: Language, role: WorkflowStepRoleKey): string {
+  switch (role) {
+    case 'section_manager':
+      return t(lang, 'stepRoleSectionManager');
+    case 'project_manager':
+      return t(lang, 'stepRoleProjectManager');
+    case 'supervisor':
+      return t(lang, 'stepRoleSupervisor');
+    case 'hr_admin':
+      return t(lang, 'stepRoleHrAdmin');
+    case 'hr_manager':
+      return t(lang, 'stepRoleHrManager');
+    case 'main_manager':
+      return t(lang, 'stepRoleMainManager');
+  }
+}
+
+export function getWorkflowModuleLabel(lang: Language, moduleKey: WorkflowModuleKey): string {
+  switch (moduleKey) {
+    case 'custom_clock':
+      return t(lang, 'reqCatCustomClock');
+    case 'time_off':
+      return t(lang, 'reqCatTimeOff');
+    case 'advance_loan':
+      return t(lang, 'reqCatAdvanceLoan');
+    case 'general':
+      return t(lang, 'reqCatGeneral');
+    case 'payroll':
+      return t(lang, 'reqModulePayroll');
+  }
+}
+
+export function getRequestCategoryLabel(lang: Language, category: RequestCategory): string {
+  switch (category) {
+    case 'custom_clock':
+      return t(lang, 'reqCatCustomClock');
+    case 'time_off':
+      return t(lang, 'reqCatTimeOff');
+    case 'advance_loan':
+      return t(lang, 'reqCatAdvanceLoan');
+    case 'salary_adjustment':
+      return t(lang, 'reqCatSalaryAdjustment');
+    case 'general':
+      return t(lang, 'reqCatGeneral');
+  }
+}
+
+export function getRequestStatusLabel(lang: Language, status: RequestStatus | 'skipped'): string {
+  switch (status) {
+    case 'pending':
+      return t(lang, 'reqStatusPending');
+    case 'approved':
+      return t(lang, 'reqStatusApproved');
+    case 'rejected':
+      return t(lang, 'reqStatusRejected');
+    case 'bypassed':
+      return t(lang, 'reqStatusBypassed');
+    case 'skipped':
+      return t(lang, 'reqStatusSkipped');
+  }
+}
+
+export function getTimeOffSubTypeLabel(lang: Language, subType: TimeOffSubType): string {
+  switch (subType) {
+    case 'annual':
+      return t(lang, 'subTypeAnnual');
+    case 'sick':
+      return t(lang, 'subTypeSick');
+    case 'emergency':
+      return t(lang, 'subTypeEmergency');
+    case 'unpaid':
+      return t(lang, 'subTypeUnpaid');
+  }
+}
+
 

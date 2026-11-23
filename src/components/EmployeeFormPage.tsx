@@ -16,6 +16,7 @@ import {
   getDeductionWorkflowChainLabel,
   getEmployeeTypeLabel,
   getRoleLabel,
+  getWorkTypeLabel,
   t,
 } from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
@@ -26,20 +27,25 @@ import {
   DeductionWorkflowChain,
   DeductionWorkflowConfig,
   Employee,
+  EmployeeGroup,
   EmployeeLabel,
   EmployeeModel,
   EmployeeType,
   GeofenceZone,
   Language,
   PayrollCategoryItem,
+  Project,
   Section,
   UserRole,
+  WorkType,
 } from '../types/hr';
 import {
+  ALL_WORK_TYPES,
   canResetEmployeePassword,
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatAED,
   inferDefaultEmployeeType,
+  normalizeWorkType,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 import { PageBreadcrumbHeader } from './PageBreadcrumbHeader';
@@ -64,6 +70,8 @@ interface EmployeeFormPageProps {
   companies: Company[];
   sections: Section[];
   labels: EmployeeLabel[];
+  groups?: EmployeeGroup[];
+  projects?: Project[];
   models: EmployeeModel[];
   geofences: GeofenceZone[];
   payrollCategories: PayrollCategoryItem[];
@@ -106,6 +114,8 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
   companies,
   sections,
   labels,
+  groups = [],
+  projects = [],
   models,
   geofences,
   payrollCategories,
@@ -170,6 +180,9 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
         jobTitle: editingEmployee.jobTitle ?? '',
         joinDate: editingEmployee.joinDate || new Date().toISOString().slice(0, 10),
         modelId: editingEmployee.modelId || models[0]?.id || '',
+        workType: normalizeWorkType(editingEmployee.workType),
+        groupIds: [...(editingEmployee.groupIds ?? [])],
+        projectIds: [...(editingEmployee.projectIds ?? [])],
         assignedZoneIds: [...(editingEmployee.assignedZoneIds ?? [])],
         labelIds: [...(editingEmployee.labelIds ?? [])],
         clockInPolicyOverride: (editingEmployee.clockInPolicyOverride ?? 'inherit') as
@@ -211,6 +224,9 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
       jobTitle: '',
       joinDate: new Date().toISOString().slice(0, 10),
       modelId: models[0]?.id ?? '',
+      workType: 'office' as WorkType,
+      groupIds: [] as string[],
+      projectIds: [] as string[],
       assignedZoneIds: geofences
         .filter((z) => z.companyId === defaultComp)
         .slice(0, 1)
@@ -435,6 +451,9 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
           managedSectionIds: managedSections,
           labelIds: form.labelIds,
           modelId: form.modelId,
+          workType: form.workType,
+          groupIds: form.groupIds,
+          projectIds: form.projectIds,
           jobTitle: form.jobTitle.trim(),
           joinDate: form.joinDate || editingEmployee.joinDate,
           assignedZoneIds: isMainMgr ? [] : form.assignedZoneIds,
@@ -480,6 +499,9 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
             managedSectionIds: managedSections,
             labelIds: form.labelIds,
             modelId: form.modelId,
+            workType: form.workType,
+            groupIds: form.groupIds,
+            projectIds: form.projectIds,
             jobTitle: form.jobTitle.trim(),
             joinDate: form.joinDate || new Date().toISOString().slice(0, 10),
             active: form.active,
@@ -976,7 +998,30 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
                 </select>
               </div>
 
-              <div className="md:col-span-2">
+              <div>
+                <label htmlFor="emp-work-type" className={LABEL_CLASS}>
+                  {t(lang, 'workType')}
+                </label>
+                <select
+                  id="emp-work-type"
+                  value={form.workType}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      workType: e.target.value as WorkType,
+                    }))
+                  }
+                  className={INPUT_CLASS}
+                >
+                  {ALL_WORK_TYPES.map((wt) => (
+                    <option key={wt} value={wt}>
+                      {getWorkTypeLabel(lang, wt)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
                 <label htmlFor="emp-deduction-wf" className={LABEL_CLASS}>
                   {t(lang, 'deductionWorkflowOverride')}
                 </label>
@@ -1011,6 +1056,86 @@ export const EmployeeFormPage: React.FC<EmployeeFormPageProps> = ({
                 </select>
               </div>
             </div>
+
+            {/* Assigned Employee Groups (multi-select) */}
+            {groups.length > 0 && (
+              <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  {t(lang, 'assignedGroups')}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {groups.map((grp) => {
+                    const selected = form.groupIds.includes(grp.id);
+                    const badgeColor = grp.color || '#0D9488';
+                    return (
+                      <button
+                        key={grp.id}
+                        type="button"
+                        onClick={() =>
+                          setForm((p) => ({
+                            ...p,
+                            groupIds: selected
+                              ? p.groupIds.filter((id) => id !== grp.id)
+                              : [...p.groupIds, grp.id],
+                          }))
+                        }
+                        className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
+                          selected
+                            ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/50 text-teal-800 dark:text-teal-200'
+                            : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-teal-300'
+                        }`}
+                      >
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: badgeColor }}
+                        />
+                        <span>{grp.name}</span>
+                        {selected && <Check className="w-3.5 h-3.5 text-teal-600" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Assigned Projects (multi-select) */}
+            {projects.length > 0 && (
+              <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  {t(lang, 'assignedProjects')}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {projects
+                    .filter((p) => p.active || form.projectIds.includes(p.id))
+                    .map((proj) => {
+                      const selected = form.projectIds.includes(proj.id);
+                      return (
+                        <button
+                          key={proj.id}
+                          type="button"
+                          onClick={() =>
+                            setForm((p) => ({
+                              ...p,
+                              projectIds: selected
+                                ? p.projectIds.filter((id) => id !== proj.id)
+                                : [...p.projectIds, proj.id],
+                            }))
+                          }
+                          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
+                            selected
+                              ? 'border-teal-600 bg-teal-50 dark:bg-teal-950/50 text-teal-800 dark:text-teal-200'
+                              : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-teal-300'
+                          }`}
+                        >
+                          <span className="font-mono text-[11px] opacity-75">{proj.code}</span>
+                          <span>{proj.name}</span>
+                          {selected && <Check className="w-3.5 h-3.5 text-teal-600" />}
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
 
             {/* Managed Sections for Section Manager / Co-Manager */}
             {isSecMgrRole && (

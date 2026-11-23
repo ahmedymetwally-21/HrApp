@@ -25,6 +25,7 @@ import {
   EmployeeModel,
   GeofenceZone,
   GPSReading,
+  HiddenSectionKey,
   Language,
   LeaveRequest,
   LeaveStatus,
@@ -49,6 +50,7 @@ import {
   isAttendanceTracked,
   isPayrollEligible,
   isProAssignmentActive,
+  isSectionHidden,
   resolveClockInPolicy,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
@@ -77,6 +79,7 @@ interface DashboardViewProps {
   salaryReleases: SalaryReleaseSchedule[];
   proAssignments: ProAssignment[];
   settings: AppSettings;
+  hiddenSections?: HiddenSectionKey[];
   gpsReading: GPSReading | null;
   simulatedDevice: 'mobile' | 'desktop';
   onNavigate: (section: NavSection) => void;
@@ -106,6 +109,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   salaryReleases,
   proAssignments,
   settings,
+  hiddenSections = [],
   gpsReading,
   simulatedDevice,
   onNavigate,
@@ -116,6 +120,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const [showMapInfo, setShowMapInfo] = useState(false);
   const [busyPunch, setBusyPunch] = useState(false);
+
+  const hideLeaveBalances = isSectionHidden(hiddenSections, 'leave_balances');
+  const hideSalaryBreakdown = isSectionHidden(hiddenSections, 'salary_breakdown');
+  const hideAttendanceLogs = isSectionHidden(hiddenSections, 'attendance_logs');
+  const hidePayslips = isSectionHidden(hiddenSections, 'payslips');
 
   const todayIso = new Date().toISOString().slice(0, 10);
   const currentMonth = todayIso.slice(0, 7);
@@ -411,8 +420,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         </section>
 
-        {/* Quiet 3-Item Quick Access Strip */}
-        <section className="grid grid-cols-3 gap-3">
+        {/* Quiet Quick Access Strip (respecting employee visibility rules) */}
+        <section
+          className={`grid gap-3 ${
+            hideSalaryBreakdown && hidePayslips ? 'grid-cols-2' : 'grid-cols-3'
+          }`}
+        >
           <button
             type="button"
             onClick={() => onNavigate('leaves')}
@@ -420,7 +433,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <CalendarClock className="w-4 h-4 text-teal-600 dark:text-teal-400" />
             <p className="mt-2.5 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {Math.max(0, currentUser.leaveBalance.annualTotal - currentUser.leaveBalance.annualUsed)}d
+              {hideLeaveBalances
+                ? '—'
+                : `${Math.max(0, currentUser.leaveBalance.annualTotal - currentUser.leaveBalance.annualUsed)}d`}
             </p>
             <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
               {t(lang, 'navLeaves')} {myPendingLeaves > 0 ? `(${myPendingLeaves})` : ''}
@@ -449,24 +464,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </p>
           </button>
 
-          <button
-            type="button"
-            onClick={() => onNavigate('payroll')}
-            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
-          >
-            <Receipt className="w-4 h-4 text-teal-600 dark:text-teal-400" />
-            <p className="mt-2.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white truncate">
-              {myPayroll.netSalary.toLocaleString()}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-              {getSalaryStatusLabel(lang, myPayroll.release.status)} ·{' '}
-              {formatShortDate(
-                myPayroll.release.status === 'Delayed' && myPayroll.release.delayedUntilDate
-                  ? myPayroll.release.delayedUntilDate
-                  : myPayroll.release.releaseDate
-              )}
-            </p>
-          </button>
+          {!(hideSalaryBreakdown && hidePayslips) && (
+            <button
+              type="button"
+              onClick={() => onNavigate('payroll')}
+              className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
+            >
+              <Receipt className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+              <p className="mt-2.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white truncate">
+                {hideSalaryBreakdown ? '—' : myPayroll.netSalary.toLocaleString()}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                {getSalaryStatusLabel(lang, myPayroll.release.status)} ·{' '}
+                {formatShortDate(
+                  myPayroll.release.status === 'Delayed' && myPayroll.release.delayedUntilDate
+                    ? myPayroll.release.delayedUntilDate
+                    : myPayroll.release.releaseDate
+                )}
+              </p>
+            </button>
+          )}
         </section>
       </div>
     );
@@ -555,28 +572,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </button>
       </div>
 
-      {/* 4 Clean KPI Cards */}
+      {/* Clean KPI Cards (respecting visibility rules) */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <button
-          type="button"
-          onClick={() => onNavigate('attendance')}
-          className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
-        >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
-            <span>{t(lang, 'liveAttendance')}</span>
-            <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-          </div>
-          <p className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-            {presentIds.size}
-            <span className="text-sm font-normal text-slate-400">
-              {' '}
-              / {trackedActiveScoped.length}
-            </span>
-          </p>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            {lateTodayCount} {t(lang, 'late')} · {absentTodayCount} absent
-          </p>
-        </button>
+        {!hideAttendanceLogs && (
+          <button
+            type="button"
+            onClick={() => onNavigate('attendance')}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
+              <span>{t(lang, 'liveAttendance')}</span>
+              <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            </div>
+            <p className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              {presentIds.size}
+              <span className="text-sm font-normal text-slate-400">
+                {' '}
+                / {trackedActiveScoped.length}
+              </span>
+            </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {lateTodayCount} {t(lang, 'late')} · {absentTodayCount} absent
+            </p>
+          </button>
+        )}
 
         <button
           type="button"
@@ -610,20 +629,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Expired or ≤ 30 days</p>
         </button>
 
-        <button
-          type="button"
-          onClick={() => onNavigate('payroll')}
-          className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
-        >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
-            <span>{t(lang, 'monthlyPayroll')}</span>
-            <Wallet className="w-4 h-4 text-teal-600 dark:text-teal-400" />
-          </div>
-          <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-teal-800 dark:text-teal-300 truncate">
-            {formatAED(totalNetPayroll)}
-          </p>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Net ({currentMonth})</p>
-        </button>
+        {!hideSalaryBreakdown && (
+          <button
+            type="button"
+            onClick={() => onNavigate('payroll')}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 text-start hover:border-teal-300 dark:hover:border-teal-700 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs font-medium">
+              <span>{t(lang, 'monthlyPayroll')}</span>
+              <Wallet className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+            </div>
+            <p className="mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-teal-800 dark:text-teal-300 truncate">
+              {formatAED(totalNetPayroll)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Net ({currentMonth})</p>
+          </button>
+        )}
       </section>
 
       {/* Two Focused Action Panels */}

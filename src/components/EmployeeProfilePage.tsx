@@ -25,6 +25,7 @@ import {
   getPayrollEntryTypeLabel,
   getRoleLabel,
   getSalaryStatusLabel,
+  getWorkTypeLabel,
   t,
 } from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
@@ -37,15 +38,18 @@ import {
   DocumentTypeValue,
   Employee,
   EmployeeDocument,
+  EmployeeGroup,
   EmployeeLabel,
   EmployeeModel,
   GeofenceZone,
+  HiddenSectionKey,
   Language,
   LeaveRequest,
   PatchMoneyRelease,
   PayrollAdjustment,
   PayrollEntry,
   ProAssignment,
+  Project,
   SalaryReleaseSchedule,
   Section,
   ShiftSchedule,
@@ -66,9 +70,12 @@ import {
   getEffectiveShiftStart,
   getMissingModelDocuments,
   inferDefaultEmployeeType,
+  isAdminOrHRRole,
   isAttendanceTracked,
   isPayrollEligible,
   isPayrollEntryActiveInMonth,
+  isSectionHidden,
+  normalizeWorkType,
   resolveEmployeeDeductionWorkflow,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
@@ -83,6 +90,9 @@ interface EmployeeProfilePageProps {
   companies: Company[];
   sections: Section[];
   labels: EmployeeLabel[];
+  groups?: EmployeeGroup[];
+  projects?: Project[];
+  hiddenSections?: HiddenSectionKey[];
   models: EmployeeModel[];
   geofences: GeofenceZone[];
   documents: EmployeeDocument[];
@@ -117,6 +127,9 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
   companies,
   sections,
   labels,
+  groups = [],
+  projects = [],
+  hiddenSections = [],
   models,
   geofences,
   documents,
@@ -139,8 +152,7 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
   onUploadDocument,
   onDeleteDocument,
 }) => {
-  const canManageStaff =
-    activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const canManageStaff = isAdminOrHRRole(activeRole);
   const canResetPassword =
     Boolean(onResetPassword) && canResetEmployeePassword(activeRole, employee.role);
   const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
@@ -148,10 +160,18 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
     activeRole === UserRole.MainManager || activeRole === UserRole.SectionManager;
   const isPro = activeRole === UserRole.PRO;
 
+  const hideSalaryBreakdown = isSectionHidden(hiddenSections, 'salary_breakdown');
+  const hideDeductions = isSectionHidden(hiddenSections, 'deductions');
+  const hidePayslips = isSectionHidden(hiddenSections, 'payslips');
+  const hideAttendanceLogs = isSectionHidden(hiddenSections, 'attendance_logs');
+  const hideLeaveBalances = isSectionHidden(hiddenSections, 'leave_balances');
+
   const companyMap = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const modelMap = useMemo(() => new Map(models.map((m) => [m.id, m])), [models]);
   const labelMap = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels]);
+  const groupMap = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
+  const projectMap = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   const geofenceMap = useMemo(() => new Map(geofences.map((z) => [z.id, z])), [geofences]);
 
   const model = modelMap.get(employee.modelId) ?? models[0];
@@ -261,15 +281,15 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
     const tabs: { id: 'profile' | 'salary' | 'documents' | 'attendance'; label: string }[] = [
       { id: 'profile', label: t(lang, 'profileTab') },
     ];
-    if (!isPro && isPayrollEligible(employee)) {
+    if (!isPro && isPayrollEligible(employee) && !(hideSalaryBreakdown && hidePayslips)) {
       tabs.push({ id: 'salary', label: t(lang, 'salaryPackageTab') });
     }
     tabs.push({ id: 'documents', label: t(lang, 'documentsTab') });
-    if (!isPro && isAttendanceTracked(employee)) {
+    if (!isPro && isAttendanceTracked(employee) && !(hideAttendanceLogs && hideLeaveBalances)) {
       tabs.push({ id: 'attendance', label: t(lang, 'attendanceLeavesTab') });
     }
     return tabs;
-  }, [employee, isPro, lang]);
+  }, [employee, isPro, lang, hideSalaryBreakdown, hidePayslips, hideAttendanceLogs, hideLeaveBalances]);
 
   const [tab, setTab] = useState<'profile' | 'salary' | 'documents' | 'attendance'>(
     initialTab
@@ -576,6 +596,12 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
                 </dd>
               </div>
               <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
+                <dt className="text-slate-500">{t(lang, 'workType')}</dt>
+                <dd className="mt-1 font-semibold text-slate-900 dark:text-white">
+                  {getWorkTypeLabel(lang, normalizeWorkType(employee.workType))}
+                </dd>
+              </div>
+              <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
                 <dt className="text-slate-500">{t(lang, 'deductionWorkflowOverride')}</dt>
                 <dd className="mt-1 font-semibold text-slate-900 dark:text-white">
                   {getDeductionWorkflowChainLabel(
@@ -588,6 +614,56 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
                         (Override)
                       </span>
                     )}
+                </dd>
+              </div>
+              <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
+                <dt className="text-slate-500">{t(lang, 'assignedGroups')}</dt>
+                <dd className="mt-1.5 flex flex-wrap gap-1.5">
+                  {(employee.groupIds ?? []).length === 0 ? (
+                    <span className="text-slate-400 font-normal">{t(lang, 'noGroupsAssigned')}</span>
+                  ) : (
+                    (employee.groupIds ?? []).map((gid) => {
+                      const g = groupMap.get(gid);
+                      const badgeColor = g?.color || '#0D9488';
+                      return (
+                        <span
+                          key={gid}
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border"
+                          style={{
+                            borderColor: `${badgeColor}40`,
+                            backgroundColor: `${badgeColor}15`,
+                            color: badgeColor,
+                          }}
+                        >
+                          <span
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{ backgroundColor: badgeColor }}
+                          />
+                          {g?.name ?? gid}
+                        </span>
+                      );
+                    })
+                  )}
+                </dd>
+              </div>
+              <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
+                <dt className="text-slate-500">{t(lang, 'assignedProjects')}</dt>
+                <dd className="mt-1.5 flex flex-wrap gap-1.5">
+                  {(employee.projectIds ?? []).length === 0 ? (
+                    <span className="text-slate-400 font-normal">{t(lang, 'noProjectsAssigned')}</span>
+                  ) : (
+                    (employee.projectIds ?? []).map((pid) => {
+                      const p = projectMap.get(pid);
+                      return (
+                        <span
+                          key={pid}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[11px] font-medium text-slate-700 dark:text-slate-300"
+                        >
+                          {p ? `${p.code} · ${p.name}` : pid}
+                        </span>
+                      );
+                    })
+                  )}
                 </dd>
               </div>
             </dl>
@@ -802,6 +878,17 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
          ==================================================================== */}
       {effectiveTab === 'salary' && payrollRow && (
         <div className="space-y-6">
+          {hideSalaryBreakdown ? (
+            <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 text-center space-y-1">
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                {t(lang, 'restrictedByPolicyTitle')}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {t(lang, 'restrictedByPolicyDesc')}
+              </p>
+            </div>
+          ) : (
+            <>
           {/* 4 Summary KPI Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
@@ -879,41 +966,44 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
                 <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                   {t(lang, 'scheduledTemporaryEntries')}
                 </h3>
-                {temporaryEntries.length === 0 ? (
+                {temporaryEntries.filter((e) => !(hideDeductions && e.type.startsWith('deduction'))).length === 0 ? (
                   <p className="mt-2 text-xs text-slate-500">No scheduled temporary entries.</p>
                 ) : (
                   <div className="mt-3 divide-y divide-slate-100 dark:divide-slate-800">
-                    {temporaryEntries.slice(0, 8).map((entry) => {
-                      const isDed = entry.type.startsWith('deduction');
-                      return (
-                        <div key={entry.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
-                          <div className="min-w-0">
-                            <p className="font-semibold text-slate-900 dark:text-white truncate">
-                              {entry.categoryName}
-                            </p>
-                            <p className="text-slate-500 mt-0.5 font-mono">
-                              {entry.effectiveFrom}
-                              {entry.effectiveTo && entry.effectiveTo !== entry.effectiveFrom
-                                ? ` → ${entry.effectiveTo}`
-                                : ''}
-                              {entry.targetBucket
-                                ? ` · ${getDeductionBucketLabel(lang, entry.targetBucket)}`
-                                : ''}
-                            </p>
+                    {temporaryEntries
+                      .filter((e) => !(hideDeductions && e.type.startsWith('deduction')))
+                      .slice(0, 8)
+                      .map((entry) => {
+                        const isDed = entry.type.startsWith('deduction');
+                        return (
+                          <div key={entry.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-900 dark:text-white truncate">
+                                {entry.categoryName}
+                              </p>
+                              <p className="text-slate-500 mt-0.5 font-mono">
+                                {entry.effectiveFrom}
+                                {entry.effectiveTo && entry.effectiveTo !== entry.effectiveFrom
+                                  ? ` → ${entry.effectiveTo}`
+                                  : ''}
+                                {entry.targetBucket
+                                  ? ` · ${getDeductionBucketLabel(lang, entry.targetBucket)}`
+                                  : ''}
+                              </p>
+                            </div>
+                            <span
+                              className={`font-mono tabular-nums font-semibold shrink-0 ${
+                                isDed
+                                  ? 'text-rose-700 dark:text-rose-400'
+                                  : 'text-emerald-700 dark:text-emerald-400'
+                              }`}
+                            >
+                              {isDed ? '-' : '+'}
+                              {formatAED(entry.amountAED)}
+                            </span>
                           </div>
-                          <span
-                            className={`font-mono tabular-nums font-semibold shrink-0 ${
-                              isDed
-                                ? 'text-rose-700 dark:text-rose-400'
-                                : 'text-emerald-700 dark:text-emerald-400'
-                            }`}
-                          >
-                            {isDed ? '-' : '+'}
-                            {formatAED(entry.amountAED)}
-                          </span>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
                   </div>
                 )}
               </div>
@@ -1018,6 +1108,8 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
               </div>
             </section>
           </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1220,92 +1312,96 @@ export const EmployeeProfilePage: React.FC<EmployeeProfilePageProps> = ({
       {effectiveTab === 'attendance' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Recent Attendance Logs */}
-          <section className="rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                <Clock className="w-4 h-4 text-teal-600" />
-                Recent Attendance Logs
-              </h3>
-              <span className="text-xs font-mono text-slate-500">{empAttendance.length} logs</span>
-            </div>
-            {empAttendance.length === 0 ? (
-              <p className="p-8 text-center text-xs text-slate-500">No attendance logs yet.</p>
-            ) : (
-              <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {empAttendance.map((log) => (
-                  <div key={log.id} className="px-6 py-3 flex items-center justify-between gap-3 text-xs">
-                    <div>
-                      <p className="font-semibold text-slate-900 dark:text-white font-mono">
-                        {formatShortDate(log.date)} · {formatTime(log.clockInTime)} –{' '}
-                        {log.clockOutTime ? formatTime(log.clockOutTime) : 'Active'}
-                      </p>
-                      <p className="text-slate-500 mt-0.5">
-                        {log.zoneName} · {log.punchSource}
-                      </p>
-                    </div>
-                    <span
-                      className={`font-semibold ${
-                        log.latenessExcused
-                          ? 'text-teal-700 dark:text-teal-400'
-                          : log.isLate
-                            ? 'text-amber-700 dark:text-amber-400'
-                            : 'text-emerald-700 dark:text-emerald-400'
-                      }`}
-                    >
-                      {log.latenessExcused
-                        ? t(lang, 'excused')
-                        : log.isLate
-                          ? `${log.lateMinutes}m late (-${formatAED(log.latenessPenaltyAED)})`
-                          : t(lang, 'onTime')}
-                    </span>
-                  </div>
-                ))}
+          {!hideAttendanceLogs && (
+            <section className="rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-teal-600" />
+                  Recent Attendance Logs
+                </h3>
+                <span className="text-xs font-mono text-slate-500">{empAttendance.length} logs</span>
               </div>
-            )}
-          </section>
+              {empAttendance.length === 0 ? (
+                <p className="p-8 text-center text-xs text-slate-500">No attendance logs yet.</p>
+              ) : (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {empAttendance.map((log) => (
+                    <div key={log.id} className="px-6 py-3 flex items-center justify-between gap-3 text-xs">
+                      <div>
+                        <p className="font-semibold text-slate-900 dark:text-white font-mono">
+                          {formatShortDate(log.date)} · {formatTime(log.clockInTime)} –{' '}
+                          {log.clockOutTime ? formatTime(log.clockOutTime) : 'Active'}
+                        </p>
+                        <p className="text-slate-500 mt-0.5">
+                          {log.zoneName} · {log.punchSource}
+                        </p>
+                      </div>
+                      <span
+                        className={`font-semibold ${
+                          log.latenessExcused
+                            ? 'text-teal-700 dark:text-teal-400'
+                            : log.isLate
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-emerald-700 dark:text-emerald-400'
+                        }`}
+                      >
+                        {log.latenessExcused
+                          ? t(lang, 'excused')
+                          : log.isLate
+                            ? `${log.lateMinutes}m late (-${formatAED(log.latenessPenaltyAED)})`
+                            : t(lang, 'onTime')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Leave Balances & History */}
-          <section className="rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                <CalendarClock className="w-4 h-4 text-teal-600" />
-                Leave Balance &amp; Requests
-              </h3>
-              <span className="text-xs font-mono text-teal-700 dark:text-teal-300 font-semibold">
-                Annual: {Math.max(0, employee.leaveBalance.annualTotal - employee.leaveBalance.annualUsed)}/
-                {employee.leaveBalance.annualTotal}d
-              </span>
-            </div>
-            {empLeaves.length === 0 ? (
-              <p className="p-8 text-center text-xs text-slate-500">No leave requests on record.</p>
-            ) : (
-              <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {empLeaves.map((lv) => (
-                  <div key={lv.id} className="px-6 py-3 flex items-center justify-between gap-3 text-xs">
-                    <div>
-                      <p className="font-semibold text-slate-900 dark:text-white">
-                        {lv.type} · {lv.days}d
-                      </p>
-                      <p className="text-slate-500 font-mono mt-0.5">
-                        {formatShortDate(lv.startDate)} → {formatShortDate(lv.endDate)}
-                      </p>
-                    </div>
-                    <span
-                      className={`font-semibold ${
-                        lv.status === 'Approved'
-                          ? 'text-emerald-700 dark:text-emerald-400'
-                          : lv.status === 'Rejected'
-                            ? 'text-rose-600 dark:text-rose-400'
-                            : 'text-amber-700 dark:text-amber-400'
-                      }`}
-                    >
-                      {getLeaveStatusLabel(lang, lv.status)}
-                    </span>
-                  </div>
-                ))}
+          {!hideLeaveBalances && (
+            <section className="rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <CalendarClock className="w-4 h-4 text-teal-600" />
+                  Leave Balance &amp; Requests
+                </h3>
+                <span className="text-xs font-mono text-teal-700 dark:text-teal-300 font-semibold">
+                  Annual: {Math.max(0, employee.leaveBalance.annualTotal - employee.leaveBalance.annualUsed)}/
+                  {employee.leaveBalance.annualTotal}d
+                </span>
               </div>
-            )}
-          </section>
+              {empLeaves.length === 0 ? (
+                <p className="p-8 text-center text-xs text-slate-500">No leave requests on record.</p>
+              ) : (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {empLeaves.map((lv) => (
+                    <div key={lv.id} className="px-6 py-3 flex items-center justify-between gap-3 text-xs">
+                      <div>
+                        <p className="font-semibold text-slate-900 dark:text-white">
+                          {lv.type} · {lv.days}d
+                        </p>
+                        <p className="text-slate-500 font-mono mt-0.5">
+                          {formatShortDate(lv.startDate)} → {formatShortDate(lv.endDate)}
+                        </p>
+                      </div>
+                      <span
+                        className={`font-semibold ${
+                          lv.status === 'Approved'
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : lv.status === 'Rejected'
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-amber-700 dark:text-amber-400'
+                        }`}
+                      >
+                        {getLeaveStatusLabel(lang, lv.status)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       )}
 

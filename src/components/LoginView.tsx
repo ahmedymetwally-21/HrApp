@@ -90,6 +90,13 @@ export const LoginView: React.FC<LoginViewProps> = ({
       tint: 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300',
     },
     {
+      role: UserRole.HRManager,
+      name: 'Layla Al-Mansoori',
+      scope: 'Groups · Projects · Visibility Rules · Full HR & Payroll Access',
+      icon: Users,
+      tint: 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300',
+    },
+    {
       role: UserRole.HRAdmin,
       name: 'Layla Al-Mansoori',
       scope: 'Companies · Models · Labels · PRO Access · Payroll · Step 2 HR',

@@ -19,12 +19,14 @@ import {
   DocumentTypeValue,
   Employee,
   EmployeeDocument,
+  EmployeeGroup,
   EmployeeModel,
   EmployeePendingBalanceItem,
   EmployeeType,
   EndpointFailure,
   GeofenceZone,
   GPSReading,
+  HiddenSectionKey,
   LeaveBalance,
   LeaveRequest,
   LeaveStatus,
@@ -35,10 +37,13 @@ import {
   PayrollAdjustment,
   PayrollEntry,
   ProAssignment,
+  Project,
   PunchSource,
   ResolvedSalaryRelease,
   SalaryReleaseSchedule,
   UserRole,
+  VisibilityRule,
+  WorkType,
 } from '../types/hr';
 
 /**
@@ -68,10 +73,12 @@ export function normalizeUserRole(raw: unknown): UserRole {
     case 'general_manager':
     case 'gm':
       return UserRole.MainManager;
+    case 'hr_manager':
+    case 'hrmanager':
+      return UserRole.HRManager;
     case 'hr_admin':
     case 'hradmin':
     case 'hr':
-    case 'hr_manager':
     case 'human_resources':
     case 'human_resource':
       return UserRole.HRAdmin;
@@ -114,15 +121,28 @@ export function isMainManagerRole(role: unknown): boolean {
   return normalizeUserRole(role) === UserRole.MainManager;
 }
 
+export function isHRRole(role: unknown): boolean {
+  const normalized = normalizeUserRole(role);
+  return normalized === UserRole.HRAdmin || normalized === UserRole.HRManager;
+}
+
 export function isAdminOrHRRole(role: unknown): boolean {
   const normalized = normalizeUserRole(role);
-  return normalized === UserRole.MainManager || normalized === UserRole.HRAdmin;
+  return (
+    normalized === UserRole.MainManager ||
+    normalized === UserRole.HRManager ||
+    normalized === UserRole.HRAdmin
+  );
 }
 
 export type StartupEndpointKey =
   | 'companies'
   | 'sections'
   | 'labels'
+  | 'groups'
+  | 'projects'
+  | 'visibilityRules'
+  | 'myVisibility'
   | 'employeeModels'
   | 'employees'
   | 'proAssignments'
@@ -149,6 +169,10 @@ export const ALL_STARTUP_ENDPOINTS: StartupEndpointSpec[] = [
   { key: 'companies', path: '/companies' },
   { key: 'sections', path: '/sections' },
   { key: 'labels', path: '/labels' },
+  { key: 'groups', path: '/groups' },
+  { key: 'projects', path: '/projects' },
+  { key: 'visibilityRules', path: '/visibility-rules' },
+  { key: 'myVisibility', path: '/visibility-rules/me' },
   { key: 'employeeModels', path: '/employee-models' },
   { key: 'employees', path: '/users' },
   { key: 'proAssignments', path: '/pro-assignments' },
@@ -170,11 +194,11 @@ export const ALL_STARTUP_ENDPOINTS: StartupEndpointSpec[] = [
 /**
  * Returns only the startup endpoints allowed for the authenticated user's role,
  * preventing unnecessary 403 Forbidden bursts for non-admin users while keeping
- * full access for Main Manager & HR Admin.
+ * full access for Main Manager, HR Manager & HR Admin.
  */
 export function getStartupEndpointsForRole(role: UserRole | string): StartupEndpointSpec[] {
   const normalized = normalizeUserRole(role);
-  if (normalized === UserRole.MainManager || normalized === UserRole.HRAdmin) {
+  if (isAdminOrHRRole(normalized)) {
     return ALL_STARTUP_ENDPOINTS;
   }
 
@@ -184,6 +208,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'companies',
       'sections',
       'labels',
+      'groups',
+      'projects',
+      'myVisibility',
       'employees',
       'attendance',
       'leaves',
@@ -200,6 +227,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'companies',
       'sections',
       'labels',
+      'groups',
+      'projects',
+      'myVisibility',
       'employeeModels',
       'employees',
       'proAssignments',
@@ -211,6 +241,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'companies',
       'sections',
       'labels',
+      'groups',
+      'projects',
+      'myVisibility',
       'employeeModels',
       'employees',
       'geofences',
@@ -232,6 +265,9 @@ export function getStartupEndpointsForRole(role: UserRole | string): StartupEndp
       'companies',
       'sections',
       'labels',
+      'groups',
+      'projects',
+      'myVisibility',
       'employeeModels',
       'employees',
       'geofences',
@@ -649,7 +685,7 @@ export function getScopedEmployees(params: {
   return employees.filter((emp) => {
     if (!isEmployeeInCompany(emp, selectedCompanyId)) return false;
 
-    if (activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin) {
+    if (isAdminOrHRRole(activeRole)) {
       return true;
     }
     if (
@@ -731,14 +767,14 @@ export function buildLeaveApprovalChain(params: {
         decidedAt: new Date().toISOString(),
       };
     }
-    // If HR Admin applies, auto-skip hr_admin step
-    if (applicantRole === UserRole.HRAdmin && role === 'hr_admin') {
+    // If HR Admin / HR Manager applies, auto-skip hr_admin step
+    if (isHRRole(applicantRole) && role === 'hr_admin') {
       return {
         stepOrder: idx + 1,
         role,
         status: 'skipped',
         actorName: 'System Auto-Skip',
-        remark: 'Skipped HR step because applicant is HR Admin.',
+        remark: 'Skipped HR step because applicant is HR.',
         decidedAt: new Date().toISOString(),
       };
     }
@@ -793,7 +829,7 @@ export function canRoleActOnLeaveStep(params: {
     return managed.includes(leave.sectionId);
   }
   if (activeStep.role === 'hr_admin') {
-    return actorRole === UserRole.HRAdmin;
+    return isHRRole(actorRole);
   }
   if (activeStep.role === 'main_manager') {
     return actorRole === UserRole.MainManager;
@@ -1030,8 +1066,7 @@ export function adjustLeaveBalance(
 export function canControlSalaryRelease(role: UserRole | string): boolean {
   const normalized = normalizeUserRole(role);
   return (
-    normalized === UserRole.HRAdmin ||
-    normalized === UserRole.MainManager ||
+    isAdminOrHRRole(normalized) ||
     normalized === UserRole.SectionManager ||
     normalized === UserRole.SectionCoManager
   );
@@ -1315,8 +1350,8 @@ export function resolveEmployeeDeductionWorkflow(
   config: DeductionWorkflowConfig = DEFAULT_DEDUCTION_WORKFLOW_CONFIG
 ): DeductionWorkflowChain {
   const normalizedRole = employee.role ? normalizeUserRole(employee.role) : null;
-  // HR Admin's own deductions/latency ALWAYS route directly to Main Manager
-  if (normalizedRole === UserRole.HRAdmin) {
+  // HR Admin / HR Manager's own deductions/latency ALWAYS route directly to Main Manager
+  if (normalizedRole && isHRRole(normalizedRole)) {
     return 'main_manager_only';
   }
 
@@ -1344,7 +1379,7 @@ export function resolveInitialDeductionStatus(params: {
   workflowChain: DeductionWorkflowChain;
 }): DeductionApprovalStatus {
   const normalizedRole = params.targetRole ? normalizeUserRole(params.targetRole) : null;
-  if (normalizedRole === UserRole.HRAdmin) {
+  if (normalizedRole && isHRRole(normalizedRole)) {
     return 'pending_main_manager';
   }
   if (normalizedRole === UserRole.SectionManager) {
@@ -1359,7 +1394,7 @@ export function resolveInitialDeductionStatus(params: {
 
 /**
  * Evaluates auto-escalation and role-based routing dynamically:
- * - HR Admin's own pending requests always resolve to `pending_main_manager`.
+ * - HR Admin / HR Manager's own pending requests always resolve to `pending_main_manager`.
  * - Section Manager's own `pending_manager` requests always skip to `pending_hr_approval`.
  * - Regular employee `pending_manager` requests past `escalationDeadline` resolve to `escalated_to_hr`.
  */
@@ -1373,7 +1408,7 @@ export function getEffectiveDeductionStatus(
   }
 
   const normalizedTarget = targetRole ? normalizeUserRole(targetRole) : null;
-  if (normalizedTarget === UserRole.HRAdmin) {
+  if (normalizedTarget && isHRRole(normalizedTarget)) {
     return 'pending_main_manager';
   }
   if (normalizedTarget === UserRole.SectionManager && request.status === 'pending_manager') {
@@ -1486,12 +1521,13 @@ export function canActOnDeductionApproval(params: {
   const targetRole = params.targetRole ? normalizeUserRole(params.targetRole) : null;
 
   // Rule 2: Role-Based Routing
-  // HR Admin's own latency/deduction -> Main Manager ONLY
-  if (effectiveStatus === 'pending_main_manager' || targetRole === UserRole.HRAdmin) {
+  // HR Admin / HR Manager's own latency/deduction -> Main Manager ONLY
+  const targetIsHR = Boolean(targetRole && isHRRole(targetRole));
+  if (effectiveStatus === 'pending_main_manager' || targetIsHR) {
     return {
       canManagerAct: false,
       canHrAct: role === UserRole.MainManager,
-      effectiveStatus: targetRole === UserRole.HRAdmin ? 'pending_main_manager' : effectiveStatus,
+      effectiveStatus: targetIsHR ? 'pending_main_manager' : effectiveStatus,
       isSelf: false,
       pendingReviewerRole: 'main_manager',
     };
@@ -1505,7 +1541,7 @@ export function canActOnDeductionApproval(params: {
   ) {
     return {
       canManagerAct: false,
-      canHrAct: role === UserRole.HRAdmin || role === UserRole.MainManager,
+      canHrAct: isAdminOrHRRole(role),
       effectiveStatus,
       isSelf: false,
       pendingReviewerRole: 'hr_admin',
@@ -1583,14 +1619,11 @@ export function evaluateAttendanceLatenessPermissions(params: {
   const canModifyPunch =
     !isSelf &&
     (actor === UserRole.MainManager ||
-      (actor === UserRole.HRAdmin &&
-        targetRole !== UserRole.HRAdmin &&
-        targetRole !== UserRole.MainManager) ||
+      (isHRRole(actor) && !isAdminOrHRRole(targetRole)) ||
       (actor === UserRole.SectionManager &&
         managesSection &&
         targetRole !== UserRole.SectionManager &&
-        targetRole !== UserRole.HRAdmin &&
-        targetRole !== UserRole.MainManager));
+        !isAdminOrHRRole(targetRole)));
 
   if (!params.log.isLate) {
     return {
@@ -1659,8 +1692,8 @@ export function evaluateAttendanceLatenessPermissions(params: {
     };
   }
 
-  // Rule 2a: HR Admin's own latency -> Main Manager ONLY
-  if (stage === 'pending_main_manager' || targetRole === UserRole.HRAdmin) {
+  // Rule 2a: HR Admin / HR Manager's own latency -> Main Manager ONLY
+  if (stage === 'pending_main_manager' || isHRRole(targetRole)) {
     return {
       isSelf: false,
       isLatePending: true,
@@ -1684,7 +1717,7 @@ export function evaluateAttendanceLatenessPermissions(params: {
       stage,
       pendingReviewerRole: 'hr_admin',
       canManagerReview: false,
-      canFinalizeExcuse: actor === UserRole.HRAdmin || actor === UserRole.MainManager,
+      canFinalizeExcuse: isAdminOrHRRole(actor),
       canModifyPunch,
     };
   }
@@ -2442,8 +2475,8 @@ export function getDefaultStepsForWorkflow(): ApprovalStepRole[] {
 
 /**
  * RBAC check for the Admin/HR Reset Password action:
- * - Only `main_manager` and `hr_admin` may reset passwords.
- * - `hr_admin` CANNOT reset a `main_manager` account (button hidden).
+ * - Only `main_manager`, `hr_manager`, and `hr_admin` may reset passwords.
+ * - `hr_admin` / `hr_manager` CANNOT reset a `main_manager` account (button hidden).
  * - `main_manager` may reset any employee account.
  */
 export function canResetEmployeePassword(
@@ -2455,7 +2488,7 @@ export function canResetEmployeePassword(
   if (actor === UserRole.MainManager) {
     return true;
   }
-  if (actor === UserRole.HRAdmin) {
+  if (isHRRole(actor)) {
     return target !== UserRole.MainManager;
   }
   return false;
@@ -2503,4 +2536,96 @@ export function generateTemporaryPassword(length = 10): string {
 
   return chars.join('');
 }
+
+export const ALL_WORK_TYPES: WorkType[] = ['office', 'remote', 'hybrid', 'field'];
+
+export function normalizeWorkType(raw: unknown): WorkType {
+  if (typeof raw !== 'string') return 'office';
+  const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (key === 'remote' || key === 'wfh' || key === 'work_from_home') return 'remote';
+  if (key === 'hybrid') return 'hybrid';
+  if (key === 'field' || key === 'on_field' || key === 'site') return 'field';
+  return 'office';
+}
+
+export const ALL_HIDDEN_SECTION_KEYS: HiddenSectionKey[] = [
+  'leave_balances',
+  'salary_breakdown',
+  'attendance_logs',
+  'deductions',
+  'payslips',
+];
+
+export function normalizeHiddenSectionKey(raw: unknown): HiddenSectionKey | null {
+  if (typeof raw !== 'string') return null;
+  const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (
+    key === 'leave_balances' ||
+    key === 'salary_breakdown' ||
+    key === 'attendance_logs' ||
+    key === 'deductions' ||
+    key === 'payslips'
+  ) {
+    return key;
+  }
+  return null;
+}
+
+/**
+ * Evaluates which UI sections are hidden for a given employee based on active Visibility Rules.
+ * Used in Demo Mode (and unit tests); in Live Mode the server's `GET /visibility-rules/me`
+ * provides the authoritative list.
+ */
+export function evaluateUserHiddenSections(
+  employee:
+    | (Pick<Employee, 'id' | 'employeeType' | 'groupIds'> & { role?: UserRole | string })
+    | null
+    | undefined,
+  rules: VisibilityRule[] = [],
+  options?: { includeAdmins?: boolean }
+): HiddenSectionKey[] {
+  if (!employee) return [];
+  if (!options?.includeAdmins && employee.role && isAdminOrHRRole(employee.role)) {
+    return [];
+  }
+
+  const hidden = new Set<HiddenSectionKey>();
+  const empGroupIds = new Set(employee.groupIds ?? []);
+  const empType = employee.employeeType ?? 'office_employee';
+
+  for (const rule of rules) {
+    if (!rule.active) continue;
+    let matches = false;
+    if (rule.targetType === 'all') {
+      matches = true;
+    } else if (rule.targetType === 'group') {
+      matches = (rule.targetIds ?? []).some((gid) => empGroupIds.has(gid));
+    } else if (rule.targetType === 'employee_type') {
+      matches = (rule.targetIds ?? []).includes(empType);
+    } else if (rule.targetType === 'employees') {
+      matches = (rule.targetIds ?? []).includes(employee.id);
+    }
+
+    if (matches) {
+      for (const sec of rule.hiddenSections ?? []) {
+        const normalized = normalizeHiddenSectionKey(sec);
+        if (normalized) hidden.add(normalized);
+      }
+    }
+  }
+
+  return Array.from(hidden);
+}
+
+/**
+ * Convenience helper to check if a section is hidden by visibility rules.
+ */
+export function isSectionHidden(
+  hiddenSections: HiddenSectionKey[] | undefined,
+  section: HiddenSectionKey
+): boolean {
+  if (!hiddenSections || hiddenSections.length === 0) return false;
+  return hiddenSections.includes(section);
+}
+
 

@@ -14,6 +14,9 @@ export type NavSection =
   | 'patch_releases'
   | 'release_schedules'
   | 'settings_companies'
+  | 'settings_groups'
+  | 'settings_projects'
+  | 'settings_visibility_rules'
   | 'settings_models'
   | 'settings_geofences'
   | 'settings_payroll_workflows'
@@ -64,9 +67,12 @@ export const SIDEBAR_GROUPS: SidebarGroupSpec[] = [
   },
   {
     id: 'settings',
-    labelKey: 'navGroupSettings',
+    labelKey: 'navGroupOrganizationSettings',
     items: [
       { id: 'settings_companies', labelKey: 'navSettingsCompanies', groupId: 'settings' },
+      { id: 'settings_groups', labelKey: 'navSettingsGroups', groupId: 'settings' },
+      { id: 'settings_projects', labelKey: 'navSettingsProjects', groupId: 'settings' },
+      { id: 'settings_visibility_rules', labelKey: 'navSettingsVisibilityRules', groupId: 'settings' },
       { id: 'settings_models', labelKey: 'navSettingsModels', groupId: 'settings' },
       { id: 'settings_geofences', labelKey: 'navSettingsGeofences', groupId: 'settings' },
       {
@@ -82,7 +88,11 @@ export const SIDEBAR_GROUPS: SidebarGroupSpec[] = [
 export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[] {
   const normalized = normalizeUserRole(role);
 
-  if (normalized === UserRole.MainManager || normalized === UserRole.HRAdmin) {
+  if (
+    normalized === UserRole.MainManager ||
+    normalized === UserRole.HRManager ||
+    normalized === UserRole.HRAdmin
+  ) {
     return [
       'dashboard',
       'employees',
@@ -96,6 +106,9 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
       'patch_releases',
       'release_schedules',
       'settings_companies',
+      'settings_groups',
+      'settings_projects',
+      'settings_visibility_rules',
       'settings_models',
       'settings_geofences',
       'settings_payroll_workflows',

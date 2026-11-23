@@ -15,7 +15,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { getRoleLabel, t } from '../i18n/translations';
+import { getRoleLabel, getWorkTypeLabel, t } from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
 import {
   AttendanceLog,
@@ -29,9 +29,11 @@ import {
   DocumentTypeValue,
   Employee,
   EmployeeDocument,
+  EmployeeGroup,
   EmployeeLabel,
   EmployeeModel,
   GeofenceZone,
+  HiddenSectionKey,
   Language,
   LeaveRequest,
   PatchMoneyRelease,
@@ -39,19 +41,24 @@ import {
   PayrollCategoryItem,
   PayrollEntry,
   ProAssignment,
+  Project,
   SalaryReleaseSchedule,
   Section,
   ShiftSchedule,
   UpdateEmployeePayload,
   UserRole,
+  WorkType,
 } from '../types/hr';
 import {
+  ALL_WORK_TYPES,
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatShortDate,
   getDocumentExpiryStatus,
   getDocumentPreviewSource,
+  isAdminOrHRRole,
   isProAssignmentActive,
   isSharedEmployeeInCompany,
+  normalizeWorkType,
 } from '../utils/hrLogic';
 import { useIsCompactOverlay } from '../hooks/useIsCompactOverlay';
 import { Avatar } from './Avatar';
@@ -70,6 +77,9 @@ interface EmployeesViewProps {
   companies: Company[];
   sections: Section[];
   labels: EmployeeLabel[];
+  groups?: EmployeeGroup[];
+  projects?: Project[];
+  hiddenSections?: HiddenSectionKey[];
   proAssignments: ProAssignment[];
   models: EmployeeModel[];
   scopedEmployees: Employee[];
@@ -124,6 +134,9 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   companies,
   sections,
   labels,
+  groups = [],
+  projects = [],
+  hiddenSections = [],
   proAssignments,
   models,
   scopedEmployees,
@@ -152,7 +165,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   onDeleteProAssignment,
 }) => {
   const isCompactOverlay = useIsCompactOverlay();
-  const canManageStaff = activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const canManageStaff = isAdminOrHRRole(activeRole);
   const isEmployeeOnly = activeRole === UserRole.Employee;
   const isPro = activeRole === UserRole.PRO;
 
@@ -175,6 +188,10 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
   const [search, setSearch] = useState('');
   const [sectionFilter, setSectionFilter] = useState('all');
   const [labelFilter, setLabelFilter] = useState('all');
+  const [groupFilter, setGroupFilter] = useState('all');
+  const [projectFilter, setProjectFilter] = useState('all');
+  const [workTypeFilter, setWorkTypeFilter] = useState<'all' | WorkType>('all');
+  const [roleTitleFilter, setRoleTitleFilter] = useState('all');
 
   // Documents vault state
   const [docSearch, setDocSearch] = useState('');
@@ -247,10 +264,51 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
     [customDocumentTypes]
   );
 
+  const distinctJobTitles = useMemo(() => {
+    const set = new Set<string>();
+    scopedEmployees.forEach((e) => {
+      if (e.jobTitle && e.jobTitle.trim()) set.add(e.jobTitle.trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [scopedEmployees]);
+
+  const hasActiveFilters =
+    Boolean(search.trim()) ||
+    sectionFilter !== 'all' ||
+    labelFilter !== 'all' ||
+    groupFilter !== 'all' ||
+    projectFilter !== 'all' ||
+    workTypeFilter !== 'all' ||
+    roleTitleFilter !== 'all';
+
+  const clearAllFilters = () => {
+    setSearch('');
+    setSectionFilter('all');
+    setLabelFilter('all');
+    setGroupFilter('all');
+    setProjectFilter('all');
+    setWorkTypeFilter('all');
+    setRoleTitleFilter('all');
+  };
+
   const visibleEmployees = useMemo(() => {
     return scopedEmployees.filter((emp) => {
       if (sectionFilter !== 'all' && emp.sectionId !== sectionFilter) return false;
       if (labelFilter !== 'all' && !emp.labelIds.includes(labelFilter)) return false;
+      if (groupFilter !== 'all' && !(emp.groupIds ?? []).includes(groupFilter)) return false;
+      if (projectFilter !== 'all' && !(emp.projectIds ?? []).includes(projectFilter)) return false;
+      if (workTypeFilter !== 'all' && normalizeWorkType(emp.workType) !== workTypeFilter) {
+        return false;
+      }
+      if (roleTitleFilter !== 'all') {
+        if (roleTitleFilter.startsWith('role:')) {
+          const targetRole = roleTitleFilter.slice(5);
+          if (emp.role !== targetRole) return false;
+        } else if (roleTitleFilter.startsWith('title:')) {
+          const targetTitle = roleTitleFilter.slice(6);
+          if ((emp.jobTitle ?? '').trim() !== targetTitle) return false;
+        }
+      }
       const q = search.trim().toLowerCase();
       if (q) {
         const hay = `${emp.fullName} ${emp.employeeCode} ${emp.jobTitle} ${emp.email}`.toLowerCase();
@@ -258,7 +316,16 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
       }
       return true;
     });
-  }, [scopedEmployees, sectionFilter, labelFilter, search]);
+  }, [
+    scopedEmployees,
+    sectionFilter,
+    labelFilter,
+    groupFilter,
+    projectFilter,
+    workTypeFilter,
+    roleTitleFilter,
+    search,
+  ]);
 
   const directoryKpis = useMemo(() => {
     const activeCount = scopedEmployees.filter((e) => e.active).length;
@@ -424,6 +491,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         companies={companies}
         sections={sections}
         labels={labels}
+        groups={groups}
+        projects={projects}
         models={models}
         geofences={geofences}
         payrollCategories={payrollCategories}
@@ -458,6 +527,8 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         companies={companies}
         sections={sections}
         labels={labels}
+        groups={groups}
+        projects={projects}
         models={models}
         geofences={geofences}
         payrollCategories={payrollCategories}
@@ -519,6 +590,9 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         companies={companies}
         sections={sections}
         labels={labels}
+        groups={groups}
+        projects={projects}
+        hiddenSections={hiddenSections}
         models={models}
         geofences={geofences}
         documents={documents.filter((d) => d.employeeId === selectedEmp.id)}
@@ -1375,46 +1449,128 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
         </section>
       )}
 
-      {/* Filter Bar */}
+      {/* Upgraded Directory Filter Bar */}
       {!isEmployeeOnly && (
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t(lang, 'search')}
-              aria-label="Search employees"
-              className="w-full ps-9 pe-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600"
-            />
+        <div className="space-y-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="relative flex-1 min-w-[220px] max-w-sm">
+              <Search className="w-4 h-4 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t(lang, 'search')}
+                aria-label="Search employees"
+                className="w-full ps-9 pe-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-600"
+              />
+            </div>
+
+            <select
+              value={groupFilter}
+              onChange={(e) => setGroupFilter(e.target.value)}
+              aria-label={t(lang, 'employeeGroups')}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+            >
+              <option value="all">{t(lang, 'allGroups')}</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={projectFilter}
+              onChange={(e) => setProjectFilter(e.target.value)}
+              aria-label={t(lang, 'projectsTitle')}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+            >
+              <option value="all">{t(lang, 'allProjects')}</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.code} — {p.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={workTypeFilter}
+              onChange={(e) => setWorkTypeFilter(e.target.value as 'all' | WorkType)}
+              aria-label={t(lang, 'workType')}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+            >
+              <option value="all">{t(lang, 'allWorkTypes')}</option>
+              {ALL_WORK_TYPES.map((wt) => (
+                <option key={wt} value={wt}>
+                  {getWorkTypeLabel(lang, wt)}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={roleTitleFilter}
+              onChange={(e) => setRoleTitleFilter(e.target.value)}
+              aria-label={t(lang, 'allRolesTitles')}
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+            >
+              <option value="all">{t(lang, 'allRolesTitles')}</option>
+              <optgroup label="System Roles">
+                {(Object.values(UserRole) as UserRole[]).map((r) => (
+                  <option key={`role:${r}`} value={`role:${r}`}>
+                    {getRoleLabel(lang, r)}
+                  </option>
+                ))}
+              </optgroup>
+              {distinctJobTitles.length > 0 && (
+                <optgroup label="Job Titles">
+                  {distinctJobTitles.map((title) => (
+                    <option key={`title:${title}`} value={`title:${title}`}>
+                      {title}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+
+            <select
+              value={sectionFilter}
+              onChange={(e) => setSectionFilter(e.target.value)}
+              aria-label="Filter by section"
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+            >
+              <option value="all">All Sections</option>
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={labelFilter}
+              onChange={(e) => setLabelFilter(e.target.value)}
+              aria-label="Filter by status label"
+              className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+            >
+              <option value="all">{t(lang, 'allLabels')}</option>
+              {labels.map((lbl) => (
+                <option key={lbl.id} value={lbl.id}>
+                  {lbl.name}
+                </option>
+              ))}
+            </select>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>{t(lang, 'clearFilters')}</span>
+              </button>
+            )}
           </div>
-          <select
-            value={sectionFilter}
-            onChange={(e) => setSectionFilter(e.target.value)}
-            aria-label="Filter by section"
-            className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
-          >
-            <option value="all">All Sections</option>
-            {sections.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={labelFilter}
-            onChange={(e) => setLabelFilter(e.target.value)}
-            aria-label="Filter by status label"
-            className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
-          >
-            <option value="all">{t(lang, 'allLabels')}</option>
-            {labels.map((lbl) => (
-              <option key={lbl.id} value={lbl.id}>
-                {lbl.name}
-              </option>
-            ))}
-          </select>
         </div>
       )}
 
@@ -1478,7 +1634,7 @@ export const EmployeesView: React.FC<EmployeesViewProps> = ({
                           {getRoleLabel(lang, emp.role)}
                         </p>
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                          {sec?.name ?? '—'}
+                          {sec?.name ?? '—'} · {getWorkTypeLabel(lang, normalizeWorkType(emp.workType))}
                           {emp.pendingShiftProposal && !isPro ? ' · Shift Pending' : ''}
                         </p>
                       </td>

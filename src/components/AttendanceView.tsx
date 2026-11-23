@@ -6,6 +6,7 @@ import {
   Clock,
   Download,
   Edit3,
+  EyeOff,
   History,
   Info,
   Laptop,
@@ -26,6 +27,7 @@ import {
   EmployeeModel,
   GeofenceZone,
   GPSReading,
+  HiddenSectionKey,
   Language,
   UserRole,
 } from '../types/hr';
@@ -37,6 +39,7 @@ import {
   formatShortDate,
   formatTime,
   isAttendanceTracked,
+  isSectionHidden,
   PendingReviewerRole,
   resolveClockInPolicy,
 } from '../utils/hrLogic';
@@ -57,6 +60,7 @@ interface AttendanceViewProps {
   attendanceAudit: AttendanceAuditEntry[];
   deductionApprovals?: DeductionApprovalRequest[];
   settings: AppSettings;
+  hiddenSections?: HiddenSectionKey[];
   gpsReading: GPSReading | null;
   simulatedDevice: 'mobile' | 'desktop';
   onClockIn: () => Promise<void>;
@@ -104,6 +108,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   attendanceAudit,
   deductionApprovals = [],
   settings,
+  hiddenSections = [],
   gpsReading,
   simulatedDevice,
   onClockIn,
@@ -113,6 +118,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   onHrConfirmLatenessDeduction,
   onModifyRecord,
 }) => {
+  const hideAttendanceLogs = isSectionHidden(hiddenSections, 'attendance_logs');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'late' | 'excused'>('all');
   const [showMap, setShowMap] = useState(false);
@@ -385,7 +391,18 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
         </section>
       )}
 
-      {/* Minimalist Attendance List */}
+      {/* Minimalist Attendance List (hidden if restricted by visibility rules) */}
+      {hideAttendanceLogs ? (
+        <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center space-y-2">
+          <EyeOff className="w-7 h-7 text-slate-400 mx-auto" />
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+            {t(lang, 'restrictedByPolicyTitle')}
+          </h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+            {t(lang, 'restrictedByPolicyDesc')}
+          </p>
+        </section>
+      ) : (
       <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="relative flex-1 max-w-xs">
@@ -523,10 +540,11 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
           </div>
         )}
       </section>
+      )}
 
       {/* Progressive Disclosure Drawer: Full GPS, Role-Routed Latency Review, Punch Edit & Audit Log */}
       <SlideOverDrawer
-        open={Boolean(selectedLog)}
+        open={Boolean(selectedLog) && !hideAttendanceLogs}
         onClose={() => setSelectedLogId(null)}
         title={selectedEmp?.fullName ?? 'Attendance Record'}
         subtitle={

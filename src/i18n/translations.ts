@@ -5,6 +5,7 @@ import {
   DeductionTargetBucket,
   DeductionWorkflowChain,
   EmployeeType,
+  HiddenSectionKey,
   Language,
   LeaveStatus,
   PatchPaymentMethod,
@@ -12,6 +13,8 @@ import {
   PayrollEntryType,
   SalaryReleaseStatus,
   UserRole,
+  VisibilityRuleTargetType,
+  WorkType,
 } from '../types/hr';
 import { normalizeUserRole } from '../utils/hrLogic';
 
@@ -412,6 +415,62 @@ const EN: Dict = {
   bulkImportSuccessToast: 'Bulk import finished',
   rowColumnLabel: 'Row',
   validationNotesLabel: 'Validation / Match',
+  navGroupOrganizationSettings: 'Organization & Settings',
+  navSettingsGroups: 'Employee Groups',
+  navSettingsProjects: 'Projects',
+  navSettingsVisibilityRules: 'Visibility Rules',
+  workType: 'Work Type',
+  workTypeOffice: 'Office',
+  workTypeRemote: 'Remote',
+  workTypeHybrid: 'Hybrid',
+  workTypeField: 'Field',
+  employeeGroups: 'Employee Groups',
+  employeeGroupsSubtitle: 'Organize staff into functional or operational groups for filtering and visibility policies.',
+  addGroup: 'Add Group',
+  editGroup: 'Edit Group',
+  groupName: 'Group Name',
+  groupDescription: 'Description',
+  groupColor: 'Color Badge',
+  membersCount: 'Members',
+  noGroupsYet: 'No employee groups created yet.',
+  projectsTitle: 'Projects',
+  projectsSubtitle: 'Manage company projects, assign a Project Manager, and configure supervising team leads.',
+  addProject: 'Add Project',
+  editProject: 'Edit Project',
+  projectCode: 'Project Code',
+  projectName: 'Project Name',
+  projectManager: 'Project Manager',
+  projectSupervisors: 'Supervisors (under Project Manager)',
+  noProjectManager: 'Unassigned',
+  noProjectsYet: 'No projects created yet.',
+  visibilityRulesTitle: 'Employee Visibility Rules',
+  visibilityRulesSubtitle: 'Control which dashboard, leave, attendance, and payroll sections are hidden from targeted employee groups.',
+  addVisibilityRule: 'Add Visibility Rule',
+  editVisibilityRule: 'Edit Visibility Rule',
+  ruleName: 'Rule Name',
+  appliesTo: 'Applies To',
+  targetGroup: 'Employee Groups',
+  targetEmployeeType: 'Employee Type',
+  targetEmployees: 'Specific Employees',
+  targetAll: 'All Employees',
+  hiddenSectionsLabel: 'Hidden Sections',
+  hiddenLeaveBalances: 'All Leave Balances',
+  hiddenSalaryBreakdown: 'Salary Breakdown',
+  hiddenAttendanceLogs: 'Attendance Logs',
+  hiddenDeductions: 'Deductions',
+  hiddenPayslips: 'Payslips',
+  noVisibilityRulesYet: 'No visibility rules configured yet.',
+  restrictedByPolicyTitle: 'Section Restricted by HR Policy',
+  restrictedByPolicyDesc: 'This section is currently hidden for your account under company visibility settings.',
+  allGroups: 'All Groups',
+  allProjects: 'All Projects',
+  allWorkTypes: 'All Work Types',
+  allRolesTitles: 'All Roles / Titles',
+  clearFilters: 'Clear Filters',
+  assignedGroups: 'Assigned Groups',
+  assignedProjects: 'Assigned Projects',
+  noGroupsAssigned: 'No groups assigned',
+  noProjectsAssigned: 'No projects assigned',
 };
 
 const AR: Dict = {
@@ -796,6 +855,62 @@ const AR: Dict = {
   bulkImportSuccessToast: 'اكتمل الاستيراد الجماعي للموظفين',
   rowColumnLabel: 'الصف',
   validationNotesLabel: 'التحقق / المطابقة',
+  navGroupOrganizationSettings: 'التنظيم والإعدادات',
+  navSettingsGroups: 'مجموعات الموظفين',
+  navSettingsProjects: 'المشاريع',
+  navSettingsVisibilityRules: 'قواعد الإخفاء والصلاحية',
+  workType: 'نظام العمل',
+  workTypeOffice: 'مكتبي',
+  workTypeRemote: 'عن بُعد',
+  workTypeHybrid: 'هجين',
+  workTypeField: 'ميداني',
+  employeeGroups: 'مجموعات الموظفين',
+  employeeGroupsSubtitle: 'تنظيم الموظفين في مجموعات تشغيلية لتسهيل التصفية وسياسات الإظهار والإخفاء.',
+  addGroup: 'إضافة مجموعة',
+  editGroup: 'تعديل المجموعة',
+  groupName: 'اسم المجموعة',
+  groupDescription: 'الوصف',
+  groupColor: 'لون الشارة',
+  membersCount: 'الأعضاء',
+  noGroupsYet: 'لم يتم إنشاء مجموعات موظفين بعد.',
+  projectsTitle: 'المشاريع',
+  projectsSubtitle: 'إدارة مشاريع الشركة وتعيين مدير المشروع والمشرفين التابعين له.',
+  addProject: 'إضافة مشروع',
+  editProject: 'تعديل المشروع',
+  projectCode: 'رمز المشروع',
+  projectName: 'اسم المشروع',
+  projectManager: 'مدير المشروع',
+  projectSupervisors: 'المشرفون (تحت مدير المشروع)',
+  noProjectManager: 'غير معيّن',
+  noProjectsYet: 'لم يتم إنشاء مشاريع بعد.',
+  visibilityRulesTitle: 'قواعد إخفاء معلومات الموظفين',
+  visibilityRulesSubtitle: 'تحكّم في الأقسام المخفية عن الموظفين في لوحة التحكم والإجازات والحضور والرواتب.',
+  addVisibilityRule: 'إضافة قاعدة إخفاء',
+  editVisibilityRule: 'تعديل قاعدة الإخفاء',
+  ruleName: 'اسم القاعدة',
+  appliesTo: 'تُطبّق على',
+  targetGroup: 'مجموعات الموظفين',
+  targetEmployeeType: 'نوع الموظف',
+  targetEmployees: 'موظفون محددون',
+  targetAll: 'جميع الموظفين',
+  hiddenSectionsLabel: 'الأقسام المخفية',
+  hiddenLeaveBalances: 'جميع أرصدة الإجازات',
+  hiddenSalaryBreakdown: 'تفاصيل الراتب',
+  hiddenAttendanceLogs: 'سجلات الحضور',
+  hiddenDeductions: 'الخصومات',
+  hiddenPayslips: 'كشوف الرواتب',
+  noVisibilityRulesYet: 'لم يتم إعداد قواعد إخفاء بعد.',
+  restrictedByPolicyTitle: 'القسم مقيّد وفق سياسة الموارد البشرية',
+  restrictedByPolicyDesc: 'تم إخفاء هذا القسم عن حسابك وفق إعدادات الرؤية في الشركة.',
+  allGroups: 'جميع المجموعات',
+  allProjects: 'جميع المشاريع',
+  allWorkTypes: 'جميع أنظمة العمل',
+  allRolesTitles: 'جميع الأدوار / المسميات',
+  clearFilters: 'مسح الفلاتر',
+  assignedGroups: 'المجموعات المعيّنة',
+  assignedProjects: 'المشاريع المعيّنة',
+  noGroupsAssigned: 'لا توجد مجموعات معيّنة',
+  noProjectsAssigned: 'لا توجد مشاريع معيّنة',
 };
 
 const UR: Dict = {
@@ -1180,6 +1295,62 @@ const UR: Dict = {
   bulkImportSuccessToast: 'بلک امپورٹ مکمل ہو گیا',
   rowColumnLabel: 'قطار',
   validationNotesLabel: 'تصدیق / میچ',
+  navGroupOrganizationSettings: 'تنظیم اور ترتیبات',
+  navSettingsGroups: 'ملازمین کے گروپس',
+  navSettingsProjects: 'پروجیکٹس',
+  navSettingsVisibilityRules: 'وزیبلٹی رولز (اخفاء)',
+  workType: 'کام کی نوعیت',
+  workTypeOffice: 'دفتر',
+  workTypeRemote: 'ریموٹ',
+  workTypeHybrid: 'ہائبرڈ',
+  workTypeField: 'فیلڈ',
+  employeeGroups: 'ملازمین کے گروپس',
+  employeeGroupsSubtitle: 'فلٹرنگ اور وزیبلٹی پالیسیوں کے لیے ملازمین کو گروپس میں منظم کریں۔',
+  addGroup: 'گروپ شامل کریں',
+  editGroup: 'گروپ میں ترمیم',
+  groupName: 'گروپ کا نام',
+  groupDescription: 'تفصیل',
+  groupColor: 'رنگ کا بیج',
+  membersCount: 'ارکان',
+  noGroupsYet: 'ابھی تک کوئی گروپ نہیں بنایا گیا۔',
+  projectsTitle: 'پروجیکٹس',
+  projectsSubtitle: 'کمپنی کے پروجیکٹس، پروجیکٹ منیجر اور ان کے ماتحت سپروائزرز کا انتظام کریں۔',
+  addProject: 'پروجیکٹ شامل کریں',
+  editProject: 'پروجیکٹ میں ترمیم',
+  projectCode: 'پروجیکٹ کوڈ',
+  projectName: 'پروجیکٹ کا نام',
+  projectManager: 'پروجیکٹ منیجر',
+  projectSupervisors: 'سپروائزرز (پروجیکٹ منیجر کے ماتحت)',
+  noProjectManager: 'غیر تفویض کردہ',
+  noProjectsYet: 'ابھی تک کوئی پروجیکٹ نہیں بنایا گیا۔',
+  visibilityRulesTitle: 'ملازمین کے لیے وزیبلٹی رولز',
+  visibilityRulesSubtitle: 'کنٹرول کریں کہ کون سے ڈیش بورڈ، چھٹی، حاضری اور تنخواہ کے حصے ملازمین سے پوشیدہ رہیں۔',
+  addVisibilityRule: 'وزیبلٹی رول شامل کریں',
+  editVisibilityRule: 'وزیبلٹی رول میں ترمیم',
+  ruleName: 'اصول کا نام',
+  appliesTo: 'اطلاق',
+  targetGroup: 'ملازمین کے گروپس',
+  targetEmployeeType: 'ملازم کی قسم',
+  targetEmployees: 'مخصوص ملازمین',
+  targetAll: 'تمام ملازمین',
+  hiddenSectionsLabel: 'پوشیدہ حصے',
+  hiddenLeaveBalances: 'تمام چھٹیوں کا بیلنس',
+  hiddenSalaryBreakdown: 'تنخواہ کی تفصیل',
+  hiddenAttendanceLogs: 'حاضری کے ریکارڈز',
+  hiddenDeductions: 'کٹوتیاں',
+  hiddenPayslips: 'پے سلپس',
+  noVisibilityRulesYet: 'ابھی تک کوئی وزیبلٹی رول ترتیب نہیں دیا گیا۔',
+  restrictedByPolicyTitle: 'یہ حصہ HR پالیسی کے تحت محدود ہے',
+  restrictedByPolicyDesc: 'کمپنی کی وزیبلٹی ترتیبات کے مطابق یہ سیکشن آپ کے اکاؤنٹ کے لیے پوشیدہ ہے۔',
+  allGroups: 'تمام گروپس',
+  allProjects: 'تمام پروجیکٹس',
+  allWorkTypes: 'کام کی تمام اقسام',
+  allRolesTitles: 'تمام عہدے / رولز',
+  clearFilters: 'فلٹرز صاف کریں',
+  assignedGroups: 'تفویض کردہ گروپس',
+  assignedProjects: 'تفویض کردہ پروجیکٹس',
+  noGroupsAssigned: 'کوئی گروپ تفویض نہیں',
+  noProjectsAssigned: 'کوئی پروجیکٹ تفویض نہیں',
 };
 
 const DICTS: Record<Language, Dict> = { en: EN, ar: AR, ur: UR };
@@ -1193,6 +1364,7 @@ export function getRoleLabel(lang: Language, role: UserRole | string): string {
   const map: Record<Language, Record<UserRole, string>> = {
     en: {
       [UserRole.MainManager]: 'Main Manager',
+      [UserRole.HRManager]: 'HR Manager',
       [UserRole.HRAdmin]: 'HR Admin',
       [UserRole.SectionManager]: 'Section Manager',
       [UserRole.SectionCoManager]: 'Section Co-Manager',
@@ -1202,6 +1374,7 @@ export function getRoleLabel(lang: Language, role: UserRole | string): string {
     },
     ar: {
       [UserRole.MainManager]: 'المدير العام',
+      [UserRole.HRManager]: 'مدير الموارد البشرية',
       [UserRole.HRAdmin]: 'مسؤول الموارد البشرية',
       [UserRole.SectionManager]: 'مدير القسم',
       [UserRole.SectionCoManager]: 'نائب مدير القسم',
@@ -1211,6 +1384,7 @@ export function getRoleLabel(lang: Language, role: UserRole | string): string {
     },
     ur: {
       [UserRole.MainManager]: 'مین منیجر',
+      [UserRole.HRManager]: 'HR منیجر',
       [UserRole.HRAdmin]: 'HR ایڈمن',
       [UserRole.SectionManager]: 'سیکشن منیجر',
       [UserRole.SectionCoManager]: 'سیکشن کو منیجر',
@@ -1220,6 +1394,51 @@ export function getRoleLabel(lang: Language, role: UserRole | string): string {
     },
   };
   return map[lang][normalized];
+}
+
+export function getWorkTypeLabel(lang: Language, workType: WorkType | string | undefined): string {
+  switch (workType) {
+    case 'remote':
+      return t(lang, 'workTypeRemote');
+    case 'hybrid':
+      return t(lang, 'workTypeHybrid');
+    case 'field':
+      return t(lang, 'workTypeField');
+    case 'office':
+    default:
+      return t(lang, 'workTypeOffice');
+  }
+}
+
+export function getHiddenSectionLabel(lang: Language, key: HiddenSectionKey): string {
+  switch (key) {
+    case 'leave_balances':
+      return t(lang, 'hiddenLeaveBalances');
+    case 'salary_breakdown':
+      return t(lang, 'hiddenSalaryBreakdown');
+    case 'attendance_logs':
+      return t(lang, 'hiddenAttendanceLogs');
+    case 'deductions':
+      return t(lang, 'hiddenDeductions');
+    case 'payslips':
+      return t(lang, 'hiddenPayslips');
+  }
+}
+
+export function getVisibilityTargetTypeLabel(
+  lang: Language,
+  targetType: VisibilityRuleTargetType
+): string {
+  switch (targetType) {
+    case 'group':
+      return t(lang, 'targetGroup');
+    case 'employee_type':
+      return t(lang, 'targetEmployeeType');
+    case 'employees':
+      return t(lang, 'targetEmployees');
+    case 'all':
+      return t(lang, 'targetAll');
+  }
 }
 
 export function getStepRoleLabel(lang: Language, step: ApprovalStepRole): string {

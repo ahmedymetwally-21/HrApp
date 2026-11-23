@@ -14,6 +14,7 @@ import { getLeaveStatusLabel, getStepRoleLabel, t } from '../i18n/translations';
 import { nativeBridge } from '../services/nativeBridge';
 import {
   Employee,
+  HiddenSectionKey,
   Language,
   LeaveRequest,
   LeaveStatus,
@@ -24,6 +25,7 @@ import {
   calculateInclusiveDays,
   canRoleActOnLeaveStep,
   formatShortDate,
+  isSectionHidden,
   validateLeaveSubmission,
 } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
@@ -35,6 +37,7 @@ interface LeavesViewProps {
   activeRole: UserRole;
   scopedEmployees: Employee[];
   leaves: LeaveRequest[];
+  hiddenSections?: HiddenSectionKey[];
   onSubmitLeave: (input: {
     type: LeaveType;
     startDate: string;
@@ -68,10 +71,12 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
   activeRole,
   scopedEmployees,
   leaves,
+  hiddenSections = [],
   onSubmitLeave,
   onDecideLeaveStep,
   onAddCoManagerNote,
 }) => {
+  const hideLeaveBalances = isSectionHidden(hiddenSections, 'leave_balances');
   const [statusFilter, setStatusFilter] = useState<'all' | LeaveStatus>('all');
   const [selectedLeaveId, setSelectedLeaveId] = useState<string | null>(null);
   const [remark, setRemark] = useState('');
@@ -175,11 +180,13 @@ export const LeavesView: React.FC<LeavesViewProps> = ({
           <h2 className="text-xl font-semibold text-slate-900 dark:text-white">
             {t(lang, 'navLeaves')}
           </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono tabular-nums">
-            Annual {Math.max(0, lb.annualTotal - lb.annualUsed)}/{lb.annualTotal}d · Sick{' '}
-            {Math.max(0, lb.sickTotal - lb.sickUsed)}/{lb.sickTotal}d · Emergency{' '}
-            {Math.max(0, lb.emergencyTotal - lb.emergencyUsed)}/{lb.emergencyTotal}d
-          </p>
+          {!hideLeaveBalances && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono tabular-nums">
+              Annual {Math.max(0, lb.annualTotal - lb.annualUsed)}/{lb.annualTotal}d · Sick{' '}
+              {Math.max(0, lb.sickTotal - lb.sickUsed)}/{lb.sickTotal}d · Emergency{' '}
+              {Math.max(0, lb.emergencyTotal - lb.emergencyUsed)}/{lb.emergencyTotal}d
+            </p>
+          )}
         </div>
 
         <button

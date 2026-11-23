@@ -20,6 +20,7 @@ import {
   ProAssignment,
   SalaryReleaseSchedule,
   UserRole,
+  VisibilityRule,
 } from '../types/hr';
 import {
   addMonthsToYYYYMM,
@@ -44,6 +45,7 @@ import {
   evaluateClockInEligibility,
   evaluateModelLateness,
   evaluateStartupEndpointResults,
+  evaluateUserHiddenSections,
   formatAdcbWpsAsSif,
   generateTemporaryPassword,
   getDocumentExpiryStatus,
@@ -54,10 +56,13 @@ import {
   getStartupEndpointsForRole,
   isAdminOrHRRole,
   isAttendanceTracked,
+  isHRRole,
   isMainManagerRole,
   isPayrollEligible,
   isPayrollEntryActiveInMonth,
+  isSectionHidden,
   normalizeUserRole,
+  normalizeWorkType,
   resolveApprovalWorkflow,
   resolveEmployeeDeductionWorkflow,
   stopPermanentPayrollEntry,
@@ -1498,6 +1503,121 @@ test('generateTemporaryPassword enforces min 6 chars, character diversity, and r
   const pwd2 = generateTemporaryPassword(10);
   const pwd3 = generateTemporaryPassword(10);
   assert.ok(pwd !== pwd2 || pwd2 !== pwd3);
+});
+
+test('Phase 1 v4.0: hr_manager role normalization, full HR parity, and startup endpoints', () => {
+  assert.equal(normalizeUserRole('hr_manager'), UserRole.HRManager);
+  assert.equal(normalizeUserRole('HR_MANAGER'), UserRole.HRManager);
+  assert.equal(normalizeUserRole('HR Manager'), UserRole.HRManager);
+  assert.equal(normalizeUserRole('hrmanager'), UserRole.HRManager);
+
+  assert.equal(isHRRole(UserRole.HRManager), true);
+  assert.equal(isHRRole(UserRole.HRAdmin), true);
+  assert.equal(isHRRole(UserRole.MainManager), false);
+  assert.equal(isAdminOrHRRole(UserRole.HRManager), true);
+  assert.equal(canControlSalaryRelease(UserRole.HRManager), true);
+
+  // HR Manager can reset non-MainManager passwords, blocked on Main Manager
+  assert.equal(canResetEmployeePassword(UserRole.HRManager, UserRole.Employee), true);
+  assert.equal(canResetEmployeePassword(UserRole.HRManager, UserRole.HRAdmin), true);
+  assert.equal(canResetEmployeePassword(UserRole.HRManager, UserRole.MainManager), false);
+
+  // Startup endpoints for HR Manager include groups, projects, visibility-rules, and visibility-rules/me
+  const hrMgrPaths = getStartupEndpointsForRole(UserRole.HRManager).map((s) => s.path);
+  assert.ok(hrMgrPaths.includes('/groups'));
+  assert.ok(hrMgrPaths.includes('/projects'));
+  assert.ok(hrMgrPaths.includes('/visibility-rules'));
+  assert.ok(hrMgrPaths.includes('/visibility-rules/me'));
+
+  // Non-admin employee gets /groups, /projects, /visibility-rules/me but NOT /visibility-rules
+  const empPaths = getStartupEndpointsForRole(UserRole.Employee).map((s) => s.path);
+  assert.ok(empPaths.includes('/groups'));
+  assert.ok(empPaths.includes('/projects'));
+  assert.ok(empPaths.includes('/visibility-rules/me'));
+  assert.equal(empPaths.includes('/visibility-rules'), false);
+});
+
+test('Phase 1 v4.0: workType normalization and employee visibility rules evaluation', () => {
+  assert.equal(normalizeWorkType('office'), 'office');
+  assert.equal(normalizeWorkType('REMOTE'), 'remote');
+  assert.equal(normalizeWorkType('Hybrid'), 'hybrid');
+  assert.equal(normalizeWorkType('field'), 'field');
+  assert.equal(normalizeWorkType(undefined), 'office');
+  assert.equal(normalizeWorkType('unknown_value'), 'office');
+
+  const driverEmp = makeEmp({
+    id: 'emp-drv-1',
+    role: UserRole.Employee,
+    employeeType: 'driver',
+    workType: 'field',
+    groupIds: ['grp-drivers'],
+    projectIds: ['prj-1'],
+  });
+  const officeEmp = makeEmp({
+    id: 'emp-off-1',
+    role: UserRole.Employee,
+    employeeType: 'office_employee',
+    workType: 'office',
+    groupIds: ['grp-office'],
+    projectIds: [],
+  });
+  const hrManager = makeEmp({
+    id: 'emp-hrm-1',
+    role: UserRole.HRManager,
+    employeeType: 'management',
+    groupIds: ['grp-drivers'],
+  });
+
+  const rules: VisibilityRule[] = [
+    {
+      id: 'vr-1',
+      name: 'Hide salary breakdown for Drivers group',
+      targetType: 'group',
+      targetIds: ['grp-drivers'],
+      hiddenSections: ['salary_breakdown', 'payslips'],
+      active: true,
+    },
+    {
+      id: 'vr-2',
+      name: 'Hide deductions for drivers employee_type',
+      targetType: 'employee_type',
+      targetIds: ['driver'],
+      hiddenSections: ['deductions'],
+      active: true,
+    },
+    {
+      id: 'vr-3',
+      name: 'Inactive rule should not apply',
+      targetType: 'all',
+      targetIds: [],
+      hiddenSections: ['attendance_logs', 'leave_balances'],
+      active: false,
+    },
+    {
+      id: 'vr-4',
+      name: 'Targeted employee hide leave balances',
+      targetType: 'employees',
+      targetIds: ['emp-off-1'],
+      hiddenSections: ['leave_balances'],
+      active: true,
+    },
+  ];
+
+  // Driver matches vr-1 (group) + vr-2 (employee_type), ignores vr-3 (inactive) & vr-4 (other emp)
+  const driverHidden = evaluateUserHiddenSections(driverEmp, rules);
+  assert.equal(isSectionHidden(driverHidden, 'salary_breakdown'), true);
+  assert.equal(isSectionHidden(driverHidden, 'payslips'), true);
+  assert.equal(isSectionHidden(driverHidden, 'deductions'), true);
+  assert.equal(isSectionHidden(driverHidden, 'attendance_logs'), false);
+  assert.equal(isSectionHidden(driverHidden, 'leave_balances'), false);
+
+  // Office employee matches only vr-4 (employees target)
+  const officeHidden = evaluateUserHiddenSections(officeEmp, rules);
+  assert.deepEqual(officeHidden, ['leave_balances']);
+
+  // Admin/HR roles are exempt from visibility restrictions even if in a matching group
+  const hrHidden = evaluateUserHiddenSections(hrManager, rules);
+  assert.deepEqual(hrHidden, []);
 });
 
 

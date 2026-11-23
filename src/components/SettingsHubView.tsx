@@ -59,6 +59,7 @@ import {
 import {
   DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
   formatShortDate,
+  isAdminOrHRRole,
   isProAssignmentActive,
 } from '../utils/hrLogic';
 import { GeofenceMap } from './GeofenceMap';
@@ -271,7 +272,7 @@ export const SettingsHubView: React.FC<SettingsHubViewProps> = ({
   );
   const [deductionWfSaved, setDeductionWfSaved] = useState(false);
 
-  const canManageDeductionWorkflow = isMainManager || activeRole === UserRole.HRAdmin;
+  const canManageDeductionWorkflow = isAdminOrHRRole(activeRole);
 
   const handleSaveDeductionWorkflow = async (e: React.FormEvent) => {
     e.preventDefault();

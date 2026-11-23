@@ -22,14 +22,17 @@ import { DashboardView } from './components/DashboardView';
 import { EarningsDeductionsView } from './components/EarningsDeductionsView';
 import { EmployeesView } from './components/EmployeesView';
 import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScreen';
+import { GroupsManagementPage } from './components/GroupsManagementPage';
 import { LeavesView } from './components/LeavesView';
 import { LoginView } from './components/LoginView';
 import { OfflineScreen } from './components/OfflineScreen';
 import { PayrollView } from './components/PayrollView';
 import { ProfileSettingsMenu, SimPreset } from './components/ProfileSettingsMenu';
+import { ProjectsManagementPage } from './components/ProjectsManagementPage';
 import { SettingsHubView, SettingsRouteSection } from './components/SettingsHubView';
 import { SidebarNav } from './components/SidebarNav';
 import { StartupErrorScreen } from './components/StartupErrorScreen';
+import { VisibilityRulesPage } from './components/VisibilityRulesPage';
 import { getDirection, t } from './i18n/translations';
 import { getAllowedNavRoutesForRole, isSettingsRoute, NavSection } from './types/nav';
 import {
@@ -75,7 +78,9 @@ import {
   getScopedEmployees,
   getUserAttachedCompanyIds,
   inferDefaultEmployeeType,
+  isAdminOrHRRole,
   normalizeUserRole,
+  normalizeWorkType,
   resolveClockInPolicy,
 } from './utils/hrLogic';
 
@@ -344,11 +349,7 @@ export function App() {
   const accessibleCompanies = useMemo<Company[]>(() => {
     if (!db || !currentUser) return [];
     const activeOnes = db.companies.filter((c) => c.active);
-    if (
-      activeRole === UserRole.MainManager ||
-      activeRole === UserRole.HRAdmin ||
-      activeRole === UserRole.PRO
-    ) {
+    if (isAdminOrHRRole(activeRole) || activeRole === UserRole.PRO) {
       return activeOnes;
     }
     // Accounting & other roles strictly limited to explicitly attached companies
@@ -835,13 +836,12 @@ export function App() {
     );
   }
 
-  const canAccessSettings =
-    activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const canAccessSettings = isAdminOrHRRole(activeRole);
   const canAccessEarningsDeductions =
-    activeRole === UserRole.MainManager ||
-    activeRole === UserRole.HRAdmin ||
+    isAdminOrHRRole(activeRole) ||
     activeRole === UserRole.Accounting ||
     activeRole === UserRole.SectionManager;
+  const myHiddenSections = db.myHiddenSections ?? [];
 
   const mobileCandidateNavs: {
     id: NavSection;
@@ -1068,6 +1068,7 @@ export function App() {
               salaryReleases={db.salaryReleases}
               proAssignments={db.proAssignments}
               settings={db.settings}
+              hiddenSections={myHiddenSections}
               gpsReading={gpsReading}
               simulatedDevice={simulatedDevice}
               onNavigate={setActiveNav}
@@ -1096,6 +1097,7 @@ export function App() {
               attendanceAudit={db.attendanceAudit}
               deductionApprovals={scopedDeductionApprovals}
               settings={db.settings}
+              hiddenSections={myHiddenSections}
               gpsReading={gpsReading}
               simulatedDevice={simulatedDevice}
               onClockIn={handleClockIn}
@@ -1214,6 +1216,9 @@ export function App() {
                 companies={db.companies}
                 sections={db.sections}
                 labels={db.labels}
+                groups={db.groups ?? []}
+                projects={db.projects ?? []}
+                hiddenSections={myHiddenSections}
                 proAssignments={db.proAssignments}
                 models={db.employeeModels}
                 scopedEmployees={scopedEmployees}
@@ -1234,6 +1239,11 @@ export function App() {
                 customDocumentTypes={db.settings.customDocumentTypes}
                 onCreateEmployee={async (emp: CreateEmployeePayload, additionalIncomes) => {
                   const created = await api.employees.create(emp);
+                  await api.employees.updateOrg(created.id, {
+                    workType: normalizeWorkType(emp.workType),
+                    groupIds: emp.groupIds ?? [],
+                    projectIds: emp.projectIds ?? [],
+                  });
                   for (const inc of additionalIncomes) {
                     await api.payrollEntries.create({
                       employeeId: created.id,
@@ -1260,6 +1270,18 @@ export function App() {
                 }}
                 onUpdateEmployee={async (id, patch) => {
                   await api.employees.update(id, patch);
+                  if (
+                    patch.workType !== undefined ||
+                    patch.groupIds !== undefined ||
+                    patch.projectIds !== undefined
+                  ) {
+                    const existing = db.employees.find((e) => e.id === id);
+                    await api.employees.updateOrg(id, {
+                      workType: normalizeWorkType(patch.workType ?? existing?.workType),
+                      groupIds: patch.groupIds ?? existing?.groupIds ?? [],
+                      projectIds: patch.projectIds ?? existing?.projectIds ?? [],
+                    });
+                  }
                   await loadDatabase();
                   showToast('Employee profile updated.');
                 }}
@@ -1316,6 +1338,7 @@ export function App() {
               activeRole={activeRole}
               scopedEmployees={scopedEmployees}
               leaves={scopedLeaves}
+              hiddenSections={myHiddenSections}
               onSubmitLeave={async (input: {
                 type: LeaveType;
                 startDate: string;
@@ -1387,6 +1410,7 @@ export function App() {
               patchReleases={scopedPatchReleases}
               salaryReleases={db.salaryReleases}
               settings={db.settings}
+              hiddenSections={myHiddenSections}
               onAddAdjustment={async (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => {
                 await api.payroll.addAdjustment(input);
                 await loadDatabase();
@@ -1445,6 +1469,7 @@ export function App() {
               deductionWorkflowConfig={
                 db.settings.deductionWorkflowConfig ?? DEFAULT_DEDUCTION_WORKFLOW_CONFIG
               }
+              hiddenSections={myHiddenSections}
               onCreateEntry={async (input) => {
                 await api.payrollEntries.create(input);
                 await loadDatabase();
@@ -1526,10 +1551,85 @@ export function App() {
             />
           )}
 
-          {isSettingsRoute(activeNav) && canAccessSettings && (
-            <SettingsHubView
+          {activeNav === 'settings_groups' && canAccessSettings && (
+            <GroupsManagementPage
               lang={lang}
-              activeSection={activeNav.replace('settings_', '') as SettingsRouteSection}
+              groups={db.groups ?? []}
+              employees={db.employees}
+              onCreateGroup={async (input) => {
+                await api.groups.create(input);
+                await loadDatabase();
+                showToast(`Group "${input.name}" created.`);
+              }}
+              onUpdateGroup={async (id, patch) => {
+                await api.groups.update(id, patch);
+                await loadDatabase();
+                showToast('Group updated.');
+              }}
+              onDeleteGroup={async (id) => {
+                await api.groups.remove(id);
+                await loadDatabase();
+                showToast('Group deleted.');
+              }}
+            />
+          )}
+
+          {activeNav === 'settings_projects' && canAccessSettings && (
+            <ProjectsManagementPage
+              lang={lang}
+              projects={db.projects ?? []}
+              companies={db.companies}
+              employees={db.employees}
+              onCreateProject={async (input) => {
+                await api.projects.create(input);
+                await loadDatabase();
+                showToast(`Project "${input.name}" created.`);
+              }}
+              onUpdateProject={async (id, patch) => {
+                await api.projects.update(id, patch);
+                await loadDatabase();
+                showToast('Project updated.');
+              }}
+              onDeleteProject={async (id) => {
+                await api.projects.remove(id);
+                await loadDatabase();
+                showToast('Project deleted.');
+              }}
+            />
+          )}
+
+          {activeNav === 'settings_visibility_rules' && canAccessSettings && (
+            <VisibilityRulesPage
+              lang={lang}
+              rules={db.visibilityRules ?? []}
+              groups={db.groups ?? []}
+              employees={db.employees}
+              onCreateRule={async (input) => {
+                await api.visibilityRules.create(input);
+                await loadDatabase();
+                showToast(`Visibility rule "${input.name}" created.`);
+              }}
+              onUpdateRule={async (id, patch) => {
+                await api.visibilityRules.update(id, patch);
+                await loadDatabase();
+                showToast('Visibility rule updated.');
+              }}
+              onDeleteRule={async (id) => {
+                await api.visibilityRules.remove(id);
+                await loadDatabase();
+                showToast('Visibility rule deleted.');
+              }}
+            />
+          )}
+
+          {isSettingsRoute(activeNav) &&
+            activeNav !== 'settings_groups' &&
+            activeNav !== 'settings_projects' &&
+            activeNav !== 'settings_visibility_rules' &&
+            canAccessSettings && (
+              <SettingsHubView
+                lang={lang}
+                activeSection={activeNav.replace('settings_', '') as SettingsRouteSection}
               currentUser={currentUser}
               activeRole={activeRole}
               companies={db.companies}

@@ -20,12 +20,60 @@ export type Language = 'en' | 'ar' | 'ur';
 
 export enum UserRole {
   MainManager = 'main_manager',
+  HRManager = 'hr_manager',
   HRAdmin = 'hr_admin',
   SectionManager = 'section_manager',
   SectionCoManager = 'section_co_manager',
   PRO = 'pro',
   Accounting = 'accounting',
   Employee = 'employee',
+}
+
+export type WorkType = 'office' | 'remote' | 'hybrid' | 'field';
+
+export interface EmployeeGroup {
+  id: string;
+  name: string;
+  description?: string;
+  color: string;
+  createdAt?: string;
+}
+
+export interface Project {
+  id: string;
+  code: string;
+  name: string;
+  companyId: string;
+  managerId?: string | null;
+  supervisorIds: string[];
+  active: boolean;
+  description?: string;
+  createdAt?: string;
+}
+
+export type VisibilityRuleTargetType = 'group' | 'employee_type' | 'employees' | 'all';
+
+export type HiddenSectionKey =
+  | 'leave_balances'
+  | 'salary_breakdown'
+  | 'attendance_logs'
+  | 'deductions'
+  | 'payslips';
+
+export interface VisibilityRule {
+  id: string;
+  name: string;
+  targetType: VisibilityRuleTargetType;
+  targetIds: string[];
+  hiddenSections: HiddenSectionKey[];
+  active: boolean;
+  createdAt?: string;
+}
+
+export interface EmployeeOrgUpdatePayload {
+  workType: WorkType;
+  groupIds: string[];
+  projectIds: string[];
 }
 
 export enum ClockInPolicyMode {
@@ -338,6 +386,9 @@ export interface Employee {
   mustChangePassword: boolean;
   role: UserRole;
   employeeType: EmployeeType;
+  workType?: WorkType;
+  groupIds?: string[];
+  projectIds?: string[];
   deductionWorkflowOverride?: DeductionWorkflowChain | 'inherit';
   primaryCompanyId: string;
   sharedCompanyIds: string[]; // Secondary/attached companies (also strict Accounting scope)
@@ -547,6 +598,10 @@ export interface AppSettings {
 export interface HRDatabase {
   companies: Company[];
   sections: Section[];
+  groups: EmployeeGroup[];
+  projects: Project[];
+  visibilityRules: VisibilityRule[];
+  myHiddenSections?: HiddenSectionKey[];
   labels: EmployeeLabel[];
   employeeModels: EmployeeModel[];
   employees: Employee[];

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock,
   Edit3,
+  EyeOff,
   Infinity as InfinityIcon,
   Layers,
   Lock,
@@ -34,6 +35,7 @@ import {
   DeductionTargetBucket,
   DeductionWorkflowConfig,
   Employee,
+  HiddenSectionKey,
   Language,
   PayrollCategoryItem,
   PayrollEntry,
@@ -48,8 +50,10 @@ import {
   formatAED,
   formatShortDate,
   inferDefaultEmployeeType,
+  isAdminOrHRRole,
   isPayrollEligible,
   isPayrollEntryActiveInMonth,
+  isSectionHidden,
   PendingReviewerRole,
   resolveEmployeeDeductionWorkflow,
 } from '../utils/hrLogic';
@@ -69,6 +73,7 @@ interface EarningsDeductionsViewProps {
   entries: PayrollEntry[];
   deductionApprovals?: DeductionApprovalRequest[];
   deductionWorkflowConfig?: DeductionWorkflowConfig;
+  hiddenSections?: HiddenSectionKey[];
   onCreateEntry: (input: {
     employeeId: string;
     companyId: string;
@@ -177,6 +182,7 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
   entries,
   deductionApprovals = [],
   deductionWorkflowConfig = DEFAULT_DEDUCTION_WORKFLOW_CONFIG,
+  hiddenSections = [],
   onCreateEntry,
   onEditPermanentEntry,
   onStopPermanentEntry,
@@ -186,14 +192,11 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
   onHrDecideDeduction,
 }) => {
   const isCompactOverlay = useIsCompactOverlay();
-  const canAccessLedger =
-    activeRole === UserRole.MainManager ||
-    activeRole === UserRole.HRAdmin ||
-    activeRole === UserRole.Accounting;
+  const hideDeductions = isSectionHidden(hiddenSections, 'deductions');
+  const canAccessLedger = isAdminOrHRRole(activeRole) || activeRole === UserRole.Accounting;
   const isSectionManager = activeRole === UserRole.SectionManager;
   const isAuthorized = canAccessLedger || isSectionManager;
-  const canLogWorkflowDeduction =
-    activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const canLogWorkflowDeduction = isAdminOrHRRole(activeRole);
 
   const currentMonth = useMemo(() => getCurrentMonthKey(), []);
   const nextMonth = useMemo(() => addMonthsToYYYYMM(currentMonth, 1), [currentMonth]);
@@ -288,6 +291,12 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
     return entries.filter((entry) => {
+      if (
+        hideDeductions &&
+        (entry.type === 'deduction_in_payroll' || entry.type === 'deduction_off_cycle')
+      ) {
+        return false;
+      }
       if (!showAllMonths && !isPayrollEntryActiveInMonth(entry, monthFilter)) return false;
       if (typeFilter !== 'all' && entry.type !== typeFilter) return false;
       if (durationFilter === 'permanent' && !entry.isPermanent) return false;
@@ -299,7 +308,7 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
       }
       return true;
     });
-  }, [entries, showAllMonths, monthFilter, typeFilter, durationFilter, search, employeeMap]);
+  }, [entries, hideDeductions, showAllMonths, monthFilter, typeFilter, durationFilter, search, employeeMap]);
 
   const kpis = useMemo(() => {
     const activeForMonth = entries.filter((e) => isPayrollEntryActiveInMonth(e, monthFilter));
@@ -365,8 +374,8 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
         <Lock className="w-8 h-8 text-slate-400 mx-auto" />
         <h2 className="text-base font-bold text-slate-900 dark:text-white">Access Restricted</h2>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Earnings &amp; Deductions management is restricted to Main Manager, HR Admin, Accounting,
-          and Section Managers (for deduction approvals).
+          Earnings &amp; Deductions management is restricted to Main Manager, HR Manager, HR Admin,
+          Accounting, and Section Managers (for deduction approvals).
         </p>
       </div>
     );
@@ -1223,6 +1232,20 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
   // MAIN VIEW: DEDUCTION APPROVALS QUEUE
   // =========================================================================
   if (activeTab === 'approvals') {
+    if (hideDeductions) {
+      return (
+        <div className="max-w-lg mx-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center space-y-2">
+          <EyeOff className="w-7 h-7 text-slate-400 mx-auto" />
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+            {t(lang, 'restrictedByPolicyTitle')}
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            {t(lang, 'restrictedByPolicyDesc')}
+          </p>
+        </div>
+      );
+    }
+
     const filteredApprovals = scopedApprovalsAll.filter((item) => {
       if (approvalStatusFilter === 'action_needed') return item.actorStage !== null;
       if (approvalStatusFilter === 'pending') {
@@ -1621,31 +1644,35 @@ export const EarningsDeductionsView: React.FC<EarningsDeductionsViewProps> = ({
           <p className="text-[11px] text-slate-400 mt-1">Outside WPS · {monthFilter}</p>
         </div>
 
-        <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              {t(lang, 'typeDeductionInPayroll')}
-            </span>
-            <ArrowDownCircle className="w-4 h-4 text-rose-600" />
-          </div>
-          <p className="mt-2.5 text-xl font-bold font-mono tabular-nums text-rose-700 dark:text-rose-400">
-            -{formatAED(kpis.deductionInPayroll)}
-          </p>
-          <p className="text-[11px] text-slate-400 mt-1">Basic stays intact · {monthFilter}</p>
-        </div>
+        {!hideDeductions && (
+          <>
+            <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  {t(lang, 'typeDeductionInPayroll')}
+                </span>
+                <ArrowDownCircle className="w-4 h-4 text-rose-600" />
+              </div>
+              <p className="mt-2.5 text-xl font-bold font-mono tabular-nums text-rose-700 dark:text-rose-400">
+                -{formatAED(kpis.deductionInPayroll)}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Basic stays intact · {monthFilter}</p>
+            </div>
 
-        <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              {t(lang, 'typeDeductionOffCycle')}
-            </span>
-            <ArrowDownCircle className="w-4 h-4 text-amber-600" />
-          </div>
-          <p className="mt-2.5 text-xl font-bold font-mono tabular-nums text-amber-700 dark:text-amber-400">
-            -{formatAED(kpis.deductionOffCycle)}
-          </p>
-          <p className="text-[11px] text-slate-400 mt-1">Off-Cycle bucket · {monthFilter}</p>
-        </div>
+            <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  {t(lang, 'typeDeductionOffCycle')}
+                </span>
+                <ArrowDownCircle className="w-4 h-4 text-amber-600" />
+              </div>
+              <p className="mt-2.5 text-xl font-bold font-mono tabular-nums text-amber-700 dark:text-amber-400">
+                -{formatAED(kpis.deductionOffCycle)}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-1">Off-Cycle bucket · {monthFilter}</p>
+            </div>
+          </>
+        )}
       </section>
 
       {/* Filter Bar */}

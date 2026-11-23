@@ -27,11 +27,14 @@ import {
   DeductionWorkflowConfig,
   Employee,
   EmployeeDocument,
+  EmployeeGroup,
   EmployeeLabel,
   EmployeeModel,
+  EmployeeOrgUpdatePayload,
   EmployeeType,
   EndpointFailure,
   GeofenceZone,
+  HiddenSectionKey,
   HRDatabase,
   LeaveRequest,
   LeaveStatus,
@@ -43,6 +46,7 @@ import {
   PayrollEntry,
   PayrollEntryType,
   ProAssignment,
+  Project,
   PunchSource,
   SalaryReleaseSchedule,
   SalaryReleaseStatus,
@@ -50,6 +54,8 @@ import {
   ShiftSchedule,
   UpdateEmployeePayload,
   UserRole,
+  VisibilityRule,
+  VisibilityRuleTargetType,
 } from '../types/hr';
 import {
   adjustLeaveBalance,
@@ -63,11 +69,14 @@ import {
   editPermanentPayrollEntry,
   evaluateModelLateness,
   evaluateStartupEndpointResults,
+  evaluateUserHiddenSections,
   getEffectiveShiftStart,
   getStartupEndpointsForRole,
   inferDefaultEmployeeType,
   isAttendanceTracked,
+  normalizeHiddenSectionKey,
   normalizeUserRole,
+  normalizeWorkType,
   resolveApprovalWorkflow,
   SettledStartupItem,
   stopPermanentPayrollEntry,
@@ -475,6 +484,79 @@ export function normalizeDeductionWorkflowConfig(raw: unknown): DeductionWorkflo
   };
 }
 
+export function normalizeEmployeeGroup(raw: unknown): EmployeeGroup {
+  const obj = asRecord(raw);
+  return {
+    id: asString(obj.id ?? ''),
+    name: asString(obj.name ?? ''),
+    description: asString(obj.description ?? '') || undefined,
+    color: asString(obj.color ?? '#0D9488'),
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? '') || undefined,
+  };
+}
+
+export function normalizeProject(raw: unknown): Project {
+  const obj = asRecord(raw);
+  return {
+    id: asString(obj.id ?? ''),
+    code: asString(obj.code ?? ''),
+    name: asString(obj.name ?? ''),
+    companyId: asString(obj.companyId ?? obj.company_id ?? ''),
+    managerId: asString(obj.managerId ?? obj.manager_id ?? '') || null,
+    supervisorIds: asStringArray(
+      obj.supervisorIds ?? obj.supervisor_ids ?? obj.supervisor_ids_json
+    ),
+    description: asString(obj.description ?? '') || undefined,
+    active: asBoolean(obj.active, true),
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? '') || undefined,
+  };
+}
+
+export function normalizeVisibilityRule(raw: unknown): VisibilityRule {
+  const obj = asRecord(raw);
+  const rawTargetType = asString(obj.targetType ?? obj.target_type ?? 'all');
+  const targetType: VisibilityRuleTargetType =
+    rawTargetType === 'group' ||
+    rawTargetType === 'employee_type' ||
+    rawTargetType === 'employees' ||
+    rawTargetType === 'all'
+      ? rawTargetType
+      : 'all';
+  const rawSections = asStringArray(
+    obj.hiddenSections ?? obj.hidden_sections ?? obj.hidden_sections_json
+  );
+  const hiddenSections: HiddenSectionKey[] = rawSections
+    .map((s) => normalizeHiddenSectionKey(s))
+    .filter((s): s is HiddenSectionKey => s !== null);
+
+  return {
+    id: asString(obj.id ?? ''),
+    name: asString(obj.name ?? ''),
+    targetType,
+    targetIds: asStringArray(obj.targetIds ?? obj.target_ids ?? obj.target_ids_json),
+    hiddenSections,
+    active: asBoolean(obj.active, true),
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? '') || undefined,
+  };
+}
+
+export function normalizeMyHiddenSections(raw: unknown): HiddenSectionKey[] {
+  let list: unknown[] = [];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (raw && typeof raw === 'object') {
+    const obj = asRecord(raw);
+    const candidate = obj.hiddenSections ?? obj.hidden_sections ?? obj.sections ?? [];
+    if (Array.isArray(candidate)) list = candidate;
+  }
+  const unique = new Set<HiddenSectionKey>();
+  for (const item of list) {
+    const normalized = normalizeHiddenSectionKey(item);
+    if (normalized) unique.add(normalized);
+  }
+  return Array.from(unique);
+}
+
 export function normalizeEmployee(raw: unknown): Employee {
   const obj = asRecord(raw);
   const salaryObj = asRecord(obj.salary);
@@ -531,6 +613,9 @@ export function normalizeEmployee(raw: unknown): Employee {
     ),
     labelIds: asStringArray(obj.labelIds ?? obj.label_ids),
     modelId,
+    workType: normalizeWorkType(obj.workType ?? obj.work_type),
+    groupIds: asStringArray(obj.groupIds ?? obj.group_ids ?? obj.group_ids_json),
+    projectIds: asStringArray(obj.projectIds ?? obj.project_ids ?? obj.project_ids_json),
     jobTitle: asString(obj.jobTitle ?? obj.job_title ?? ''),
     joinDate: asString(obj.joinDate ?? obj.join_date ?? new Date().toISOString().slice(0, 10)),
     active: asBoolean(obj.active, true),
@@ -701,15 +786,20 @@ function readDb(): HRDatabase {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<HRDatabase>;
       if (parsed && Array.isArray(parsed.companies) && Array.isArray(parsed.employees)) {
-        // Non-destructive Phase 1A + 1B migration for previously cached local demo databases
+        // Non-destructive Phase 1A + 1B + v4.0 migration for previously cached local demo databases
         const needsMigration =
+          !Array.isArray(parsed.groups) ||
+          !Array.isArray(parsed.projects) ||
+          !Array.isArray(parsed.visibilityRules) ||
           !Array.isArray(parsed.payrollCategories) ||
           !Array.isArray(parsed.payrollEntries) ||
           !Array.isArray(parsed.deductionApprovals) ||
           !Array.isArray(parsed.patchReleases) ||
           !parsed.settings?.deductionWorkflowConfig ||
           parsed.companies.some((c) => !c.molEstablishmentId) ||
-          parsed.employees.some((e) => !e.employeeType);
+          parsed.employees.some(
+            (e) => !e.employeeType || !e.workType || !Array.isArray(e.groupIds) || !Array.isArray(e.projectIds)
+          );
 
         if (needsMigration) {
           const fresh = createInitialSeedData();
@@ -726,10 +816,18 @@ function readDb(): HRDatabase {
                 companyIban: c.companyIban ?? seedComp?.companyIban,
               };
             }),
+            groups: Array.isArray(parsed.groups) ? parsed.groups : fresh.groups,
+            projects: Array.isArray(parsed.projects) ? parsed.projects : fresh.projects,
+            visibilityRules: Array.isArray(parsed.visibilityRules)
+              ? parsed.visibilityRules
+              : fresh.visibilityRules,
             employees: parsed.employees.map((e) => {
               const seedEmp = freshEmpById.get(e.id);
               return {
                 ...e,
+                workType: normalizeWorkType(e.workType ?? seedEmp?.workType ?? 'office'),
+                groupIds: Array.isArray(e.groupIds) ? e.groupIds : (seedEmp?.groupIds ?? []),
+                projectIds: Array.isArray(e.projectIds) ? e.projectIds : (seedEmp?.projectIds ?? []),
                 employeeType:
                   e.employeeType ??
                   seedEmp?.employeeType ??
@@ -799,6 +897,7 @@ function makeId(prefix: string): string {
 
 const ROLE_DEFAULT_DEMO_USER: Record<UserRole, string> = {
   [UserRole.MainManager]: 'emp-tariq',
+  [UserRole.HRManager]: 'emp-layla',
   [UserRole.HRAdmin]: 'emp-layla',
   [UserRole.SectionManager]: 'emp-karim',
   [UserRole.SectionCoManager]: 'emp-priya',
@@ -974,13 +1073,17 @@ export const api = {
         const reason = result.reason;
         let failure: EndpointFailure;
         if (reason instanceof ApiHttpError) {
-          // Graceful backward compatibility if live server hasn't deployed Phase 1A/1B tables yet
+          // Graceful backward compatibility if live server hasn't deployed newer tables yet
           if (
             reason.status === 404 &&
             (spec.key === 'payrollCategories' ||
               spec.key === 'payrollEntries' ||
               spec.key === 'deductionApprovals' ||
-              spec.key === 'patchReleases')
+              spec.key === 'patchReleases' ||
+              spec.key === 'groups' ||
+              spec.key === 'projects' ||
+              spec.key === 'visibilityRules' ||
+              spec.key === 'myVisibility')
           ) {
             return { key: spec.key, path: spec.path, ok: true, value: [] };
           }
@@ -1011,6 +1114,12 @@ export const api = {
       const rawValues = evaluated.values;
       const rawCompanies = Array.isArray(rawValues.companies) ? rawValues.companies : [];
       const rawEmployees = Array.isArray(rawValues.employees) ? rawValues.employees : [];
+      const rawGroups = Array.isArray(rawValues.groups) ? rawValues.groups : [];
+      const rawProjects = Array.isArray(rawValues.projects) ? rawValues.projects : [];
+      const rawVisibilityRules = Array.isArray(rawValues.visibilityRules)
+        ? rawValues.visibilityRules
+        : [];
+      const myHiddenSections = normalizeMyHiddenSections(rawValues.myVisibility);
       const rawCategories = Array.isArray(rawValues.payrollCategories)
         ? rawValues.payrollCategories
         : [];
@@ -1038,6 +1147,10 @@ export const api = {
         companies: rawCompanies.map(normalizeCompany),
         sections: Array.isArray(rawValues.sections) ? (rawValues.sections as Section[]) : [],
         labels: Array.isArray(rawValues.labels) ? (rawValues.labels as EmployeeLabel[]) : [],
+        groups: rawGroups.map(normalizeEmployeeGroup),
+        projects: rawProjects.map(normalizeProject),
+        visibilityRules: rawVisibilityRules.map(normalizeVisibilityRule),
+        myHiddenSections,
         employeeModels: Array.isArray(rawValues.employeeModels)
           ? (rawValues.employeeModels as EmployeeModel[])
           : [],
@@ -1067,16 +1180,34 @@ export const api = {
       };
     }
     const db = readDb();
+    const session = getStoredSession();
+    const normalizedEmployees = db.employees.map((e) => ({
+      ...e,
+      role: normalizeUserRole(e.role),
+      workType: normalizeWorkType(e.workType),
+      groupIds: Array.isArray(e.groupIds) ? e.groupIds : [],
+      projectIds: Array.isArray(e.projectIds) ? e.projectIds : [],
+      employeeType:
+        e.employeeType ??
+        inferDefaultEmployeeType({ role: e.role, sectionId: e.sectionId, modelId: e.modelId }),
+    }));
+    const sessionEmp = session
+      ? normalizedEmployees.find((e) => e.id === session.userId)
+      : undefined;
+    const myHiddenSections = sessionEmp
+      ? evaluateUserHiddenSections(
+          { ...sessionEmp, role: session?.role ?? sessionEmp.role },
+          db.visibilityRules ?? []
+        )
+      : [];
     return {
       ...db,
-      employees: db.employees.map((e) => ({
-        ...e,
-        role: normalizeUserRole(e.role),
-        employeeType:
-          e.employeeType ??
-          inferDefaultEmployeeType({ role: e.role, sectionId: e.sectionId, modelId: e.modelId }),
-      })),
+      employees: normalizedEmployees,
       labels: db.labels ?? [],
+      groups: db.groups ?? [],
+      projects: db.projects ?? [],
+      visibilityRules: db.visibilityRules ?? [],
+      myHiddenSections,
       proAssignments: db.proAssignments ?? [],
       payrollCategories: db.payrollCategories ?? [],
       payrollEntries: db.payrollEntries ?? [],
@@ -1368,6 +1499,38 @@ export const api = {
                   mustChangePassword: true,
                 }
               : {}),
+          };
+          return updated;
+        }
+        return e;
+      });
+      if (!updated) throw new Error('Employee not found.');
+      writeDb(db);
+      return updated;
+    },
+    async updateOrg(id: string, payload: EmployeeOrgUpdatePayload): Promise<Employee> {
+      const cfg = getServerConfig();
+      const body = {
+        workType: normalizeWorkType(payload.workType),
+        groupIds: Array.isArray(payload.groupIds) ? payload.groupIds : [],
+        projectIds: Array.isArray(payload.projectIds) ? payload.projectIds : [],
+      };
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(`/users/${id}/org`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+        return normalizeEmployee(res);
+      }
+      const db = readDb();
+      let updated: Employee | null = null;
+      db.employees = db.employees.map((e) => {
+        if (e.id === id) {
+          updated = {
+            ...e,
+            workType: body.workType,
+            groupIds: body.groupIds,
+            projectIds: body.projectIds,
           };
           return updated;
         }
@@ -2698,6 +2861,254 @@ export const api = {
       db.settings = { ...db.settings, ...patch };
       writeDb(db);
       return db.settings;
+    },
+  },
+
+  groups: {
+    async list(): Promise<EmployeeGroup[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown[]>('/groups');
+        return Array.isArray(res) ? res.map(normalizeEmployeeGroup) : [];
+      }
+      const db = readDb();
+      return db.groups ?? [];
+    },
+    async create(input: Omit<EmployeeGroup, 'id' | 'createdAt'>): Promise<EmployeeGroup> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/groups', {
+          method: 'POST',
+          body: JSON.stringify(input),
+        });
+        return normalizeEmployeeGroup(res);
+      }
+      const db = readDb();
+      const created: EmployeeGroup = {
+        id: makeId('grp'),
+        name: input.name.trim(),
+        description: input.description?.trim() || undefined,
+        color: input.color || '#0D9488',
+        createdAt: new Date().toISOString(),
+      };
+      db.groups = [...(db.groups ?? []), created];
+      writeDb(db);
+      return created;
+    },
+    async update(id: string, patch: Partial<Omit<EmployeeGroup, 'id'>>): Promise<EmployeeGroup> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>(`/groups/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(patch),
+        });
+        return normalizeEmployeeGroup(res);
+      }
+      const db = readDb();
+      let updated: EmployeeGroup | null = null;
+      db.groups = (db.groups ?? []).map((g) => {
+        if (g.id === id) {
+          updated = { ...g, ...patch };
+          return updated;
+        }
+        return g;
+      });
+      if (!updated) throw new Error('Group not found.');
+      writeDb(db);
+      return updated;
+    },
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/groups/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.groups = (db.groups ?? []).filter((g) => g.id !== id);
+      db.employees = db.employees.map((e) => ({
+        ...e,
+        groupIds: (e.groupIds ?? []).filter((gid) => gid !== id),
+      }));
+      db.visibilityRules = (db.visibilityRules ?? []).map((r) =>
+        r.targetType === 'group'
+          ? { ...r, targetIds: (r.targetIds ?? []).filter((tid) => tid !== id) }
+          : r
+      );
+      writeDb(db);
+    },
+  },
+
+  projects: {
+    async list(): Promise<Project[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown[]>('/projects');
+        return Array.isArray(res) ? res.map(normalizeProject) : [];
+      }
+      const db = readDb();
+      return db.projects ?? [];
+    },
+    async create(input: Omit<Project, 'id' | 'createdAt'>): Promise<Project> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/projects', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            company_id: input.companyId,
+            manager_id: input.managerId ?? null,
+            supervisor_ids: input.supervisorIds ?? [],
+          }),
+        });
+        return normalizeProject(res);
+      }
+      const db = readDb();
+      const created: Project = {
+        id: makeId('proj'),
+        code: input.code.trim().toUpperCase(),
+        name: input.name.trim(),
+        companyId: input.companyId,
+        managerId: input.managerId ?? null,
+        supervisorIds: Array.isArray(input.supervisorIds) ? input.supervisorIds : [],
+        description: input.description?.trim() || undefined,
+        active: input.active ?? true,
+        createdAt: new Date().toISOString(),
+      };
+      db.projects = [...(db.projects ?? []), created];
+      writeDb(db);
+      return created;
+    },
+    async update(id: string, patch: Partial<Omit<Project, 'id'>>): Promise<Project> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const payload: Record<string, unknown> = { ...patch };
+        if (patch.companyId !== undefined) payload.company_id = patch.companyId;
+        if (patch.managerId !== undefined) payload.manager_id = patch.managerId;
+        if (patch.supervisorIds !== undefined) payload.supervisor_ids = patch.supervisorIds;
+        const res = await restFetch<unknown>(`/projects/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        return normalizeProject(res);
+      }
+      const db = readDb();
+      let updated: Project | null = null;
+      db.projects = (db.projects ?? []).map((p) => {
+        if (p.id === id) {
+          updated = { ...p, ...patch };
+          return updated;
+        }
+        return p;
+      });
+      if (!updated) throw new Error('Project not found.');
+      writeDb(db);
+      return updated;
+    },
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/projects/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.projects = (db.projects ?? []).filter((p) => p.id !== id);
+      db.employees = db.employees.map((e) => ({
+        ...e,
+        projectIds: (e.projectIds ?? []).filter((pid) => pid !== id),
+      }));
+      writeDb(db);
+    },
+  },
+
+  visibilityRules: {
+    async list(): Promise<VisibilityRule[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown[]>('/visibility-rules');
+        return Array.isArray(res) ? res.map(normalizeVisibilityRule) : [];
+      }
+      const db = readDb();
+      return db.visibilityRules ?? [];
+    },
+    async getMe(): Promise<HiddenSectionKey[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/visibility-rules/me');
+        return normalizeMyHiddenSections(res);
+      }
+      const db = readDb();
+      const session = getStoredSession();
+      if (!session) return [];
+      const emp = db.employees.find((e) => e.id === session.userId);
+      if (!emp) return [];
+      return evaluateUserHiddenSections(
+        { ...emp, role: session.role },
+        db.visibilityRules ?? []
+      );
+    },
+    async create(input: Omit<VisibilityRule, 'id' | 'createdAt'>): Promise<VisibilityRule> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/visibility-rules', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...input,
+            target_type: input.targetType,
+            target_ids: input.targetIds ?? [],
+            hidden_sections: input.hiddenSections ?? [],
+          }),
+        });
+        return normalizeVisibilityRule(res);
+      }
+      const db = readDb();
+      const created: VisibilityRule = {
+        id: makeId('vr'),
+        name: input.name.trim(),
+        targetType: input.targetType,
+        targetIds: input.targetType === 'all' ? [] : (input.targetIds ?? []),
+        hiddenSections: input.hiddenSections ?? [],
+        active: input.active ?? true,
+        createdAt: new Date().toISOString(),
+      };
+      db.visibilityRules = [created, ...(db.visibilityRules ?? [])];
+      writeDb(db);
+      return created;
+    },
+    async update(id: string, patch: Partial<Omit<VisibilityRule, 'id'>>): Promise<VisibilityRule> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const payload: Record<string, unknown> = { ...patch };
+        if (patch.targetType !== undefined) payload.target_type = patch.targetType;
+        if (patch.targetIds !== undefined) payload.target_ids = patch.targetIds;
+        if (patch.hiddenSections !== undefined) payload.hidden_sections = patch.hiddenSections;
+        const res = await restFetch<unknown>(`/visibility-rules/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        return normalizeVisibilityRule(res);
+      }
+      const db = readDb();
+      let updated: VisibilityRule | null = null;
+      db.visibilityRules = (db.visibilityRules ?? []).map((r) => {
+        if (r.id === id) {
+          updated = { ...r, ...patch };
+          return updated;
+        }
+        return r;
+      });
+      if (!updated) throw new Error('Visibility rule not found.');
+      writeDb(db);
+      return updated;
+    },
+    async remove(id: string): Promise<void> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        await restFetch<void>(`/visibility-rules/${id}`, { method: 'DELETE' });
+        return;
+      }
+      const db = readDb();
+      db.visibilityRules = (db.visibilityRules ?? []).filter((r) => r.id !== id);
+      writeDb(db);
     },
   },
 };

@@ -7,6 +7,7 @@ import {
   Clock,
   Download,
   Eye,
+  EyeOff,
   FileSpreadsheet,
   Landmark,
   Lock,
@@ -34,6 +35,7 @@ import {
   DeductionApprovalRequest,
   Employee,
   EmployeeLabel,
+  HiddenSectionKey,
   Language,
   LeaveRequest,
   MonthlyPayrollRow,
@@ -56,7 +58,9 @@ import {
   canControlSalaryRelease,
   formatAED,
   formatShortDate,
+  isAdminOrHRRole,
   isPayrollEligible,
+  isSectionHidden,
   validatePatchReleaseAllocations,
 } from '../utils/hrLogic';
 import { useIsCompactOverlay } from '../hooks/useIsCompactOverlay';
@@ -82,6 +86,7 @@ interface PayrollViewProps {
   patchReleases?: PatchMoneyRelease[];
   salaryReleases: SalaryReleaseSchedule[];
   settings: AppSettings;
+  hiddenSections?: HiddenSectionKey[];
   onAddAdjustment: (input: Omit<PayrollAdjustment, 'id' | 'createdAt'>) => Promise<void>;
   onRemoveAdjustment: (id: string) => Promise<void>;
   onUpsertReleaseSchedule: (input: {
@@ -164,6 +169,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   patchReleases = [],
   salaryReleases,
   settings,
+  hiddenSections = [],
   onRemoveAdjustment,
   onUpsertReleaseSchedule,
   onCreatePatchRelease,
@@ -171,16 +177,15 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 }) => {
   const isCompactOverlay = useIsCompactOverlay();
 
-  const canManageAdjustments =
-    activeRole === UserRole.MainManager || activeRole === UserRole.HRAdmin;
+  const hideSalaryBreakdown = isSectionHidden(hiddenSections, 'salary_breakdown');
+  const hideDeductions = isSectionHidden(hiddenSections, 'deductions');
+  const hidePayslips = isSectionHidden(hiddenSections, 'payslips');
+
+  const canManageAdjustments = isAdminOrHRRole(activeRole);
   const canControlRelease = canControlSalaryRelease(activeRole);
-  const canReleasePatch =
-    activeRole === UserRole.MainManager ||
-    activeRole === UserRole.HRAdmin ||
-    activeRole === UserRole.Accounting;
+  const canReleasePatch = isAdminOrHRRole(activeRole) || activeRole === UserRole.Accounting;
   const canExportExcel =
-    activeRole === UserRole.HRAdmin ||
-    activeRole === UserRole.MainManager ||
+    isAdminOrHRRole(activeRole) ||
     activeRole === UserRole.Accounting ||
     activeRole === UserRole.SectionManager ||
     activeRole === UserRole.SectionCoManager;
@@ -1278,6 +1283,31 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
   // FULL-PAGE VIEW: ITEMIZED PAYSLIP DETAIL
   // =========================================================================
   if (subPage === 'payslip' && selectedPayslip) {
+    if (hidePayslips) {
+      return (
+        <div className="max-w-xl mx-auto space-y-5">
+          <PageBreadcrumbHeader
+            lang={lang}
+            crumbs={[
+              { label: t(lang, 'navGroupPayroll') },
+              { label: t(lang, 'navPayrollOverview'), onClick: () => setSubPage('main') },
+            ]}
+            title={t(lang, 'restrictedByPolicyTitle')}
+            onBack={() => setSubPage('main')}
+          />
+          <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center space-y-2">
+            <EyeOff className="w-7 h-7 text-slate-400 mx-auto" />
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+              {t(lang, 'restrictedByPolicyTitle')}
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {t(lang, 'restrictedByPolicyDesc')}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="max-w-3xl mx-auto space-y-6">
         <PageBreadcrumbHeader
@@ -1338,6 +1368,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
           </div>
 
           {/* Earnings Breakdown */}
+          {!hideSalaryBreakdown && (
           <div className="space-y-2.5 text-xs">
             <h3 className="font-semibold text-slate-900 dark:text-white">Earnings (AED)</h3>
             <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1419,8 +1450,10 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               ))}
             </div>
           </div>
+          )}
 
           {/* Deductions Breakdown */}
+          {!hideDeductions && (
           <div className="space-y-2.5 text-xs">
             <h3 className="font-semibold text-slate-900 dark:text-white">Deductions (AED)</h3>
             {selectedPayslip.deductions.length === 0 &&
@@ -1494,6 +1527,7 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               </div>
             )}
           </div>
+          )}
 
           {/* Early Patch Releases Applied */}
           {selectedPayslip.earlyWpsReleasedAED + selectedPayslip.earlyOffCycleReleasedAED > 0 && (
@@ -1903,6 +1937,17 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
           </div>
         </div>
 
+        {hideSalaryBreakdown && hidePayslips ? (
+          <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 text-center space-y-2">
+            <EyeOff className="w-7 h-7 text-slate-400 mx-auto" />
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+              {t(lang, 'restrictedByPolicyTitle')}
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {t(lang, 'restrictedByPolicyDesc')}
+            </p>
+          </section>
+        ) : (
         <section className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -1914,9 +1959,11 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                 <span className={`w-2 h-2 rounded-full ${getStatusDotClass(mySalaryRow.release.status)}`} />
                 {getSalaryStatusLabel(lang, mySalaryRow.release.status)}
               </span>
-              <p className="mt-2 text-3xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-                {formatAED(mySalaryRow.netSalary)}
-              </p>
+              {!hideSalaryBreakdown && (
+                <p className="mt-2 text-3xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                  {formatAED(mySalaryRow.netSalary)}
+                </p>
+              )}
               <p className="text-xs text-slate-500 mt-1">
                 Release Date:{' '}
                 {formatShortDate(
@@ -1926,27 +1973,29 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                 )}
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void handleDownloadPayslip(mySalaryRow)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                {t(lang, 'download')}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedPayslipEmpId(currentUser.id);
-                  setSubPage('payslip');
-                }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold cursor-pointer"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                Full Payslip
-              </button>
-            </div>
+            {!hidePayslips && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadPayslip(mySalaryRow)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {t(lang, 'download')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedPayslipEmpId(currentUser.id);
+                    setSubPage('payslip');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  Full Payslip
+                </button>
+              </div>
+            )}
           </div>
 
           {mySalaryRow.release.status === 'Delayed' && mySalaryRow.release.delayReason && (
@@ -1955,31 +2004,34 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
             </div>
           )}
 
-          <dl className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-100 dark:border-slate-800 text-xs">
-            <div>
-              <dt className="text-slate-500">Basic Salary</dt>
-              <dd className="mt-1 font-mono font-semibold text-slate-900 dark:text-white">
-                {formatAED(mySalaryRow.baseSalary)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-slate-500">Allowances</dt>
-              <dd className="mt-1 font-mono font-semibold text-slate-900 dark:text-white">
-                {formatAED(
-                  mySalaryRow.housingAllowance +
-                    mySalaryRow.transportAllowance +
-                    mySalaryRow.otherAllowance
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-slate-500">WPS Bank Payout</dt>
-              <dd className="mt-1 font-mono font-semibold text-teal-700 dark:text-teal-300">
-                {formatAED(mySalaryRow.wpsTotalPayout)}
-              </dd>
-            </div>
-          </dl>
+          {!hideSalaryBreakdown && (
+            <dl className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-100 dark:border-slate-800 text-xs">
+              <div>
+                <dt className="text-slate-500">Basic Salary</dt>
+                <dd className="mt-1 font-mono font-semibold text-slate-900 dark:text-white">
+                  {formatAED(mySalaryRow.baseSalary)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Allowances</dt>
+                <dd className="mt-1 font-mono font-semibold text-slate-900 dark:text-white">
+                  {formatAED(
+                    mySalaryRow.housingAllowance +
+                      mySalaryRow.transportAllowance +
+                      mySalaryRow.otherAllowance
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">WPS Bank Payout</dt>
+                <dd className="mt-1 font-mono font-semibold text-teal-700 dark:text-teal-300">
+                  {formatAED(mySalaryRow.wpsTotalPayout)}
+                </dd>
+              </div>
+            </dl>
+          )}
         </section>
+        )}
       </div>
     );
   }
@@ -2064,7 +2116,8 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
         </div>
       )}
 
-      {/* 4 Focused Payroll KPI Cards */}
+      {/* Focused Payroll KPI Cards */}
+      {!hideSalaryBreakdown && (
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
           <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -2093,16 +2146,19 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
             {formatAED(totals.offCycleNet)}
           </p>
         </div>
-        <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Total Deductions</span>
-            <Clock className="w-4 h-4 text-rose-500" />
+        {!hideDeductions && (
+          <div className="rounded-xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 p-5">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+              <span>Total Deductions</span>
+              <Clock className="w-4 h-4 text-rose-500" />
+            </div>
+            <p className="mt-2.5 text-xl font-bold font-mono tabular-nums text-rose-700 dark:text-rose-400 truncate">
+              -{formatAED(totals.deductions)}
+            </p>
           </div>
-          <p className="mt-2.5 text-xl font-bold font-mono tabular-nums text-rose-700 dark:text-rose-400 truncate">
-            -{formatAED(totals.deductions)}
-          </p>
-        </div>
+        )}
       </section>
+      )}
 
       {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2.5">
@@ -2161,10 +2217,10 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
               <thead>
                 <tr className="border-b border-slate-100 dark:border-slate-800 text-[11px] font-medium uppercase tracking-wider text-slate-400">
                   <th className="py-3 px-4 text-start">Employee</th>
-                  <th className="py-3 px-4 text-end">Main Salary</th>
-                  <th className="py-3 px-4 text-end">WPS Payout</th>
-                  <th className="py-3 px-4 text-end">Off-Cycle</th>
-                  <th className="py-3 px-4 text-end">Net Payable</th>
+                  {!hideSalaryBreakdown && <th className="py-3 px-4 text-end">Main Salary</th>}
+                  {!hideSalaryBreakdown && <th className="py-3 px-4 text-end">WPS Payout</th>}
+                  {!hideSalaryBreakdown && <th className="py-3 px-4 text-end">Off-Cycle</th>}
+                  {!hideSalaryBreakdown && <th className="py-3 px-4 text-end">Net Payable</th>}
                   <th className="py-3 px-4 text-start">Release</th>
                   <th className="py-3 px-4 text-end">Actions</th>
                 </tr>
@@ -2174,10 +2230,13 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                   <tr
                     key={row.employee.id}
                     onClick={() => {
+                      if (hidePayslips) return;
                       setSelectedPayslipEmpId(row.employee.id);
                       setSubPage('payslip');
                     }}
-                    className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
+                    className={`hover:bg-slate-50/70 dark:hover:bg-slate-800/30 transition-colors ${
+                      hidePayslips ? '' : 'cursor-pointer'
+                    }`}
                   >
                     <td className="py-3.5 px-4">
                       <div className="flex items-center gap-2.5">
@@ -2198,31 +2257,39 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3.5 px-4 text-end font-mono tabular-nums text-slate-700 dark:text-slate-300">
-                      {formatAED(row.grossSalary)}
-                    </td>
+                    {!hideSalaryBreakdown && (
+                      <td className="py-3.5 px-4 text-end font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                        {formatAED(row.grossSalary)}
+                      </td>
+                    )}
 
-                    <td className="py-3.5 px-4 text-end font-mono tabular-nums text-teal-700 dark:text-teal-300 font-medium">
-                      {formatAED(row.wpsTotalPayout)}
-                      {row.earlyWpsReleasedAED > 0 && (
-                        <span className="block text-[10px] text-slate-400">
-                          Offset -{formatAED(row.earlyWpsReleasedAED)}
-                        </span>
-                      )}
-                    </td>
+                    {!hideSalaryBreakdown && (
+                      <td className="py-3.5 px-4 text-end font-mono tabular-nums text-teal-700 dark:text-teal-300 font-medium">
+                        {formatAED(row.wpsTotalPayout)}
+                        {row.earlyWpsReleasedAED > 0 && (
+                          <span className="block text-[10px] text-slate-400">
+                            Offset -{formatAED(row.earlyWpsReleasedAED)}
+                          </span>
+                        )}
+                      </td>
+                    )}
 
-                    <td className="py-3.5 px-4 text-end font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                      {row.offCycleNetPayout > 0 ? formatAED(row.offCycleNetPayout) : '—'}
-                    </td>
+                    {!hideSalaryBreakdown && (
+                      <td className="py-3.5 px-4 text-end font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                        {row.offCycleNetPayout > 0 ? formatAED(row.offCycleNetPayout) : '—'}
+                      </td>
+                    )}
 
-                    <td className="py-3.5 px-4 text-end font-mono tabular-nums font-bold text-slate-900 dark:text-white">
-                      {formatAED(row.netSalary)}
-                      {row.totalDeductions > 0 && (
-                        <span className="block text-[10px] font-normal text-rose-600 dark:text-rose-400">
-                          -{formatAED(row.totalDeductions)}
-                        </span>
-                      )}
-                    </td>
+                    {!hideSalaryBreakdown && (
+                      <td className="py-3.5 px-4 text-end font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                        {formatAED(row.netSalary)}
+                        {!hideDeductions && row.totalDeductions > 0 && (
+                          <span className="block text-[10px] font-normal text-rose-600 dark:text-rose-400">
+                            -{formatAED(row.totalDeductions)}
+                          </span>
+                        )}
+                      </td>
+                    )}
 
                     <td className="py-3.5 px-4">
                       <span
@@ -2241,18 +2308,20 @@ export const PayrollView: React.FC<PayrollViewProps> = ({
 
                     <td className="py-3.5 px-4 text-end" onClick={(e) => e.stopPropagation()}>
                       <div className="inline-flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedPayslipEmpId(row.employee.id);
-                            setSubPage('payslip');
-                          }}
-                          title="View Payslip"
-                          aria-label={`View payslip for ${row.employee.fullName}`}
-                          className="p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 dark:hover:bg-teal-950/50 cursor-pointer"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
+                        {!hidePayslips && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedPayslipEmpId(row.employee.id);
+                              setSubPage('payslip');
+                            }}
+                            title="View Payslip"
+                            aria-label={`View payslip for ${row.employee.fullName}`}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 dark:hover:bg-teal-950/50 cursor-pointer"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                        )}
                         {canControlRelease && (
                           <button
                             type="button"

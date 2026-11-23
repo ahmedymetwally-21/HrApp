@@ -8,6 +8,7 @@ export type NavSection =
   | 'documents'
   | 'pro_assignments'
   | 'attendance'
+  | 'roster'
   | 'leaves'
   | 'payroll'
   | 'earnings_deductions'
@@ -53,6 +54,7 @@ export const SIDEBAR_GROUPS: SidebarGroupSpec[] = [
     labelKey: 'navGroupTime',
     items: [
       { id: 'attendance', labelKey: 'navAttendanceLogs', groupId: 'time' },
+      { id: 'roster', labelKey: 'navMonthlyRoster', groupId: 'time' },
       { id: 'leaves', labelKey: 'navLeaveRequests', groupId: 'time' },
     ],
   },
@@ -107,6 +109,7 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
       'documents',
       'pro_assignments',
       'attendance',
+      'roster',
       'leaves',
       'payroll',
       'earnings_deductions',
@@ -147,6 +150,7 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
       'employees',
       'documents',
       'attendance',
+      'roster',
       'leaves',
       'payroll',
       'deduction_approvals',
@@ -154,11 +158,11 @@ export function getAllowedNavRoutesForRole(role: UserRole | string): NavSection[
   }
 
   if (normalized === UserRole.SectionCoManager) {
-    return ['dashboard', 'requests', 'employees', 'documents', 'attendance', 'leaves', 'payroll'];
+    return ['dashboard', 'requests', 'employees', 'documents', 'attendance', 'roster', 'leaves', 'payroll'];
   }
 
   // Employee
-  return ['dashboard', 'requests', 'documents', 'attendance', 'leaves', 'payroll'];
+  return ['dashboard', 'requests', 'documents', 'attendance', 'roster', 'leaves', 'payroll'];
 }
 
 export function getGroupForRoute(route: NavSection): SidebarGroupId | null {

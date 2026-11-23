@@ -3,6 +3,7 @@ import {
   Banknote,
   Building2,
   CalendarClock,
+  CalendarDays,
   ChevronDown,
   ClipboardCheck,
   Clock,
@@ -58,6 +59,7 @@ const ITEM_ICONS: Record<NavSection, React.ComponentType<{ className?: string }>
   documents: FileText,
   pro_assignments: KeyRound,
   attendance: Clock,
+  roster: CalendarDays,
   leaves: CalendarClock,
   payroll: Wallet,
   earnings_deductions: SlidersHorizontal,
@@ -111,6 +113,9 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
   };
 
   const getItemLabel = (id: NavSection, fallbackKey: string): string => {
+    if (id === 'roster') {
+      return 'Monthly Roster';
+    }
     if (id === 'payroll' && activeRole === UserRole.Employee) {
       return t(lang, 'navMySalary');
     }
@@ -160,8 +165,8 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
             title={
               collapsed
                 ? pendingRequestsCount > 0
-                  ? `${t(lang, 'navRequests')} (${pendingRequestsCount})`
-                  : t(lang, 'navRequests')
+                  ? `Approvals & Requests (${pendingRequestsCount})`
+                  : 'Approvals & Requests'
                 : undefined
             }
             className={`relative w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors cursor-pointer ${
@@ -172,7 +177,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({
           >
             <span className="flex items-center gap-3 min-w-0">
               <ClipboardCheck className="w-[18px] h-[18px] shrink-0" />
-              {!collapsed && <span className="truncate">{t(lang, 'navRequests')}</span>}
+              {!collapsed && <span className="truncate">Approvals &amp; Requests</span>}
             </span>
             {pendingRequestsCount > 0 && !collapsed && (
               <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-rose-600 text-white text-[11px] font-mono tabular-nums font-semibold shrink-0">

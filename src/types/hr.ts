@@ -1084,3 +1084,60 @@ export interface PayrollDeductionRow {
   reason: string;
   created_by: string;
 }
+
+/* ============================================================================
+ * Monthly Roster Management (Phase 3)
+ * ========================================================================== */
+
+export interface RosterEntry {
+  id: string;
+  userId: string;
+  employeeCode: string;
+  employeeName: string;
+  date: string; // YYYY-MM-DD
+  status: 'shift' | 'off' | 'leave';
+  shiftStart: string;
+  shiftEnd: string;
+  isOvernight: boolean;
+}
+
+export interface RosterTodayStatus {
+  date: string;
+  hasRoster: boolean;
+  status: 'shift' | 'off' | 'leave' | 'none';
+  shiftStart?: string;
+  shiftEnd?: string;
+  isOvernight?: boolean;
+  canClockIn: boolean;
+}
+
+export interface RosterUploadError {
+  row: number;
+  employeeCode: string;
+  employeeName?: string;
+  error: string;
+}
+
+export interface RosterBulkUploadResult {
+  batchId: string;
+  month: string;
+  totalRows: number;
+  successCount: number;
+  failedCount: number;
+  errors: RosterUploadError[];
+  failedRows: Record<string, unknown>[];
+}
+
+export interface RosterUploadBatch {
+  id: string;
+  uploadedByName: string;
+  fileName: string;
+  month: string;
+  totalRows: number;
+  successCount: number;
+  failedCount: number;
+  errors: RosterUploadError[];
+  failedRows: Record<string, unknown>[];
+  createdAt: string;
+}
+

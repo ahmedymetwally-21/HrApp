@@ -4,6 +4,7 @@ import {
   Bell,
   Building2,
   CalendarClock,
+  CalendarDays,
   CheckCircle2,
   ClipboardCheck,
   Clock,
@@ -27,6 +28,7 @@ import { ForcePasswordChangeScreen } from './components/ForcePasswordChangeScree
 import { GroupsManagementPage } from './components/GroupsManagementPage';
 import { LeavesView } from './components/LeavesView';
 import { LoginView } from './components/LoginView';
+import { MonthlyRosterPage } from './components/MonthlyRosterPage';
 import { OfflineScreen } from './components/OfflineScreen';
 import { PayrollView } from './components/PayrollView';
 import { ProfileSettingsMenu, SimPreset } from './components/ProfileSettingsMenu';
@@ -67,6 +69,7 @@ import {
   PayrollAdjustment,
   PayrollCategoryItem,
   ProAssignment,
+  RosterTodayStatus,
   SalaryReleaseStatus,
   Section,
   ShiftSchedule,
@@ -179,6 +182,7 @@ export function App() {
   const [simPreset, setSimPreset] = useState<SimPreset>('inside_primary');
   const [simulatedDevice, setSimulatedDevice] = useState<'mobile' | 'desktop'>('mobile');
   const [liveGps, setLiveGps] = useState<GPSReading | null>(null);
+  const [todayRoster, setTodayRoster] = useState<RosterTodayStatus | null>(null);
 
   const showToast = useCallback((message: string, kind: 'success' | 'error' = 'success') => {
     setToast({ message, kind });
@@ -310,6 +314,15 @@ export function App() {
     [db, session, showToast]
   );
 
+  const refreshTodayRoster = useCallback(async () => {
+    try {
+      const status = await api.rosters.today();
+      setTodayRoster(status);
+    } catch {
+      // Best-effort roster status check
+    }
+  }, []);
+
   // Support ?autostart=1 for automated walkthroughs & quick preview
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -322,15 +335,18 @@ export function App() {
     if (!session) {
       setLoading(false);
       setStartupError(null);
+      setTodayRoster(null);
       return;
     }
     if (session.mustChangePassword) {
       // Immediately render ForcePasswordChangeScreen WITHOUT calling dashboard endpoints
       setLoading(false);
       setStartupError(null);
+      setTodayRoster(null);
       return;
     }
     void loadDatabase(session, true);
+    void refreshTodayRoster();
   }, [session?.token, session?.mustChangePassword]);
 
   const currentUser = useMemo<Employee | null>(() => {
@@ -677,6 +693,7 @@ export function App() {
     await api.auth.logout();
     setSession(null);
     setDb(null);
+    setTodayRoster(null);
     setStartupError(null);
     setOfflineReason(null);
     setLoading(false);
@@ -702,6 +719,13 @@ export function App() {
 
   const handleClockIn = async () => {
     if (!db || !currentUser) return;
+    if (todayRoster?.status === 'leave') {
+      showToast(
+        'You are scheduled on Leave today — Clock-In and Clock-Out are disabled.',
+        'error'
+      );
+      return;
+    }
     if (activeRole === UserRole.MainManager) {
       showToast('Main Manager accounts are exempt from attendance tracking.', 'error');
       return;
@@ -747,6 +771,13 @@ export function App() {
   };
 
   const handleClockOut = async (logId: string) => {
+    if (todayRoster?.status === 'leave') {
+      showToast(
+        'You are scheduled on Leave today — Clock-In and Clock-Out are disabled.',
+        'error'
+      );
+      return;
+    }
     await api.attendance.clockOut({
       logId,
       latitude: gpsReading?.latitude ?? 0,
@@ -892,7 +923,7 @@ export function App() {
     icon: React.ComponentType<{ className?: string }>;
   }[] = [
     { id: 'dashboard', label: t(lang, 'navDashboard'), icon: LayoutDashboard },
-    { id: 'requests', label: t(lang, 'navRequests'), icon: ClipboardCheck },
+    { id: 'requests', label: 'Approvals & Requests', icon: ClipboardCheck },
     { id: 'attendance', label: t(lang, 'navAttendance'), icon: Clock },
     activeRole === UserRole.PRO || activeRole === UserRole.Employee
       ? {
@@ -1065,8 +1096,18 @@ export function App() {
         {/* Active View Content */}
         <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 pb-[80px] lg:pb-10 max-w-7xl mx-auto w-full">
           {/* Mobile shortcuts for routes beyond the 5-tab bottom bar */}
-          {(canAccessSettings || canAccessEarningsDeductions) && (
+          {(canAccessSettings || canAccessEarningsDeductions || allowedNavIds.includes('roster')) && (
             <div className="lg:hidden mb-4 flex flex-wrap justify-end gap-2">
+              {allowedNavIds.includes('roster') && activeNav !== 'roster' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveNav('roster')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                >
+                  <CalendarDays className="w-3.5 h-3.5 text-teal-600" />
+                  Monthly Roster
+                </button>
+              )}
               {canAccessEarningsDeductions &&
                 !mobileNavItems.some((m) => m.id === 'earnings_deductions') &&
                 activeNav !== 'earnings_deductions' && (
@@ -1116,6 +1157,7 @@ export function App() {
               hiddenSections={myHiddenSections}
               gpsReading={gpsReading}
               simulatedDevice={simulatedDevice}
+              todayRoster={todayRoster}
               onNavigate={setActiveNav}
               onClockIn={handleClockIn}
               onClockOut={handleClockOut}
@@ -1145,6 +1187,7 @@ export function App() {
               hiddenSections={myHiddenSections}
               gpsReading={gpsReading}
               simulatedDevice={simulatedDevice}
+              todayRoster={todayRoster}
               onClockIn={handleClockIn}
               onClockOut={handleClockOut}
               onAcceptExcuse={async ({ logId, excuseNote, linkedApprovalId }) => {
@@ -1238,6 +1281,18 @@ export function App() {
                 });
                 await loadDatabase();
                 showToast('Attendance record updated & logged in audit trail.');
+              }}
+            />
+          )}
+
+          {activeNav === 'roster' && allowedNavIds.includes('roster') && (
+            <MonthlyRosterPage
+              currentUser={currentUser}
+              activeRole={activeRole}
+              employees={scopedEmployees}
+              onRosterUploaded={async () => {
+                await refreshTodayRoster();
+                showToast('Monthly roster updated.');
               }}
             />
           )}

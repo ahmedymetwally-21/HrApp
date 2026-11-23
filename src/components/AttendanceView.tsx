@@ -29,6 +29,7 @@ import {
   GPSReading,
   HiddenSectionKey,
   Language,
+  RosterTodayStatus,
   UserRole,
 } from '../types/hr';
 import {
@@ -63,6 +64,7 @@ interface AttendanceViewProps {
   hiddenSections?: HiddenSectionKey[];
   gpsReading: GPSReading | null;
   simulatedDevice: 'mobile' | 'desktop';
+  todayRoster?: RosterTodayStatus | null;
   onClockIn: () => Promise<void>;
   onClockOut: (logId: string) => Promise<void>;
   onAcceptExcuse: (params: {
@@ -111,6 +113,7 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
   hiddenSections = [],
   gpsReading,
   simulatedDevice,
+  todayRoster = null,
   onClockIn,
   onClockOut,
   onAcceptExcuse,
@@ -325,6 +328,13 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
       {/* Compact Top Clock-In Strip — STRICTLY HIDDEN for Main Manager (Executive Exemption) */}
       {activeRole !== UserRole.MainManager && (
         <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4">
+          {todayRoster?.status === 'leave' && (
+            <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-4 py-3 text-xs font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span>You are scheduled on Leave today — Clock-In and Clock-Out are disabled.</span>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div
@@ -345,6 +355,16 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                     ? `${t(lang, 'onShift')} since ${formatTime(openShiftLog.clockInTime)}`
                     : t(lang, 'offShift')}{' '}
                   · {clockEval.punchSource}
+                  {todayRoster?.status === 'shift' && todayRoster.shiftStart && (
+                    <>
+                      {' '}
+                      ·{' '}
+                      <span className="font-mono font-medium text-teal-700 dark:text-teal-300">
+                        Rostered Shift: {todayRoster.shiftStart} – {todayRoster.shiftEnd}
+                        {todayRoster.isOvernight ? ' (Overnight)' : ''}
+                      </span>
+                    </>
+                  )}
                 </p>
               </div>
             </div>
@@ -365,7 +385,9 @@ export const AttendanceView: React.FC<AttendanceViewProps> = ({
                 onClick={() =>
                   openShiftLog ? void onClockOut(openShiftLog.id) : void onClockIn()
                 }
-                disabled={!openShiftLog && !clockEval.allowed}
+                disabled={
+                  todayRoster?.status === 'leave' || (!openShiftLog && !clockEval.allowed)
+                }
                 className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
                   openShiftLog
                     ? 'bg-rose-600 hover:bg-rose-700'

@@ -59,6 +59,11 @@ import {
   RequestStepStatus,
   RequestUploadResult,
   ResolvedWorkflowStep,
+  RosterBulkUploadResult,
+  RosterEntry,
+  RosterTodayStatus,
+  RosterUploadBatch,
+  RosterUploadError,
   SalaryReleaseSchedule,
   SalaryReleaseStatus,
   Section,
@@ -124,6 +129,8 @@ const DEFAULT_API_BASE_URL =
 const STORAGE_KEY = 'yaldi_hr_db_v2';
 const SESSION_KEY = 'yaldi_hr_session_v2';
 const SERVER_CONFIG_KEY = 'yaldi_hr_server_config_v1';
+const ROSTER_STORAGE_KEY = 'yaldi_hr_rosters_v1';
+const ROSTER_HISTORY_STORAGE_KEY = 'yaldi_hr_roster_history_v1';
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -4100,4 +4107,423 @@ export const api = {
       return updated;
     },
   },
+
+  rosters: {
+    async list(params: { month: string; employeeId?: string }): Promise<RosterEntry[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const qs = new URLSearchParams({ month: params.month });
+        if (params.employeeId) {
+          qs.set('employeeId', params.employeeId);
+        }
+        const res = await restFetch<unknown>(`/rosters?${qs.toString()}`);
+        const list = Array.isArray(res)
+          ? res
+          : Array.isArray(asRecord(res).items)
+            ? (asRecord(res).items as unknown[])
+            : Array.isArray(asRecord(res).entries)
+              ? (asRecord(res).entries as unknown[])
+              : Array.isArray(asRecord(res).rosters)
+                ? (asRecord(res).rosters as unknown[])
+                : [];
+        return list.map(normalizeRosterEntry);
+      }
+
+      const entries = readStoredRosters();
+      return entries
+        .filter((entry) => {
+          if (!entry.date.startsWith(params.month)) return false;
+          if (params.employeeId && entry.userId !== params.employeeId) return false;
+          return true;
+        })
+        .sort((a, b) => a.date.localeCompare(b.date) || a.employeeName.localeCompare(b.employeeName));
+    },
+
+    async today(): Promise<RosterTodayStatus> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/rosters/today');
+        return normalizeRosterTodayStatus(res);
+      }
+
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const session = getStoredSession();
+      if (!session?.userId) {
+        return {
+          date: todayIso,
+          hasRoster: false,
+          status: 'none',
+          canClockIn: true,
+        };
+      }
+      const entries = readStoredRosters();
+      const match = entries.find(
+        (entry) => entry.userId === session.userId && entry.date === todayIso
+      );
+      if (!match) {
+        return {
+          date: todayIso,
+          hasRoster: false,
+          status: 'none',
+          canClockIn: true,
+        };
+      }
+      return {
+        date: todayIso,
+        hasRoster: true,
+        status: match.status,
+        shiftStart: match.shiftStart || undefined,
+        shiftEnd: match.shiftEnd || undefined,
+        isOvernight: match.isOvernight,
+        canClockIn: match.status !== 'leave',
+      };
+    },
+
+    async bulkUpload(params: {
+      fileName: string;
+      month: string;
+      rows: Record<string, unknown>[];
+    }): Promise<RosterBulkUploadResult> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/rosters/bulk', {
+          method: 'POST',
+          body: JSON.stringify({
+            fileName: params.fileName,
+            month: params.month,
+            rows: params.rows,
+          }),
+        });
+        return normalizeRosterBulkUploadResult(res, params.month);
+      }
+
+      const db = readDb();
+      const session = getStoredSession();
+      const existingRosters = readStoredRosters();
+      const rosterMap = new Map<string, RosterEntry>(
+        existingRosters.map((item) => [`${item.userId}::${item.date}`, item])
+      );
+
+      const empByCode = new Map<string, Employee>();
+      const empById = new Map<string, Employee>();
+      for (const emp of db.employees) {
+        empByCode.set(emp.employeeCode.trim().toUpperCase(), emp);
+        empById.set(emp.id, emp);
+      }
+
+      const errors: RosterUploadError[] = [];
+      const failedRows: Record<string, unknown>[] = [];
+      let successCount = 0;
+
+      params.rows.forEach((rawRow, idx) => {
+        const rowNum = idx + 2;
+        const rawCode = asString(
+          rawRow['Employee ID'] ??
+            rawRow['employeeCode'] ??
+            rawRow['employee_code'] ??
+            rawRow['Employee Code'] ??
+            ''
+        ).trim();
+        const rawName = asString(
+          rawRow['Employee Name'] ??
+            rawRow['employeeName'] ??
+            rawRow['employee_name'] ??
+            ''
+        ).trim();
+
+        if (!rawCode) {
+          errors.push({
+            row: rowNum,
+            employeeCode: '',
+            employeeName: rawName || undefined,
+            error: 'Missing Employee ID.',
+          });
+          failedRows.push(rawRow);
+          return;
+        }
+
+        const emp = empByCode.get(rawCode.toUpperCase()) ?? empById.get(rawCode);
+        if (!emp) {
+          errors.push({
+            row: rowNum,
+            employeeCode: rawCode,
+            employeeName: rawName || undefined,
+            error: `Employee "${rawCode}" was not found.`,
+          });
+          failedRows.push(rawRow);
+          return;
+        }
+
+        const dateColumns = Object.keys(rawRow).filter((key) => /^\d{4}-\d{2}-\d{2}$/.test(key.trim()));
+        if (dateColumns.length === 0) {
+          errors.push({
+            row: rowNum,
+            employeeCode: emp.employeeCode,
+            employeeName: emp.fullName,
+            error: 'No YYYY-MM-DD date columns found in row.',
+          });
+          failedRows.push(rawRow);
+          return;
+        }
+
+        const parsedEntries: RosterEntry[] = [];
+        let rowError: string | null = null;
+
+        for (const colKey of dateColumns) {
+          const dateStr = colKey.trim();
+          const cellVal = asString(rawRow[colKey] ?? '').trim();
+          if (!cellVal) continue;
+
+          const parsed = parseRosterCellValue(cellVal);
+          if (!parsed) {
+            rowError = `Invalid value "${cellVal}" on ${dateStr}. Expected HH:MM,HH:MM, OFF, or Leave.`;
+            break;
+          }
+
+          parsedEntries.push({
+            id: rosterMap.get(`${emp.id}::${dateStr}`)?.id ?? makeId('ros'),
+            userId: emp.id,
+            employeeCode: emp.employeeCode,
+            employeeName: emp.fullName,
+            date: dateStr,
+            status: parsed.status,
+            shiftStart: parsed.shiftStart,
+            shiftEnd: parsed.shiftEnd,
+            isOvernight: parsed.isOvernight,
+          });
+        }
+
+        if (rowError) {
+          errors.push({
+            row: rowNum,
+            employeeCode: emp.employeeCode,
+            employeeName: emp.fullName,
+            error: rowError,
+          });
+          failedRows.push(rawRow);
+          return;
+        }
+
+        for (const entry of parsedEntries) {
+          rosterMap.set(`${entry.userId}::${entry.date}`, entry);
+        }
+        successCount += 1;
+      });
+
+      writeStoredRosters(Array.from(rosterMap.values()));
+
+      const batchId = makeId('ros-batch');
+      const nowIso = new Date().toISOString();
+      const batch: RosterUploadBatch = {
+        id: batchId,
+        uploadedByName: session?.fullName || session?.email || 'HR Admin',
+        fileName: params.fileName,
+        month: params.month,
+        totalRows: params.rows.length,
+        successCount,
+        failedCount: failedRows.length,
+        errors,
+        failedRows,
+        createdAt: nowIso,
+      };
+      const existingHistory = readStoredRosterHistory();
+      writeStoredRosterHistory([batch, ...existingHistory].slice(0, 50));
+
+      return {
+        batchId,
+        month: params.month,
+        totalRows: params.rows.length,
+        successCount,
+        failedCount: failedRows.length,
+        errors,
+        failedRows,
+      };
+    },
+
+    async history(): Promise<RosterUploadBatch[]> {
+      const cfg = getServerConfig();
+      if (!cfg.useMockApi) {
+        const res = await restFetch<unknown>('/rosters/history');
+        const list = Array.isArray(res)
+          ? res
+          : Array.isArray(asRecord(res).items)
+            ? (asRecord(res).items as unknown[])
+            : Array.isArray(asRecord(res).batches)
+              ? (asRecord(res).batches as unknown[])
+              : [];
+        return list.map(normalizeRosterUploadBatch);
+      }
+
+      return readStoredRosterHistory().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+  },
 };
+
+function readStoredRosters(): RosterEntry[] {
+  try {
+    const raw = localStorage.getItem(ROSTER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(normalizeRosterEntry) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredRosters(entries: RosterEntry[]): void {
+  try {
+    localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify(entries));
+  } catch (err) {
+    console.warn('Unable to persist roster entries:', err);
+  }
+}
+
+function readStoredRosterHistory(): RosterUploadBatch[] {
+  try {
+    const raw = localStorage.getItem(ROSTER_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(normalizeRosterUploadBatch) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredRosterHistory(batches: RosterUploadBatch[]): void {
+  try {
+    localStorage.setItem(ROSTER_HISTORY_STORAGE_KEY, JSON.stringify(batches));
+  } catch (err) {
+    console.warn('Unable to persist roster upload history:', err);
+  }
+}
+
+function parseRosterCellValue(
+  raw: string
+): { status: 'shift' | 'off' | 'leave'; shiftStart: string; shiftEnd: string; isOvernight: boolean } | null {
+  const trimmed = raw.trim();
+  const upper = trimmed.toUpperCase();
+  if (upper === 'OFF') {
+    return { status: 'off', shiftStart: '', shiftEnd: '', isOvernight: false };
+  }
+  if (upper === 'LEAVE') {
+    return { status: 'leave', shiftStart: '', shiftEnd: '', isOvernight: false };
+  }
+
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*[,\-–]\s*(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+
+  const sh = Number(match[1]);
+  const sm = Number(match[2]);
+  const eh = Number(match[3]);
+  const em = Number(match[4]);
+
+  if (sh < 0 || sh > 23 || eh < 0 || eh > 23 || sm < 0 || sm > 59 || em < 0 || em > 59) {
+    return null;
+  }
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const shiftStart = `${pad(sh)}:${pad(sm)}`;
+  const shiftEnd = `${pad(eh)}:${pad(em)}`;
+  const startMins = sh * 60 + sm;
+  const endMins = eh * 60 + em;
+
+  return {
+    status: 'shift',
+    shiftStart,
+    shiftEnd,
+    isOvernight: endMins <= startMins,
+  };
+}
+
+function normalizeRosterStatus(raw: unknown): 'shift' | 'off' | 'leave' {
+  const val = asString(raw).trim().toLowerCase();
+  if (val === 'off') return 'off';
+  if (val === 'leave') return 'leave';
+  return 'shift';
+}
+
+function normalizeRosterEntry(raw: unknown): RosterEntry {
+  const obj = asRecord(raw);
+  return {
+    id: asString(obj.id ?? ''),
+    userId: asString(obj.userId ?? obj.user_id ?? obj.employeeId ?? obj.employee_id ?? ''),
+    employeeCode: asString(obj.employeeCode ?? obj.employee_code ?? ''),
+    employeeName: asString(obj.employeeName ?? obj.employee_name ?? ''),
+    date: asString(obj.date ?? ''),
+    status: normalizeRosterStatus(obj.status),
+    shiftStart: asString(obj.shiftStart ?? obj.shift_start ?? ''),
+    shiftEnd: asString(obj.shiftEnd ?? obj.shift_end ?? ''),
+    isOvernight: asBoolean(obj.isOvernight ?? obj.is_overnight, false),
+  };
+}
+
+function normalizeRosterTodayStatus(raw: unknown): RosterTodayStatus {
+  const obj = asRecord(raw);
+  const rawStatus = asString(obj.status ?? 'none').trim().toLowerCase();
+  const status: RosterTodayStatus['status'] =
+    rawStatus === 'shift' || rawStatus === 'off' || rawStatus === 'leave' ? rawStatus : 'none';
+  const shiftStart = asString(obj.shiftStart ?? obj.shift_start ?? '') || undefined;
+  const shiftEnd = asString(obj.shiftEnd ?? obj.shift_end ?? '') || undefined;
+  const hasRoster = asBoolean(obj.hasRoster ?? obj.has_roster, status !== 'none');
+  const canClockIn = asBoolean(obj.canClockIn ?? obj.can_clock_in, status !== 'leave');
+
+  return {
+    date: asString(obj.date ?? new Date().toISOString().slice(0, 10)),
+    hasRoster,
+    status,
+    shiftStart,
+    shiftEnd,
+    isOvernight: obj.isOvernight !== undefined || obj.is_overnight !== undefined
+      ? asBoolean(obj.isOvernight ?? obj.is_overnight, false)
+      : undefined,
+    canClockIn,
+  };
+}
+
+function normalizeRosterUploadError(raw: unknown): RosterUploadError {
+  const obj = asRecord(raw);
+  return {
+    row: asNumber(obj.row ?? obj.rowNumber ?? obj.row_number, 0),
+    employeeCode: asString(obj.employeeCode ?? obj.employee_code ?? ''),
+    employeeName: asString(obj.employeeName ?? obj.employee_name ?? '') || undefined,
+    error: asString(obj.error ?? obj.message ?? 'Invalid row'),
+  };
+}
+
+function normalizeRosterBulkUploadResult(raw: unknown, fallbackMonth: string): RosterBulkUploadResult {
+  const obj = asRecord(raw);
+  const rawErrors = Array.isArray(obj.errors) ? obj.errors : [];
+  const rawFailedRows = Array.isArray(obj.failedRows ?? obj.failed_rows)
+    ? ((obj.failedRows ?? obj.failed_rows) as Record<string, unknown>[])
+    : [];
+  return {
+    batchId: asString(obj.batchId ?? obj.batch_id ?? obj.id ?? ''),
+    month: asString(obj.month ?? fallbackMonth),
+    totalRows: asNumber(obj.totalRows ?? obj.total_rows, 0),
+    successCount: asNumber(obj.successCount ?? obj.success_count, 0),
+    failedCount: asNumber(obj.failedCount ?? obj.failed_count, rawFailedRows.length),
+    errors: rawErrors.map(normalizeRosterUploadError),
+    failedRows: rawFailedRows,
+  };
+}
+
+function normalizeRosterUploadBatch(raw: unknown): RosterUploadBatch {
+  const obj = asRecord(raw);
+  const rawErrors = Array.isArray(obj.errors) ? obj.errors : [];
+  const rawFailedRows = Array.isArray(obj.failedRows ?? obj.failed_rows)
+    ? ((obj.failedRows ?? obj.failed_rows) as Record<string, unknown>[])
+    : [];
+  return {
+    id: asString(obj.id ?? obj.batchId ?? obj.batch_id ?? ''),
+    uploadedByName: asString(obj.uploadedByName ?? obj.uploaded_by_name ?? 'HR Admin'),
+    fileName: asString(obj.fileName ?? obj.file_name ?? ''),
+    month: asString(obj.month ?? ''),
+    totalRows: asNumber(obj.totalRows ?? obj.total_rows, 0),
+    successCount: asNumber(obj.successCount ?? obj.success_count, 0),
+    failedCount: asNumber(obj.failedCount ?? obj.failed_count, rawFailedRows.length),
+    errors: rawErrors.map(normalizeRosterUploadError),
+    failedRows: rawFailedRows,
+    createdAt: asString(obj.createdAt ?? obj.created_at ?? ''),
+  };
+}
+

@@ -33,6 +33,7 @@ import {
   PayrollAdjustment,
   PayrollEntry,
   ProAssignment,
+  RosterTodayStatus,
   SalaryReleaseSchedule,
   Section,
   UserRole,
@@ -82,6 +83,7 @@ interface DashboardViewProps {
   hiddenSections?: HiddenSectionKey[];
   gpsReading: GPSReading | null;
   simulatedDevice: 'mobile' | 'desktop';
+  todayRoster?: RosterTodayStatus | null;
   onNavigate: (section: NavSection) => void;
   onClockIn: () => Promise<void>;
   onClockOut: (logId: string) => Promise<void>;
@@ -112,6 +114,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   hiddenSections = [],
   gpsReading,
   simulatedDevice,
+  todayRoster = null,
   onNavigate,
   onClockIn,
   onClockOut,
@@ -309,11 +312,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       deductionApprovals,
       patchReleases
     );
-    const shiftStart = userModel ? getEffectiveShiftStart(currentUser, userModel) : '08:00';
-    const shiftEnd = userModel ? getEffectiveShiftEnd(currentUser, userModel) : '17:00';
+    const shiftStart =
+      todayRoster?.status === 'shift' && todayRoster.shiftStart
+        ? todayRoster.shiftStart
+        : userModel
+          ? getEffectiveShiftStart(currentUser, userModel)
+          : '08:00';
+    const shiftEnd =
+      todayRoster?.status === 'shift' && todayRoster.shiftEnd
+        ? todayRoster.shiftEnd
+        : userModel
+          ? getEffectiveShiftEnd(currentUser, userModel)
+          : '17:00';
+    const isRosterLeave = todayRoster?.status === 'leave';
+    const hasRosterShift = todayRoster?.status === 'shift' && Boolean(todayRoster.shiftStart);
 
     return (
       <div className="max-w-xl mx-auto space-y-5">
+        {isRosterLeave && (
+          <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-4 py-3 text-xs font-semibold text-amber-900 dark:text-amber-200 flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span>You are scheduled on Leave today — Clock-In and Clock-Out are disabled.</span>
+          </div>
+        )}
+
         {/* Primary Focused Clock-In / Clock-Out Card */}
         <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 sm:p-8 text-center">
           <div className="flex items-center justify-between gap-2 text-start">
@@ -322,7 +344,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {companyMap.get(currentUser.primaryCompanyId)?.name}
               </p>
               <p className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                {shiftStart}–{shiftEnd}
+                {hasRosterShift
+                  ? `Rostered Shift: ${todayRoster!.shiftStart} – ${todayRoster!.shiftEnd}${
+                      todayRoster!.isOvernight ? ' (Overnight)' : ''
+                    }`
+                  : `${shiftStart}–${shiftEnd}`}
               </p>
             </div>
             <button
@@ -377,7 +403,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => void handlePrimaryPunch()}
-              disabled={busyPunch || (!openShiftLog && !clockEval.allowed)}
+              disabled={isRosterLeave || busyPunch || (!openShiftLog && !clockEval.allowed)}
               className={`mt-6 w-full max-w-xs min-h-[56px] rounded-xl text-base font-semibold text-white flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
                 openShiftLog
                   ? 'bg-rose-600 hover:bg-rose-700'

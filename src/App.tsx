@@ -183,6 +183,7 @@ export function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
 
   const [simPreset, setSimPreset] = useState<SimPreset>('inside_primary');
   const [simulatedDevice, setSimulatedDevice] = useState<'mobile' | 'desktop'>('mobile');
@@ -242,6 +243,22 @@ export function App() {
     });
   }, [serverConfig.useMockApi]);
 
+  // Global 401 Unauthorized session cleanup & redirect to Sign-In
+  useEffect(() => {
+    return api.onUnauthorized((message) => {
+      setSession(null);
+      setDb(null);
+      setTodayRoster(null);
+      setStartupError(null);
+      setOfflineReason(null);
+      setLoading(false);
+      setChangePasswordOpen(false);
+      setProfileMenuOpen(false);
+      setActiveNav('dashboard');
+      setSessionNotice(message);
+    });
+  }, []);
+
   const loadDatabase = useCallback(
     async (sessionOverride?: AuthSession | null, showFullScreenLoader = false) => {
       const targetSession = sessionOverride !== undefined ? sessionOverride : session;
@@ -291,6 +308,9 @@ export function App() {
         setToast((prev) => (prev?.kind === 'error' ? null : prev));
       } catch (err) {
         if (timeoutTimer !== undefined) window.clearTimeout(timeoutTimer);
+        if (!api.auth.getSession() && targetSession) {
+          return;
+        }
         if (err instanceof StartupLoadError) {
           setStartupError({ failures: err.failures, isTimeout: err.isTimeout });
           if (db) showToast(err.message, 'error');
@@ -362,7 +382,7 @@ export function App() {
       setTodayRoster(null);
       return;
     }
-    void loadDatabase(session, true);
+    void loadDatabase(session, !db);
     void refreshTodayRoster();
   }, [session?.token, session?.mustChangePassword]);
 
@@ -678,6 +698,7 @@ export function App() {
     setDb(null);
     setStartupError(null);
     setOfflineReason(null);
+    setSessionNotice(null);
     setSelectedCompanyId(
       normalizeUserRole(nextSession.role) === UserRole.MainManager ? 'all' : 'all'
     );
@@ -695,6 +716,7 @@ export function App() {
     const nextSession = await api.auth.demoLogin(normalized);
     setStartupError(null);
     setOfflineReason(null);
+    setSessionNotice(null);
     setSession(nextSession);
     if (normalized === UserRole.Accounting) {
       setActiveNav('payroll');
@@ -713,6 +735,7 @@ export function App() {
     setTodayRoster(null);
     setStartupError(null);
     setOfflineReason(null);
+    setSessionNotice(null);
     setLoading(false);
     setActiveNav('dashboard');
   };
@@ -842,6 +865,8 @@ export function App() {
         onUpdateServerConfig={handleUpdateServerConfig}
         onEmailLogin={handleEmailLogin}
         onDemoRoleLogin={handleDemoRoleLogin}
+        sessionNotice={sessionNotice}
+        onClearSessionNotice={() => setSessionNotice(null)}
       />
     );
   }
@@ -2090,13 +2115,18 @@ export function App() {
         lang={lang}
         onClose={() => setChangePasswordOpen(false)}
         onSubmit={async (currentPassword, newPassword) => {
-          await api.auth.changePassword({
+          const updatedSession = await api.auth.changePassword({
             userId: currentUser.id,
             currentPassword,
             newPassword,
             isForcedFirstLogin: false,
           });
-          await loadDatabase();
+          if (updatedSession) {
+            setSession(updatedSession);
+          }
+          if (!updatedSession || updatedSession.token === session.token) {
+            await loadDatabase(updatedSession ?? session);
+          }
           showToast('Password updated successfully.');
         }}
       />

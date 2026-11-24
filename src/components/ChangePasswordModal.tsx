@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { KeyRound, Lock, X } from 'lucide-react';
 import { t } from '../i18n/translations';
 import { Language } from '../types/hr';
+import { validatePasswordPolicy } from '../utils/hrLogic';
 
 export interface ChangePasswordModalProps {
   open: boolean;
@@ -32,8 +33,12 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (newPassword.trim().length < 6) {
-      setError(t(lang, 'passwordMinLengthError'));
+    const policyCheck = validatePasswordPolicy({
+      newPassword,
+      currentPassword,
+    });
+    if (!policyCheck.valid) {
+      setError(policyCheck.error || t(lang, 'passwordMinLengthError'));
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -124,7 +129,6 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder={t(lang, 'passwordMinLengthPlaceholder')}
@@ -147,7 +151,6 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder={t(lang, 'passwordConfirmPlaceholder')}

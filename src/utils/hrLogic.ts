@@ -2507,6 +2507,61 @@ export function validateApiBaseUrl(url: string): { valid: boolean; error?: strin
   }
 }
 
+export function validateSignInInput(
+  email: string,
+  password: string
+): { valid: boolean; error?: string } {
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail) {
+    return { valid: false, error: 'Enter both work email and password.' };
+  }
+  if (trimmedEmail.length > 254) {
+    return { valid: false, error: 'Work email must be 254 characters or fewer.' };
+  }
+  if (!password) {
+    return { valid: false, error: 'Enter both work email and password.' };
+  }
+  if (password.length > 128) {
+    return { valid: false, error: 'Password must be 128 characters or fewer.' };
+  }
+  return { valid: true };
+}
+
+export function validatePasswordPolicy(params: {
+  newPassword: string;
+  currentPassword?: string;
+}): { valid: boolean; error?: string } {
+  const { newPassword, currentPassword } = params;
+  if (newPassword.length < 8 || newPassword.length > 128) {
+    return {
+      valid: false,
+      error: 'Password must be 8–128 characters and include at least one letter and one number.',
+    };
+  }
+  if (!/[A-Za-z]/.test(newPassword) || !/\d/.test(newPassword)) {
+    return {
+      valid: false,
+      error: 'Password must be 8–128 characters and include at least one letter and one number.',
+    };
+  }
+  if (currentPassword !== undefined && newPassword === currentPassword) {
+    return {
+      valid: false,
+      error: 'New password must be different from your current password.',
+    };
+  }
+  return { valid: true };
+}
+
+export function parseRetryAfterSeconds(
+  headerValue: string | null | undefined,
+  fallbackSeconds = 60
+): number {
+  if (!headerValue) return fallbackSeconds;
+  const parsed = Number.parseInt(headerValue.trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackSeconds;
+}
+
 export function getDefaultStepsForWorkflow(): ApprovalStepRole[] {
   return ['section_manager', 'hr_admin', 'main_manager'];
 }

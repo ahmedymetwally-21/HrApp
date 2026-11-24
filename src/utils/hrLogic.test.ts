@@ -71,12 +71,15 @@ import {
   isSectionHidden,
   normalizeUserRole,
   normalizeWorkType,
+  parseRetryAfterSeconds,
   resolveApprovalWorkflow,
   resolveEmployeeDeductionWorkflow,
   resolveSalaryAdjustmentSteps,
   resolveWorkflowStepsForEmployee,
   stopPermanentPayrollEntry,
+  validatePasswordPolicy,
   validatePatchReleaseAllocations,
+  validateSignInInput,
 } from './hrLogic';
 
 const dubaiHQ: GeofenceZone = {
@@ -1923,6 +1926,41 @@ test('Phase 2 v4.0: Strict No Self-Approval, HR Manager & Main Manager exclusive
   assert.equal(rejected.currentStepIndex, -1);
   assert.equal(rejected.steps[0].status, 'rejected');
 });
+
+test('Auth Hardening: validateSignInInput bounds email (<=254) and password (<=128)', () => {
+  assert.equal(validateSignInInput('tariq@yaldi.ae', 'demo1234').valid, true);
+  assert.equal(validateSignInInput(`  ${'a'.repeat(245)}@yaldi.ae  `, 'demo1234').valid, true);
+  assert.equal(validateSignInInput(`${'a'.repeat(246)}@yaldi.ae`, 'demo1234').valid, false);
+  assert.equal(validateSignInInput('tariq@yaldi.ae', 'a'.repeat(129)).valid, false);
+  assert.equal(validateSignInInput('tariq@yaldi.ae', 'a'.repeat(128)).valid, true);
+  assert.equal(validateSignInInput('   ', 'demo1234').valid, false);
+});
+
+test('Auth Hardening: validatePasswordPolicy enforces 8-128 chars, letter+number, and rejects currentPassword reuse', () => {
+  assert.equal(validatePasswordPolicy({ newPassword: 'short1' }).valid, false);
+  assert.equal(validatePasswordPolicy({ newPassword: 'onlyletters' }).valid, false);
+  assert.equal(validatePasswordPolicy({ newPassword: '123456789' }).valid, false);
+  assert.equal(validatePasswordPolicy({ newPassword: `${'a'.repeat(128)}1` }).valid, false);
+  assert.equal(
+    validatePasswordPolicy({ newPassword: 'Password123', currentPassword: 'Password123' }).valid,
+    false
+  );
+  assert.equal(
+    validatePasswordPolicy({ newPassword: 'Password123', currentPassword: 'OldPassword1' }).valid,
+    true
+  );
+  assert.equal(validatePasswordPolicy({ newPassword: `${'A'.repeat(127)}9` }).valid, true);
+});
+
+test('Auth Hardening: parseRetryAfterSeconds parses positive integer seconds and defaults to 60', () => {
+  assert.equal(parseRetryAfterSeconds('45'), 45);
+  assert.equal(parseRetryAfterSeconds(' 120 '), 120);
+  assert.equal(parseRetryAfterSeconds(null), 60);
+  assert.equal(parseRetryAfterSeconds(''), 60);
+  assert.equal(parseRetryAfterSeconds('0'), 60);
+  assert.equal(parseRetryAfterSeconds('Wed, 21 Oct 2026 07:28:00 GMT'), 60);
+});
+
 
 
 

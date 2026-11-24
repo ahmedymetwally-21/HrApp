@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ArrowRight, KeyRound, Lock, LogOut, ShieldAlert } from 'lucide-react';
 import { getRoleLabel, t } from '../i18n/translations';
 import { Employee, Language, UserRole } from '../types/hr';
+import { validatePasswordPolicy } from '../utils/hrLogic';
 import { Avatar } from './Avatar';
 
 export interface ForcePasswordChangeScreenProps {
@@ -27,8 +28,9 @@ export const ForcePasswordChangeScreen: React.FC<ForcePasswordChangeScreenProps>
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (newPassword.trim().length < 6) {
-      setError(t(lang, 'passwordMinLengthError'));
+    const policyCheck = validatePasswordPolicy({ newPassword });
+    if (!policyCheck.valid) {
+      setError(policyCheck.error || t(lang, 'passwordMinLengthError'));
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -102,7 +104,6 @@ export const ForcePasswordChangeScreen: React.FC<ForcePasswordChangeScreenProps>
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder={t(lang, 'passwordMinLengthPlaceholder')}
@@ -125,7 +126,6 @@ export const ForcePasswordChangeScreen: React.FC<ForcePasswordChangeScreenProps>
                 type="password"
                 autoComplete="new-password"
                 required
-                minLength={6}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder={t(lang, 'passwordConfirmPlaceholder')}

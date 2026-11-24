@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowRight,
   ChevronDown,
@@ -18,9 +18,9 @@ import {
   Users,
 } from 'lucide-react';
 import { LANGUAGE_META, getRoleLabel, t } from '../i18n/translations';
-import { ServerConfig } from '../services/api';
+import { ApiHttpError, ServerConfig } from '../services/api';
 import { Language, UserRole } from '../types/hr';
-import { validateApiBaseUrl } from '../utils/hrLogic';
+import { validateApiBaseUrl, validateSignInInput } from '../utils/hrLogic';
 
 interface LoginViewProps {
   lang: Language;
@@ -31,6 +31,8 @@ interface LoginViewProps {
   onUpdateServerConfig: (config: ServerConfig) => void;
   onEmailLogin: (email: string, password: string) => Promise<void>;
   onDemoRoleLogin: (role: UserRole) => Promise<void>;
+  sessionNotice?: string | null;
+  onClearSessionNotice?: () => void;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({
@@ -42,28 +44,63 @@ export const LoginView: React.FC<LoginViewProps> = ({
   onUpdateServerConfig,
   onEmailLogin,
   onDemoRoleLogin,
+  sessionNotice,
+  onClearSessionNotice,
 }) => {
   const [email, setEmail] = useState('tariq.hashemi@yaldi.ae');
   const [password, setPassword] = useState('demo1234');
   const [authError, setAuthError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [lockoutSeconds, setLockoutSeconds] = useState(0);
 
   const [showServerPanel, setShowServerPanel] = useState(false);
   const [urlDraft, setUrlDraft] = useState(serverConfig.apiBaseUrl);
   const [urlFeedback, setUrlFeedback] = useState<string | null>(null);
 
+  const isLockedOut = lockoutSeconds > 0;
+
+  useEffect(() => {
+    if (!isLockedOut) return;
+    const timerId = window.setInterval(() => {
+      setLockoutSeconds((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timerId);
+  }, [isLockedOut]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (lockoutSeconds > 0) return;
     setAuthError(null);
+    onClearSessionNotice?.();
+
+    const validation = validateSignInInput(email, password);
+    if (!validation.valid) {
+      setAuthError(validation.error || 'Invalid credentials.');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      await onEmailLogin(email, password);
+      await onEmailLogin(email.trim(), password);
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Unable to sign in.');
+      if (err instanceof ApiHttpError && err.status === 429) {
+        const seconds =
+          typeof err.retryAfterSeconds === 'number' && err.retryAfterSeconds > 0
+            ? err.retryAfterSeconds
+            : 60;
+        setLockoutSeconds(seconds);
+      } else {
+        setAuthError(err instanceof Error ? err.message : 'Unable to sign in.');
+      }
     } finally {
       setSubmitting(false);
     }
   };
+
+  const alertMessage =
+    lockoutSeconds > 0
+      ? `Too many failed attempts. Try again in ${lockoutSeconds}s`
+      : authError ?? sessionNotice ?? null;
 
   const handleSaveServerUrl = () => {
     const check = validateApiBaseUrl(urlDraft);
@@ -199,12 +236,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </p>
 
             <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-              {authError && (
+              {alertMessage && (
                 <p
                   role="alert"
                   className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 rounded-xl px-3.5 py-2.5"
                 >
-                  {authError}
+                  {alertMessage}
                 </p>
               )}
 
@@ -222,7 +259,10 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     type="email"
                     required
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      onClearSessionNotice?.();
+                    }}
                     className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
                   />
                 </div>
@@ -242,7 +282,10 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     type="password"
                     required
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      onClearSessionNotice?.();
+                    }}
                     className="w-full ps-10 pe-3.5 py-2.5 text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
                   />
                 </div>
@@ -250,8 +293,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
 
               <button
                 type="submit"
-                disabled={submitting}
-                className="w-full min-h-[46px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+                disabled={submitting || lockoutSeconds > 0}
+                className="w-full min-h-[46px] rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <span>{submitting ? t(lang, 'signingIn') : t(lang, 'signIn')}</span>
                 <ArrowRight className="w-4 h-4 rtl:rotate-180" />

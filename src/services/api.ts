@@ -109,12 +109,15 @@ import {
   normalizeHiddenSectionKey,
   normalizeUserRole,
   normalizeWorkType,
+  parseRetryAfterSeconds,
   resolveApprovalWorkflow,
   resolveSalaryAdjustmentSteps,
   resolveWorkflowStepsForEmployee,
   SettledStartupItem,
   stopPermanentPayrollEntry,
+  validatePasswordPolicy,
   validatePatchReleaseAllocations,
+  validateSignInInput,
 } from '../utils/hrLogic';
 import {
   normalizeEmployeeTypeValue,
@@ -154,11 +157,18 @@ export class ServerUnreachableError extends Error {
   }
 }
 
+export const CLIENT_PLATFORM_HEADER = 'web-dashboard';
+export const SESSION_EXPIRED_MESSAGE = 'Session expired or revoked. Please sign in again.';
+
+type UnauthorizedListener = (message: string) => void;
+const unauthorizedListeners = new Set<UnauthorizedListener>();
+
 export class ApiHttpError extends Error {
   endpoint: string;
   status: number | null;
   statusText: string;
   isTimeout: boolean;
+  retryAfterSeconds?: number;
 
   constructor(params: {
     endpoint: string;
@@ -166,6 +176,7 @@ export class ApiHttpError extends Error {
     statusText: string;
     message: string;
     isTimeout?: boolean;
+    retryAfterSeconds?: number;
   }) {
     super(params.message);
     this.name = 'ApiHttpError';
@@ -173,6 +184,7 @@ export class ApiHttpError extends Error {
     this.status = params.status;
     this.statusText = params.statusText;
     this.isTimeout = Boolean(params.isTimeout);
+    this.retryAfterSeconds = params.retryAfterSeconds;
   }
 
   toEndpointFailure(): EndpointFailure {
@@ -253,6 +265,17 @@ function saveSession(session: AuthSession | null): void {
   } catch {
     // Ignore
   }
+}
+
+function handleUnauthorizedSession(): void {
+  saveSession(null);
+  unauthorizedListeners.forEach((listener) => {
+    try {
+      listener(SESSION_EXPIRED_MESSAGE);
+    } catch {
+      // Ignore listener errors
+    }
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -1071,6 +1094,7 @@ function getDefaultStatusText(status: number): string {
     404: 'Not Found',
     408: 'Request Timeout',
     422: 'Unprocessable Entity',
+    429: 'Too Many Requests',
     500: 'Internal Server Error',
     502: 'Bad Gateway',
     503: 'Service Unavailable',
@@ -1106,6 +1130,7 @@ async function restFetch<T>(
   const session = getStoredSession();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'X-Client-Platform': CLIENT_PLATFORM_HEADER,
     ...((init.headers as Record<string, string>) || {}),
   };
   if (session?.token) {
@@ -1152,11 +1177,23 @@ async function restFetch<T>(
   if (!res.ok) {
     const rawBody = await res.text().catch(() => '');
     const statusText = res.statusText || getDefaultStatusText(res.status);
+    const isLoginEndpoint = path === '/auth/login' || path.startsWith('/auth/login?');
+    if (res.status === 401 && !isLoginEndpoint) {
+      handleUnauthorizedSession();
+    }
+    const retryAfterSeconds =
+      res.status === 429
+        ? parseRetryAfterSeconds(res.headers?.get('Retry-After'), 60)
+        : undefined;
     throw new ApiHttpError({
       endpoint: path,
       status: res.status,
       statusText,
-      message: extractErrorMessage(rawBody, res.status, statusText),
+      message:
+        res.status === 401 && !isLoginEndpoint
+          ? SESSION_EXPIRED_MESSAGE
+          : extractErrorMessage(rawBody, res.status, statusText),
+      retryAfterSeconds,
     });
   }
   if (res.status === 204) return undefined as T;
@@ -1312,11 +1349,21 @@ export const api = {
   getServerConfig,
   saveServerConfig,
 
+  onUnauthorized(listener: UnauthorizedListener): () => void {
+    unauthorizedListeners.add(listener);
+    return () => {
+      unauthorizedListeners.delete(listener);
+    };
+  },
+
   async pingServer(): Promise<boolean> {
     const cfg = getServerConfig();
     if (cfg.useMockApi) return true;
     try {
-      const res = await fetch(`${cfg.apiBaseUrl}/health`, { method: 'GET' });
+      const res = await fetch(`${cfg.apiBaseUrl}/health`, {
+        method: 'GET',
+        headers: { 'X-Client-Platform': CLIENT_PLATFORM_HEADER },
+      });
       return res.ok;
     } catch {
       return false;
@@ -1329,18 +1376,23 @@ export const api = {
     },
 
     async login(email: string, password: string): Promise<AuthSession> {
+      const trimmedEmail = email.trim();
+      const validation = validateSignInInput(trimmedEmail, password);
+      if (!validation.valid) {
+        throw new Error(validation.error || 'Enter both work email and password.');
+      }
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
         const raw = await restFetch<unknown>('/auth/login', {
           method: 'POST',
-          body: JSON.stringify({ email, password }),
+          headers: {
+            'X-Client-Platform': CLIENT_PLATFORM_HEADER,
+          },
+          body: JSON.stringify({ email: trimmedEmail, password }),
         });
-        const session = normalizeAuthSession(raw, email.trim(), 'live');
+        const session = normalizeAuthSession(raw, trimmedEmail, 'live');
         saveSession(session);
         return session;
-      }
-      if (!email.trim() || !password.trim()) {
-        throw new Error('Enter both work email and password.');
       }
       const db = readDb();
       const matched = db.employees.find(
@@ -1401,10 +1453,23 @@ export const api = {
       newPassword: string;
       isForcedFirstLogin?: boolean;
     }): Promise<AuthSession | null> {
+      const policyCheck = validatePasswordPolicy({
+        newPassword: params.newPassword,
+        currentPassword: params.isForcedFirstLogin ? undefined : params.currentPassword,
+      });
+      if (!policyCheck.valid) {
+        throw new Error(
+          policyCheck.error ||
+            'Password must be 8–128 characters and include at least one letter and one number.'
+        );
+      }
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
         const res = await restFetch<Record<string, unknown>>('/auth/change-password', {
           method: 'POST',
+          headers: {
+            'X-Client-Platform': CLIENT_PLATFORM_HEADER,
+          },
           body: JSON.stringify({
             ...params,
             user_id: params.userId,
@@ -1414,19 +1479,31 @@ export const api = {
           }),
         });
         const current = getStoredSession();
-        const next = res?.session
-          ? normalizeAuthSession(res.session, current?.email, 'live')
-          : current
-            ? { ...current, mustChangePassword: false }
-            : null;
+        const sessionObj = asRecord(res?.session);
+        const freshToken = asString(
+          res?.token ??
+            res?.access_token ??
+            res?.jwt ??
+            sessionObj.token ??
+            sessionObj.access_token ??
+            ''
+        );
+        let next: AuthSession | null = null;
+        if (res?.session) {
+          next = normalizeAuthSession(res.session, current?.email, 'live');
+        } else if (current) {
+          next = { ...current, mustChangePassword: false };
+        } else if (freshToken) {
+          next = normalizeAuthSession(res, undefined, 'live');
+        }
         if (next) {
+          if (freshToken) {
+            next.token = freshToken;
+          }
           next.mustChangePassword = false;
           saveSession(next);
         }
         return next;
-      }
-      if (!params.newPassword || params.newPassword.trim().length < 6) {
-        throw new Error('New password must be at least 6 characters.');
       }
       const db = readDb();
       const emp = db.employees.find((e) => e.id === params.userId);
@@ -1439,13 +1516,17 @@ export const api = {
       }
       db.employees = db.employees.map((e) =>
         e.id === params.userId
-          ? { ...e, passwordHash: params.newPassword.trim(), mustChangePassword: false }
+          ? { ...e, passwordHash: params.newPassword, mustChangePassword: false }
           : e
       );
       writeDb(db);
       const current = getStoredSession();
       if (current && current.userId === params.userId) {
-        const updated: AuthSession = { ...current, mustChangePassword: false };
+        const updated: AuthSession = {
+          ...current,
+          token: `demo-jwt-${emp.id}-${Date.now()}`,
+          mustChangePassword: false,
+        };
         saveSession(updated);
         return updated;
       }
@@ -3775,7 +3856,9 @@ export const api = {
         const session = getStoredSession();
         const formData = new FormData();
         formData.append('file', file);
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+          'X-Client-Platform': CLIENT_PLATFORM_HEADER,
+        };
         if (session?.token) {
           headers.Authorization = `Bearer ${session.token}`;
         }
@@ -3795,11 +3878,17 @@ export const api = {
           if (!res.ok) {
             const rawBody = await res.text().catch(() => '');
             const statusText = res.statusText || getDefaultStatusText(res.status);
+            if (res.status === 401) {
+              handleUnauthorizedSession();
+            }
             throw new ApiHttpError({
               endpoint: '/requests/upload',
               status: res.status,
               statusText,
-              message: extractErrorMessage(rawBody, res.status, statusText),
+              message:
+                res.status === 401
+                  ? SESSION_EXPIRED_MESSAGE
+                  : extractErrorMessage(rawBody, res.status, statusText),
             });
           }
           const data = asRecord(await res.json());
@@ -4718,7 +4807,9 @@ export const api = {
         const session = getStoredSession();
         const formData = new FormData();
         formData.append('file', file);
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+          'X-Client-Platform': CLIENT_PLATFORM_HEADER,
+        };
         if (session?.token) {
           headers.Authorization = `Bearer ${session.token}`;
         }
@@ -4738,11 +4829,17 @@ export const api = {
           if (!res.ok) {
             const rawBody = await res.text().catch(() => '');
             const statusText = res.statusText || getDefaultStatusText(res.status);
+            if (res.status === 401) {
+              handleUnauthorizedSession();
+            }
             throw new ApiHttpError({
               endpoint: '/announcements/upload',
               status: res.status,
               statusText,
-              message: extractErrorMessage(rawBody, res.status, statusText),
+              message:
+                res.status === 401
+                  ? SESSION_EXPIRED_MESSAGE
+                  : extractErrorMessage(rawBody, res.status, statusText),
             });
           }
           const data = asRecord(await res.json());

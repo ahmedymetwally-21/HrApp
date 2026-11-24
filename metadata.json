@@ -1,0 +1,6 @@
+{
+  "name": "Masar HR",
+  "description": "Enterprise HR workstation and mobile PWA with geofenced attendance, employee document vault, leave approvals, and UAE AED payroll.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,63 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "DM Sans", "Noto Sans Arabic", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Plus Jakarta Sans", "Noto Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  html[dir="rtl"] body {
+    font-family: "Noto Sans Arabic", "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+/* iOS / Android safe-area insets for Capacitor & notched phones */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Ensure Leaflet map layers sit neatly below navigation drawers and modals */
+.leaflet-container {
+  font-family: var(--font-sans);
+  z-index: 10;
+}
+
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom {
+  z-index: 10;
+}
+
+/* Clean print layout for employee payslips */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-payslip,
+  #printable-payslip * {
+    visibility: visible;
+  }
+  #printable-payslip {
+    position: fixed;
+    inset: 0;
+    padding: 24px;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+}

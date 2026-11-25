@@ -128,10 +128,10 @@ import {
 import { createInitialSeedData } from './seedData';
 
 export const USE_MOCK_API =
-  (import.meta.env.VITE_USE_MOCK_API as string | undefined) !== 'false';
+  (import.meta.env?.VITE_USE_MOCK_API as string | undefined) !== 'false';
 
 const DEFAULT_API_BASE_URL =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://192.168.1.50:8000/api/v1';
+  (import.meta.env?.VITE_API_BASE_URL as string | undefined) || 'http://192.168.1.50:8000/api/v1';
 
 const STORAGE_KEY = 'yaldi_hr_db_v2';
 const SESSION_KEY = 'yaldi_hr_session_v2';
@@ -161,7 +161,16 @@ export const CLIENT_PLATFORM_HEADER = 'web-dashboard';
 export const SESSION_EXPIRED_MESSAGE = 'Session expired or revoked. Please sign in again.';
 
 type UnauthorizedListener = (message: string) => void;
+type SessionUpdatedListener = (session: AuthSession) => void;
 const unauthorizedListeners = new Set<UnauthorizedListener>();
+const sessionUpdatedListeners = new Set<SessionUpdatedListener>();
+
+type RefreshAttemptResult =
+  | { ok: true; session: AuthSession }
+  | { ok: false; clearSession: true; message?: string }
+  | { ok: false; clearSession: false; error: Error };
+
+let refreshPromise: Promise<RefreshAttemptResult> | null = null;
 
 export class ApiHttpError extends Error {
   endpoint: string;
@@ -267,6 +276,16 @@ function saveSession(session: AuthSession | null): void {
   }
 }
 
+function notifySessionUpdated(session: AuthSession): void {
+  sessionUpdatedListeners.forEach((listener) => {
+    try {
+      listener(session);
+    } catch {
+      // Ignore listener errors
+    }
+  });
+}
+
 function handleUnauthorizedSession(): void {
   saveSession(null);
   unauthorizedListeners.forEach((listener) => {
@@ -276,6 +295,121 @@ function handleUnauthorizedSession(): void {
       // Ignore listener errors
     }
   });
+}
+
+async function refreshAccessToken(): Promise<RefreshAttemptResult> {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  refreshPromise = (async (): Promise<RefreshAttemptResult> => {
+    const current = getStoredSession();
+    const refreshToken = current?.refreshToken;
+    if (!current || !refreshToken) {
+      return { ok: false, clearSession: true, message: SESSION_EXPIRED_MESSAGE };
+    }
+
+    const config = getServerConfig();
+    const controller = new AbortController();
+    const timerId = globalThis.setTimeout(
+      () => controller.abort(),
+      DEFAULT_REQUEST_TIMEOUT_MS
+    );
+
+    let res: Response;
+    try {
+      res = await fetch(`${config.apiBaseUrl}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Platform': CLIENT_PLATFORM_HEADER,
+        },
+        body: JSON.stringify({ refreshToken }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      globalThis.clearTimeout(timerId);
+      if (err instanceof Error && err.name === 'AbortError') {
+        return {
+          ok: false,
+          clearSession: false,
+          error: new ApiHttpError({
+            endpoint: '/auth/refresh',
+            status: 408,
+            statusText: 'Request Timeout',
+            message: `Request timed out after ${Math.round(DEFAULT_REQUEST_TIMEOUT_MS / 1000)} seconds.`,
+            isTimeout: true,
+          }),
+        };
+      }
+      return {
+        ok: false,
+        clearSession: false,
+        error: new ServerUnreachableError(
+          `Cannot connect to self-hosted server at ${config.apiBaseUrl}.`,
+          '/auth/refresh'
+        ),
+      };
+    }
+    globalThis.clearTimeout(timerId);
+
+    if (!res.ok) {
+      const rawBody = await res.text().catch(() => '');
+      const statusText = res.statusText || getDefaultStatusText(res.status);
+      if (res.status === 401 || res.status === 403 || res.status === 423 || res.status < 500) {
+        return { ok: false, clearSession: true, message: SESSION_EXPIRED_MESSAGE };
+      }
+      return {
+        ok: false,
+        clearSession: false,
+        error: new ApiHttpError({
+          endpoint: '/auth/refresh',
+          status: res.status,
+          statusText,
+          message: extractErrorMessage(rawBody, res.status, statusText),
+        }),
+      };
+    }
+
+    // If the user manually signed out while refresh was in flight, do not restore session
+    if (!getStoredSession()) {
+      return { ok: false, clearSession: false, error: new Error(SESSION_EXPIRED_MESSAGE) };
+    }
+
+    const raw = asRecord(await res.json().catch(() => ({})));
+    const sessionObj = asRecord(raw.session);
+    const nextToken = asString(
+      raw.token ??
+        raw.access_token ??
+        raw.jwt ??
+        sessionObj.token ??
+        sessionObj.access_token ??
+        ''
+    );
+    if (!nextToken) {
+      return { ok: false, clearSession: true, message: SESSION_EXPIRED_MESSAGE };
+    }
+    const nextRefreshToken = asString(
+      raw.refreshToken ??
+        raw.refresh_token ??
+        sessionObj.refreshToken ??
+        sessionObj.refresh_token ??
+        ''
+    );
+
+    const updatedSession: AuthSession = {
+      ...current,
+      token: nextToken,
+      refreshToken: nextRefreshToken || current.refreshToken,
+    };
+    saveSession(updatedSession);
+    notifySessionUpdated(updatedSession);
+    return { ok: true, session: updatedSession };
+  })().finally(() => {
+    refreshPromise = null;
+  });
+
+  return refreshPromise;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -326,6 +460,7 @@ export function normalizeAuthSession(
   const userObj = asRecord(obj.user);
 
   const token = asString(obj.token ?? obj.access_token ?? obj.jwt ?? '');
+  const refreshToken = asString(obj.refreshToken ?? obj.refresh_token ?? '') || undefined;
   const userId = asString(
     obj.userId ?? obj.user_id ?? userObj.id ?? userObj.user_id ?? obj.id ?? ''
   );
@@ -342,6 +477,7 @@ export function normalizeAuthSession(
 
   return {
     token,
+    refreshToken,
     userId,
     role,
     mode,
@@ -1094,6 +1230,7 @@ function getDefaultStatusText(status: number): string {
     404: 'Not Found',
     408: 'Request Timeout',
     422: 'Unprocessable Entity',
+    423: 'Locked',
     429: 'Too Many Requests',
     500: 'Internal Server Error',
     502: 'Bad Gateway',
@@ -1124,17 +1261,19 @@ function extractErrorMessage(rawBody: string, status: number, statusText: string
 async function restFetch<T>(
   path: string,
   init: RequestInit = {},
-  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+  isRetry = false
 ): Promise<T> {
   const config = getServerConfig();
   const session = getStoredSession();
+  const sentToken = session?.token;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Client-Platform': CLIENT_PLATFORM_HEADER,
     ...((init.headers as Record<string, string>) || {}),
   };
-  if (session?.token) {
-    headers.Authorization = `Bearer ${session.token}`;
+  if (sentToken) {
+    headers.Authorization = `Bearer ${sentToken}`;
   }
 
   const controller = new AbortController();
@@ -1178,9 +1317,43 @@ async function restFetch<T>(
     const rawBody = await res.text().catch(() => '');
     const statusText = res.statusText || getDefaultStatusText(res.status);
     const isLoginEndpoint = path === '/auth/login' || path.startsWith('/auth/login?');
-    if (res.status === 401 && !isLoginEndpoint) {
+    const isRefreshEndpoint = path === '/auth/refresh' || path.startsWith('/auth/refresh?');
+    const isExcludedFromRefresh = isLoginEndpoint || isRefreshEndpoint;
+
+    if (res.status === 401 && !isExcludedFromRefresh) {
+      if (!isRetry) {
+        const latestSession = getStoredSession();
+        if (latestSession?.token && sentToken && latestSession.token !== sentToken) {
+          return restFetch<T>(path, init, timeoutMs, true);
+        }
+        const refreshResult = await refreshAccessToken();
+        if (refreshResult.ok) {
+          return restFetch<T>(path, init, timeoutMs, true);
+        }
+        if (refreshResult.clearSession) {
+          handleUnauthorizedSession();
+          throw new ApiHttpError({
+            endpoint: path,
+            status: 401,
+            statusText,
+            message: SESSION_EXPIRED_MESSAGE,
+          });
+        }
+        throw refreshResult.error;
+      }
+      handleUnauthorizedSession();
+      throw new ApiHttpError({
+        endpoint: path,
+        status: 401,
+        statusText,
+        message: SESSION_EXPIRED_MESSAGE,
+      });
+    }
+
+    if (res.status === 401 && isRefreshEndpoint) {
       handleUnauthorizedSession();
     }
+
     const retryAfterSeconds =
       res.status === 429
         ? parseRetryAfterSeconds(res.headers?.get('Retry-After'), 60)
@@ -1198,6 +1371,83 @@ async function restFetch<T>(
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+async function uploadFormFile(
+  endpoint: string,
+  file: File,
+  isRetry = false
+): Promise<{ url: string; fileName: string; fileType?: string }> {
+  const cfg = getServerConfig();
+  const session = getStoredSession();
+  const sentToken = session?.token;
+  const formData = new FormData();
+  formData.append('file', file);
+  const headers: Record<string, string> = {
+    'X-Client-Platform': CLIENT_PLATFORM_HEADER,
+  };
+  if (sentToken) {
+    headers.Authorization = `Bearer ${sentToken}`;
+  }
+  const controller = new AbortController();
+  const timerId = globalThis.setTimeout(
+    () => controller.abort(),
+    DEFAULT_REQUEST_TIMEOUT_MS * 2
+  );
+  try {
+    const res = await fetch(`${cfg.apiBaseUrl}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+      signal: controller.signal,
+    });
+    globalThis.clearTimeout(timerId);
+    if (!res.ok) {
+      const rawBody = await res.text().catch(() => '');
+      const statusText = res.statusText || getDefaultStatusText(res.status);
+      if (res.status === 401) {
+        if (!isRetry) {
+          const latestSession = getStoredSession();
+          if (latestSession?.token && sentToken && latestSession.token !== sentToken) {
+            return uploadFormFile(endpoint, file, true);
+          }
+          const refreshResult = await refreshAccessToken();
+          if (refreshResult.ok) {
+            return uploadFormFile(endpoint, file, true);
+          }
+          if (refreshResult.clearSession) {
+            handleUnauthorizedSession();
+            throw new ApiHttpError({
+              endpoint,
+              status: 401,
+              statusText,
+              message: SESSION_EXPIRED_MESSAGE,
+            });
+          }
+          throw refreshResult.error;
+        }
+        handleUnauthorizedSession();
+      }
+      throw new ApiHttpError({
+        endpoint,
+        status: res.status,
+        statusText,
+        message:
+          res.status === 401
+            ? SESSION_EXPIRED_MESSAGE
+            : extractErrorMessage(rawBody, res.status, statusText),
+      });
+    }
+    const data = asRecord(await res.json());
+    return {
+      url: asString(data.url ?? data.fileUrl ?? data.file_url ?? data.path ?? ''),
+      fileName: asString(data.fileName ?? data.file_name ?? file.name),
+      fileType: asString(data.fileType ?? data.file_type ?? file.type) || undefined,
+    };
+  } catch (err) {
+    globalThis.clearTimeout(timerId);
+    throw err;
+  }
 }
 
 function readDb(): HRDatabase {
@@ -1356,6 +1606,13 @@ export const api = {
     };
   },
 
+  onSessionUpdated(listener: SessionUpdatedListener): () => void {
+    sessionUpdatedListeners.add(listener);
+    return () => {
+      sessionUpdatedListeners.delete(listener);
+    };
+  },
+
   async pingServer(): Promise<boolean> {
     const cfg = getServerConfig();
     if (cfg.useMockApi) return true;
@@ -1407,6 +1664,7 @@ export const api = {
       }
       const session: AuthSession = {
         token: `demo-jwt-${matched.id}-${Date.now()}`,
+        refreshToken: `demo-refresh-${matched.id}-${Date.now()}`,
         userId: matched.id,
         role: normalizeUserRole(matched.role),
         mode: 'demo',
@@ -1432,6 +1690,7 @@ export const api = {
         db.employees[0];
       const session: AuthSession = {
         token: `demo-jwt-${emp.id}-${Date.now()}`,
+        refreshToken: `demo-refresh-${emp.id}-${Date.now()}`,
         userId: emp.id,
         role: normalizedRole,
         mode: 'demo',
@@ -1488,6 +1747,13 @@ export const api = {
             sessionObj.access_token ??
             ''
         );
+        const freshRefreshToken = asString(
+          res?.refreshToken ??
+            res?.refresh_token ??
+            sessionObj.refreshToken ??
+            sessionObj.refresh_token ??
+            ''
+        );
         let next: AuthSession | null = null;
         if (res?.session) {
           next = normalizeAuthSession(res.session, current?.email, 'live');
@@ -1499,6 +1765,9 @@ export const api = {
         if (next) {
           if (freshToken) {
             next.token = freshToken;
+          }
+          if (freshRefreshToken) {
+            next.refreshToken = freshRefreshToken;
           }
           next.mustChangePassword = false;
           saveSession(next);
@@ -1525,6 +1794,7 @@ export const api = {
         const updated: AuthSession = {
           ...current,
           token: `demo-jwt-${emp.id}-${Date.now()}`,
+          refreshToken: `demo-refresh-${emp.id}-${Date.now()}`,
           mustChangePassword: false,
         };
         saveSession(updated);
@@ -3853,54 +4123,7 @@ export const api = {
     async upload(file: File): Promise<RequestUploadResult> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        const session = getStoredSession();
-        const formData = new FormData();
-        formData.append('file', file);
-        const headers: Record<string, string> = {
-          'X-Client-Platform': CLIENT_PLATFORM_HEADER,
-        };
-        if (session?.token) {
-          headers.Authorization = `Bearer ${session.token}`;
-        }
-        const controller = new AbortController();
-        const timerId = globalThis.setTimeout(
-          () => controller.abort(),
-          DEFAULT_REQUEST_TIMEOUT_MS * 2
-        );
-        try {
-          const res = await fetch(`${cfg.apiBaseUrl}/requests/upload`, {
-            method: 'POST',
-            headers,
-            body: formData,
-            signal: controller.signal,
-          });
-          globalThis.clearTimeout(timerId);
-          if (!res.ok) {
-            const rawBody = await res.text().catch(() => '');
-            const statusText = res.statusText || getDefaultStatusText(res.status);
-            if (res.status === 401) {
-              handleUnauthorizedSession();
-            }
-            throw new ApiHttpError({
-              endpoint: '/requests/upload',
-              status: res.status,
-              statusText,
-              message:
-                res.status === 401
-                  ? SESSION_EXPIRED_MESSAGE
-                  : extractErrorMessage(rawBody, res.status, statusText),
-            });
-          }
-          const data = asRecord(await res.json());
-          return {
-            url: asString(data.url ?? data.fileUrl ?? data.file_url ?? data.path ?? ''),
-            fileName: asString(data.fileName ?? data.file_name ?? file.name),
-            fileType: asString(data.fileType ?? data.file_type ?? file.type) || undefined,
-          };
-        } catch (err) {
-          globalThis.clearTimeout(timerId);
-          throw err;
-        }
+        return uploadFormFile('/requests/upload', file);
       }
 
       // Demo Mode: convert to local Data URL
@@ -4804,54 +5027,7 @@ export const api = {
     async upload(file: File): Promise<{ url: string; fileName: string; fileType?: string }> {
       const cfg = getServerConfig();
       if (!cfg.useMockApi) {
-        const session = getStoredSession();
-        const formData = new FormData();
-        formData.append('file', file);
-        const headers: Record<string, string> = {
-          'X-Client-Platform': CLIENT_PLATFORM_HEADER,
-        };
-        if (session?.token) {
-          headers.Authorization = `Bearer ${session.token}`;
-        }
-        const controller = new AbortController();
-        const timerId = globalThis.setTimeout(
-          () => controller.abort(),
-          DEFAULT_REQUEST_TIMEOUT_MS * 2
-        );
-        try {
-          const res = await fetch(`${cfg.apiBaseUrl}/announcements/upload`, {
-            method: 'POST',
-            headers,
-            body: formData,
-            signal: controller.signal,
-          });
-          globalThis.clearTimeout(timerId);
-          if (!res.ok) {
-            const rawBody = await res.text().catch(() => '');
-            const statusText = res.statusText || getDefaultStatusText(res.status);
-            if (res.status === 401) {
-              handleUnauthorizedSession();
-            }
-            throw new ApiHttpError({
-              endpoint: '/announcements/upload',
-              status: res.status,
-              statusText,
-              message:
-                res.status === 401
-                  ? SESSION_EXPIRED_MESSAGE
-                  : extractErrorMessage(rawBody, res.status, statusText),
-            });
-          }
-          const data = asRecord(await res.json());
-          return {
-            url: asString(data.url ?? data.fileUrl ?? data.file_url ?? data.path ?? ''),
-            fileName: asString(data.fileName ?? data.file_name ?? file.name),
-            fileType: asString(data.fileType ?? data.file_type ?? file.type) || undefined,
-          };
-        } catch (err) {
-          globalThis.clearTimeout(timerId);
-          throw err;
-        }
+        return uploadFormFile('/announcements/upload', file);
       }
 
       return new Promise<{ url: string; fileName: string; fileType?: string }>((resolve, reject) => {

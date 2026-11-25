@@ -797,6 +797,7 @@ export interface HRDatabase {
 
 export interface AuthSession {
   token: string;
+  refreshToken?: string;
   userId: string;
   role: UserRole;
   mode: 'demo' | 'live';

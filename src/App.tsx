@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -243,9 +243,12 @@ export function App() {
     });
   }, [serverConfig.useMockApi]);
 
+  const silentRefreshRef = useRef(false);
+
   // Global 401 Unauthorized session cleanup & redirect to Sign-In
   useEffect(() => {
-    return api.onUnauthorized((message) => {
+    const unsubUnauthorized = api.onUnauthorized((message) => {
+      silentRefreshRef.current = false;
       setSession(null);
       setDb(null);
       setTodayRoster(null);
@@ -257,6 +260,14 @@ export function App() {
       setActiveNav('dashboard');
       setSessionNotice(message);
     });
+    const unsubSessionUpdated = api.onSessionUpdated((nextSession) => {
+      silentRefreshRef.current = true;
+      setSession(nextSession);
+    });
+    return () => {
+      unsubUnauthorized();
+      unsubSessionUpdated();
+    };
   }, []);
 
   const loadDatabase = useCallback(
@@ -380,6 +391,10 @@ export function App() {
       setLoading(false);
       setStartupError(null);
       setTodayRoster(null);
+      return;
+    }
+    if (silentRefreshRef.current) {
+      silentRefreshRef.current = false;
       return;
     }
     void loadDatabase(session, !db);
